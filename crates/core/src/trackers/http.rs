@@ -1,8 +1,6 @@
 use serde_json::Value;
 use std::sync::OnceLock;
 use std::time::Duration;
-#[cfg(not(target_os = "android"))]
-use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Body {
@@ -62,14 +60,13 @@ impl Request {
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        let config = ureq::Agent::config_builder()
+        crate::http()
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_global(Some(Duration::from_secs(60)))
             .http_status_as_error(false)
-            .user_agent(concat!("Plaivo/", env!("CARGO_PKG_VERSION")));
-        #[cfg(not(target_os = "android"))]
-        let config = config.tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build());
-        config.build().into()
+            .user_agent(concat!("Plaivo/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into()
     })
 }
 

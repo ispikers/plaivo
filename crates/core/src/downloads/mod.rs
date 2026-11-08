@@ -264,9 +264,14 @@ impl Downloads {
     }
 
     pub fn set_servers(&self, servers: &[Server]) {
+        let abort = &self.inner.abort;
         self.inner.update(|s| {
-            for srv in servers {
-                s.servers.insert(srv.id.clone(), srv.clone());
+            s.servers = servers.iter().map(|srv| (srv.id.clone(), srv.clone())).collect();
+            if let Some((server, key)) = s.active.clone().filter(|(server, _)| !s.servers.contains_key(server)) {
+                abort.store(true, Ordering::Relaxed);
+                if let Some(e) = s.entries.iter_mut().find(|e| e.is(&server, &key) && e.state == State::Downloading) {
+                    e.state = State::Queued;
+                }
             }
             if !s.pending.is_empty() {
                 s.replay_at = Some(Instant::now());
@@ -570,7 +575,7 @@ impl Inner {
                 Ok(Outcome::Expanded(items)) => {
                     let fresh: Vec<Entry> = items
                         .iter()
-                        .filter(|it| matches!(it.kind.as_str(), "episode" | "movie") && !s.entries.iter().any(|x| x.is(&e.server, &it.rating_key)))
+                        .filter(|it| matches!(it.kind.as_str(), "episode" | "movie") && !it.rating_key.is_empty() && !s.entries.iter().any(|x| x.is(&e.server, &it.rating_key)))
                         .map(|it| Entry::new(&e.server, it))
                         .collect();
                     s.entries.splice(i..=i, fresh);
@@ -736,7 +741,7 @@ impl Inner {
             let mut ok = true;
             for k in std::iter::once(&e.key).chain(&e.parents) {
                 let id = (e.server.clone(), k.clone());
-                if in_use.contains(&id) || deleted.contains(&id) {
+                if k.is_empty() || in_use.contains(&id) || deleted.contains(&id) {
                     continue;
                 }
                 if delete_dir(&self.dir(&e.server, k)) {

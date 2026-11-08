@@ -639,3 +639,29 @@ fn synced_progress_updates_the_snapshot_without_a_replay() {
     assert_eq!(d.item("srv1", "101").unwrap().view_offset, Some(400));
     assert!(d.inner.lock().pending.is_empty());
 }
+
+#[test]
+fn removed_servers_stop_downloading_and_empty_keys_never_purge_the_server() {
+    let data = Arc::new(bytes(1 << 20));
+    let (srv, _) = fake_plex(data.clone(), false, true);
+    let root = temp("servers");
+    let d = engine(&root, plenty);
+    d.enqueue(&srv, &ep("101"));
+    wait(&d, |s| s[0].state == State::Downloading && s[0].bytes > 0);
+    d.set_servers(&[]);
+    wait(&d, |s| s[0].state == State::Queued);
+    until(|| d.inner.lock().active.is_none());
+    assert!(d.inner.lock().servers.is_empty());
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(d.snapshot()[0].state, State::Queued, "a queue without its server stays put");
+    d.set_servers(std::slice::from_ref(&srv));
+    wait(&d, |s| s[0].state == State::Done);
+
+    let blank = Entry { state: State::Paused, ..Entry::new("srv1", &ep("")) };
+    d.inner.update(|s| s.entries.push(blank));
+    d.remove("srv1", "");
+    until(|| d.inner.lock().entries.len() == 1);
+    assert!(d.local("srv1", "101").is_some_and(|l| l.file.exists()), "the server folder survives an empty key");
+    drop(d);
+    let _ = std::fs::remove_dir_all(root);
+}

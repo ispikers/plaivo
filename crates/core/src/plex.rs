@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
-#[cfg(not(target_os = "android"))]
-use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::{first, jellyfin, join, store};
 
@@ -209,6 +207,17 @@ pub struct Marker {
     pub end_time_offset: u64,
 }
 
+impl Marker {
+    pub fn skip_label(&self) -> Option<&'static str> {
+        match self.kind.as_str() {
+            "intro" => Some("Skip Intro"),
+            "credits" => Some("Skip Credits"),
+            "commercial" => Some("Skip Ad"),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct OnDeck {
@@ -368,10 +377,7 @@ pub fn fmt_duration(ms: u64) -> String {
 
 impl Client {
     pub fn new(client_id: String) -> Self {
-        let config = ureq::Agent::config_builder().timeout_connect(Some(Duration::from_secs(5))).timeout_global(Some(Duration::from_secs(30))).http_status_as_error(true);
-        #[cfg(not(target_os = "android"))]
-        let config = config.tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build());
-        let agent = config.build().into();
+        let agent = crate::http().timeout_connect(Some(Duration::from_secs(5))).timeout_global(Some(Duration::from_secs(30))).http_status_as_error(true).build().into();
         Self { agent, client_id: client_id.into() }
     }
 
@@ -651,6 +657,15 @@ impl Server {
             return jellyfin::media_url(self, key);
         }
         format!("{}{key}?X-Plex-Token={}", self.uri, self.token)
+    }
+
+    pub fn stream_url(&self, c: &Client, key: &str, media: &Media, kbps: u32, force_transcode: bool) -> (String, Option<(&'static Quality, String)>) {
+        let transcode = if force_transcode { Some(Quality::find(kbps).unwrap_or(&QUALITIES[0])) } else { Quality::find(kbps).filter(|q| !q.covers(media)) };
+        let Some(q) = transcode else { return (media.part.first().map(|p| self.media_url(&p.key)).unwrap_or_default(), None) };
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let session = format!("plaivo-{nanos:x}");
+        log::info!("transcoding {key} at {} kbps", q.kbps);
+        (self.transcode_url(c, key, media, q, &session), Some((q, session)))
     }
 
     pub fn transcode_url(&self, c: &Client, key: &str, media: &Media, q: &Quality, session: &str) -> String {

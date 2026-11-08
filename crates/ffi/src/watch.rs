@@ -208,6 +208,7 @@ impl Plaivo {
         let relays = if relay.is_empty() { Relays::public() } else { Relays::custom(&relay).ok_or("The custom relay address isn't valid")? };
         let listener = self.watch_listener.get().cloned().ok_or("Watch Together isn't ready")?;
         let mut slot = self.watch.lock().unwrap();
+        let mut replaced = None;
         if slot.as_ref().is_none_or(|s| s.name != name || s.relay != relay) {
             let old = slot.take();
             drop(slot);
@@ -216,11 +217,13 @@ impl Plaivo {
             let shared = state.clone();
             let wt = WatchTogether::new(&name, CLIENT, relays, move |u| deliver(&*listener, &shared, u)).map_err(|e| format!("Watch Together: {}", e.code))?;
             slot = self.watch.lock().unwrap();
-            *slot = Some(Session { wt, name, relay, state });
+            replaced = slot.replace(Session { wt, name, relay, state });
         }
         if let Some(s) = slot.as_ref() {
             f(&s.wt);
         }
+        drop(slot);
+        drop(replaced);
         Ok(())
     }
 

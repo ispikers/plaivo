@@ -1,8 +1,6 @@
 use super::protocol::valid_text;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(not(target_os = "android"))]
-use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 pub const ALPHABET: &str = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 pub const LIST_URL: &str = "https://openwatch.party/relays.json";
@@ -91,10 +89,8 @@ fn valid_url(url: &str, allow_ws: bool) -> bool {
 }
 
 pub fn fetch_list() -> Option<Vec<Relay>> {
-    let config = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(5))).max_redirects(0);
-    #[cfg(not(target_os = "android"))]
-    let config = config.tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build());
-    let agent: ureq::Agent = config.build().into();
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| crate::http().timeout_global(Some(std::time::Duration::from_secs(5))).max_redirects(0).build().into());
     let mut resp = agent.get(LIST_URL).call().ok().filter(|r| r.status() == 200)?;
     let text = resp.body_mut().with_config().limit(65536).read_to_string().ok()?;
     parse_list(&serde_json::from_str(&text).ok()?)

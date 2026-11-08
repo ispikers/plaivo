@@ -8,7 +8,7 @@ pub mod library;
 mod licenses;
 mod player;
 pub mod services;
-mod settings;
+pub mod settings;
 mod shell;
 pub mod theme;
 mod watch;

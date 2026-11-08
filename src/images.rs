@@ -84,13 +84,18 @@ pub fn spawn_workers(q: Arc<Queue>, c: Client, done: impl Fn(String, Option<Arc<
 pub struct Lru {
     map: HashMap<String, (Arc<RenderImage>, u64, usize)>,
     tick: u64,
+    frame: u64,
     bytes: usize,
     budget: usize,
 }
 
 impl Lru {
     pub fn new(budget: usize) -> Self {
-        Self { map: HashMap::new(), tick: 0, bytes: 0, budget }
+        Self { map: HashMap::new(), tick: 0, frame: 0, bytes: 0, budget }
+    }
+
+    pub fn start_frame(&mut self) {
+        self.frame = self.tick;
     }
 
     pub fn contains(&self, key: &str) -> bool {
@@ -120,13 +125,15 @@ impl Lru {
 
     pub fn set_budget(&mut self, budget: usize) -> Vec<Arc<RenderImage>> {
         self.budget = budget;
+        self.start_frame();
         self.evict()
     }
 
+    // Images drawn since the frame started stay even over budget, or on-screen art would be evicted and re-requested forever.
     fn evict(&mut self) -> Vec<Arc<RenderImage>> {
         let mut evicted = Vec::new();
-        while self.bytes > self.budget && self.map.len() > 1 {
-            let oldest = self.map.iter().min_by_key(|e| e.1.1).map(|(k, _)| k.clone()).unwrap();
+        while self.bytes > self.budget {
+            let Some(oldest) = self.map.iter().filter(|e| e.1.1 <= self.frame).min_by_key(|e| e.1.1).map(|(k, _)| k.clone()) else { break };
             let (img, _, cost) = self.map.remove(&oldest).unwrap();
             self.bytes -= cost;
             evicted.push(img);
@@ -154,12 +161,26 @@ mod tests {
         assert!(lru.insert("a".into(), img(10)).is_empty());
         assert!(lru.insert("b".into(), img(10)).is_empty());
         assert!(lru.get("a").is_some());
+        lru.start_frame();
         assert_eq!(lru.insert("c".into(), img(10)).len(), 1);
         assert!(lru.get("b").is_none());
         assert!(lru.get("a").is_some() && lru.get("c").is_some());
         assert_eq!(lru.set_budget(10 * 10 * 4).len(), 1);
         assert!(lru.get("c").is_some() && !lru.contains("a"));
         assert!(lru.set_budget(10 * 10 * 4 * 2).is_empty());
+    }
+
+    #[test]
+    fn images_drawn_this_frame_survive_over_budget() {
+        let mut lru = Lru::new(10 * 10 * 4);
+        lru.insert("a".into(), img(10));
+        lru.start_frame();
+        assert!(lru.get("a").is_some());
+        assert!(lru.insert("b".into(), img(10)).is_empty());
+        lru.start_frame();
+        assert!(lru.get("b").is_some());
+        assert_eq!(lru.insert("c".into(), img(10)).len(), 1);
+        assert!(!lru.contains("a") && lru.contains("b"));
     }
 
     #[test]

@@ -5,11 +5,11 @@ use crate::settings::{Scale, SkipMode};
 use crate::ui::theme::{self, Icon};
 use crate::video_host::{self, Region};
 use crate::downloads::Local;
-use crate::ui::services::play_state;
+use crate::ui::settings::quality_label;
 use crate::{mpv, shaders, store};
 use plaivo_core::trackers::{self, PlayState};
 use futures::StreamExt;
-use gpui::{Context, ScrollHandle, SharedString, Task};
+use gpui::{Context, ScrollStrategy, SharedString, Task, UniformListScrollHandle};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,6 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CONTROLS_FOR: Duration = Duration::from_secs(3);
 const HINT_FOR: Duration = Duration::from_millis(1200);
+const QUIT_REPORT_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Deserialize)]
 struct MpvTrack {
@@ -92,6 +93,7 @@ pub struct Player {
     local: bool,
     pub paused: bool,
     last_report: Option<Instant>,
+    stop_sent: bool,
     pub tracker: Option<trackers::Media>,
     external_subs: Vec<([String; 3], bool)>,
     pub title: SharedString,
@@ -99,7 +101,7 @@ pub struct Player {
     pub crumbs: Vec<Crumb>,
     pub queue: Vec<Card>,
     queue_show: String,
-    pub queue_scroll: ScrollHandle,
+    pub queue_scroll: UniformListScrollHandle,
     pub buffering: bool,
     pub volume: f64,
     pub muted: bool,
@@ -112,6 +114,8 @@ pub struct Player {
     pub info: Vec<(SharedString, SharedString)>,
     pub devices: Vec<Choice>,
     hide_task: Option<Task<()>>,
+    controls_until: Option<Instant>,
+    play_gen: u64,
     pub hint: Option<(Icon, SharedString)>,
     hint_task: Option<Task<()>>,
     clock_task: Option<Task<()>>,
@@ -131,7 +135,7 @@ impl Plaivo {
         let conf_dir = store::config_dir().to_string_lossy().into_owned();
         let last_time = Arc::new(AtomicU64::new(0));
         let last_cache = Arc::new(AtomicU64::new(0));
-        let device = if self.settings.audio_device.is_empty() { "auto" } else { self.settings.audio_device.as_str() };
+        let device = self.audio_device();
         let [aspect, panscan] = self.settings.scale.mpv();
         let opts = [
             aspect,
@@ -203,6 +207,8 @@ impl Plaivo {
         if server == plex::DISCOVER_ID {
             return self.toast("This title isn't in any of your libraries.", cx);
         }
+        self.player.play_gen += 1;
+        let gen_ = self.player.play_gen;
         if self.playing() && self.player.key == key && self.player.server.as_ref().is_some_and(|s| s.id == server) {
             if self.player.paused {
                 self.toggle_pause();
@@ -226,7 +232,8 @@ impl Plaivo {
                 let languages = prefs::for_server(&c, &srv, token.as_deref(), &local);
                 (srv, it, languages, None)
             },
-            |this, (srv, r, languages, file), cx| match r {
+            move |this, (srv, r, languages, file), cx| match r {
+                _ if this.player.play_gen != gen_ => {}
                 Ok(it) => {
                     this.player.languages = languages;
                     if let Err(e) = this.start_item(srv, it, file, cx) {
@@ -265,6 +272,10 @@ impl Plaivo {
             Some(l) => (l.file.to_string_lossy().into_owned(), None),
             None => self.stream_url(&srv, &it.rating_key, &media),
         };
+        if self.playing() {
+            self.report("stopped", cx);
+            self.end_transcode(cx);
+        }
         self.player.server = Some(srv);
         self.launch(&url, &it.rating_key, &title, &subtitle, it.duration.unwrap_or(0) as f64 / 1000.0, resume.then_some(offset), subs, cx)?;
         self.player.local = local.is_some();
@@ -308,12 +319,7 @@ impl Plaivo {
             .marker
             .iter()
             .filter_map(|m| {
-                let label = match m.kind.as_str() {
-                    "intro" => "Skip Intro",
-                    "credits" => "Skip Credits",
-                    "commercial" => "Skip Ad",
-                    _ => return None,
-                };
+                let label = m.skip_label()?;
                 let mode = self.settings.skip_mode(&m.kind);
                 (mode != SkipMode::Off).then(|| Skip { label, start: m.start_time_offset as f64 / 1000.0, end: m.end_time_offset as f64 / 1000.0, auto: mode == SkipMode::Auto })
             })
@@ -354,7 +360,7 @@ impl Plaivo {
         if card.key.as_ref() == self.player.key {
             return;
         }
-        self.report("stopped");
+        self.report("stopped", cx);
         self.player.buffering = true;
         self.player.advancing = true;
         self.play(card.server.to_string(), card.key.to_string(), cx);
@@ -363,6 +369,7 @@ impl Plaivo {
     fn advance_failed(&mut self) {
         let p = &mut self.player;
         p.up_next_cancelled |= p.advancing;
+        p.stop_sent &= !p.advancing;
         p.advancing = false;
     }
 
@@ -435,21 +442,14 @@ impl Plaivo {
     }
 
     fn stream_url(&self, srv: &Server, key: &str, media: &Media) -> (String, Option<String>) {
-        match Quality::find(self.settings.quality).filter(|q| !q.covers(media)) {
-            Some(q) => {
-                let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-                let session = format!("plaivo-{nanos:x}");
-                log::info!("transcoding {key} at {} kbps", q.kbps);
-                (srv.transcode_url(&self.client, key, media, q, &session), Some(session))
-            }
-            None => (srv.media_url(&media.part[0].key), None),
-        }
+        let (url, transcode) = srv.stream_url(&self.client, key, media, self.settings.quality, false);
+        (url, transcode.map(|(_, session)| session))
     }
 
-    fn end_transcode(&mut self) {
+    fn end_transcode(&mut self, cx: &mut Context<Self>) {
         if let (Some(session), Some(srv)) = (self.player.transcode.take(), self.player.server.clone()) {
             let c = self.client.clone();
-            std::thread::spawn(move || srv.stop_transcode(&c, &session));
+            Self::detach(cx, move || srv.stop_transcode(&c, &session));
         }
     }
 
@@ -461,7 +461,7 @@ impl Plaivo {
         self.settings.save();
         let Some(srv) = self.player.server.clone().filter(|_| self.playing() && !self.player.local && !self.player.media.part.is_empty()) else { return };
         let (url, session) = self.stream_url(&srv, &self.player.key.clone(), &self.player.media.clone());
-        self.end_transcode();
+        self.end_transcode(cx);
         let p = &mut self.player;
         p.transcode = session;
         p.buffering = true;
@@ -500,6 +500,10 @@ impl Plaivo {
         self.mpv(|m| m.set(if audio { "audio-delay" } else { "sub-delay" }, &secs));
     }
 
+    fn audio_device(&self) -> &str {
+        if self.settings.audio_device.is_empty() { "auto" } else { &self.settings.audio_device }
+    }
+
     pub fn set_audio_device(&mut self, name: &str) {
         self.settings.audio_device = if name == "auto" { String::new() } else { name.to_owned() };
         self.settings.save();
@@ -525,7 +529,7 @@ impl Plaivo {
             Panel::Info => self.player.info = self.file_info(),
             Panel::Queue => {
                 if let Some(i) = self.queue_index() {
-                    self.player.queue_scroll.scroll_to_item(i);
+                    self.player.queue_scroll.scroll_to_item(i, ScrollStrategy::Top);
                 }
             }
             Panel::Output => {
@@ -535,7 +539,7 @@ impl Plaivo {
                     description: String,
                 }
                 let list: Vec<Device> = self.player.mpv.as_ref().and_then(|m| m.get("audio-device-list")).and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
-                let current = if self.settings.audio_device.is_empty() { "auto" } else { self.settings.audio_device.as_str() };
+                let current = self.audio_device();
                 self.player.devices = list
                     .into_iter()
                     .map(|d| Choice { selected: d.name == current, id: d.name.into(), label: d.description.into(), sub: "".into() })
@@ -545,6 +549,7 @@ impl Plaivo {
         }
         self.player.panel = Some(panel);
         self.wake_controls(cx);
+        cx.notify();
     }
 
     fn file_info(&self) -> Vec<(SharedString, SharedString)> {
@@ -554,7 +559,7 @@ impl Plaivo {
         let file = media.part.first().and_then(|p| p.file.rsplit(['/', '\\']).next()).unwrap_or_default().to_owned();
         let mode = match (&self.player.transcode, Quality::find(self.settings.quality)) {
             _ if self.player.local => "Downloaded".into(),
-            (Some(_), Some(q)) => format!("Transcode · {} · {}", q.label, plex::fmt_bitrate(q.kbps as u64)),
+            (Some(_), Some(_)) => format!("Transcode · {}", quality_label(self.settings.quality)),
             _ => "Direct play".into(),
         };
         let fps = get("container-fps").parse::<f64>().map(|f| format!("{f:.3} fps").replace(".000", "")).unwrap_or_default();
@@ -582,7 +587,6 @@ impl Plaivo {
     pub fn launch(&mut self, url: &str, key: &str, title: &str, subtitle: &str, duration: f64, start_at: Option<f64>, subs: Vec<([String; 3], bool)>, cx: &mut Context<Self>) -> Result<(), String> {
         log::info!("launch '{title}' key={key} start={start_at:?} subs={}", subs.len());
         self.ensure_player(cx)?;
-        self.end_transcode();
         let p = &mut self.player;
         p.active = true;
         p.key = key.to_owned();
@@ -602,6 +606,7 @@ impl Plaivo {
         p.shader = self.settings.shader.clone();
         p.local = false;
         p.last_report = None;
+        p.stop_sent = false;
         p.tracker = None;
         p.external_subs = subs;
         p.title = title.to_owned().into();
@@ -635,18 +640,42 @@ impl Plaivo {
     }
 
     pub fn wake_controls(&mut self, cx: &mut Context<Self>) {
-        self.player.controls = true;
-        self.player.hide_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(CONTROLS_FOR).await;
-            this.update(cx, |this, cx| {
-                if !this.player.paused && this.player.panel.is_none() {
-                    this.player.controls = false;
-                    cx.notify();
+        let p = &mut self.player;
+        p.controls_until = Some(Instant::now() + CONTROLS_FOR);
+        if p.controls && p.hide_task.is_some() {
+            return;
+        }
+        p.controls = true;
+        p.hide_task = Some(cx.spawn(async move |this, cx| {
+            let mut wait = CONTROLS_FOR;
+            loop {
+                cx.background_executor().timer(wait).await;
+                match this.update(cx, |this, cx| this.hide_controls(cx)) {
+                    Ok(Some(left)) => wait = left,
+                    _ => break,
                 }
-            })
-            .ok();
+            }
         }));
         cx.notify();
+    }
+
+    fn hide_controls(&mut self, cx: &mut Context<Self>) -> Option<Duration> {
+        let p = &mut self.player;
+        let left = p.controls_until.map_or(Duration::ZERO, |t| t.saturating_duration_since(Instant::now()));
+        if !left.is_zero() {
+            return Some(left);
+        }
+        if p.paused || p.panel.is_some() {
+            return Some(CONTROLS_FOR);
+        }
+        p.controls = false;
+        cx.notify();
+        None
+    }
+
+    pub fn controls_shown(&self) -> bool {
+        let p = &self.player;
+        self.page == Page::Player && (p.controls || p.paused || p.panel.is_some())
     }
 
     fn show_cursor(&mut self) {
@@ -696,83 +725,102 @@ impl Plaivo {
             host.set_region(None);
         }
         self.wake_controls(cx);
+        cx.notify();
     }
 
     pub fn playing(&self) -> bool {
         self.player.active
     }
 
-    fn report(&mut self, state: &str) {
-        let Some(srv) = self.player.server.clone() else { return };
-        if !self.playing() || self.player.key.is_empty() {
-            return;
+    fn report(&mut self, state: &str, cx: &mut Context<Self>) {
+        if let Some(job) = self.report_job(state, true) {
+            Self::detach(cx, job);
+        }
+    }
+
+    // Quit can't wait on a dead server: local files skip the network, streams get a short grace period.
+    pub fn report_stopped_blocking(&mut self) {
+        let Some(job) = self.report_job("stopped", !self.player.local) else { return };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            job();
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(QUIT_REPORT_WAIT);
+    }
+
+    fn report_job(&mut self, state: &str, network: bool) -> Option<impl FnOnce() + Send + 'static> {
+        let srv = self.player.server.clone()?;
+        if !self.playing() || self.player.key.is_empty() || self.player.stop_sent {
+            return None;
         }
         let c = self.client.clone();
         let p = &mut self.player;
         p.last_report = Some(Instant::now());
+        p.stop_sent = state == "stopped";
         let offline = self.downloads.clone().filter(|_| p.local);
         let (key, state, t, d, session) = (p.key.clone(), state.to_owned(), (p.time * 1000.0) as u64, (p.duration * 1000.0) as u64, p.transcode.clone());
-        if let Some(m) = &p.tracker {
-            self.services.trackers.on_progress(m, play_state(&state), t, d);
+        if let Some(m) = &p.tracker
+            && let Some(s) = PlayState::parse(&state)
+        {
+            self.services.trackers.on_progress(m, s, t, d);
         }
-        std::thread::spawn(move || {
-            let synced = srv.timeline(&c, &key, &state, t, d, session.as_deref());
+        Some(move || {
+            let synced = network && srv.timeline(&c, &key, &state, t, d, session.as_deref());
             if let Some(downloads) = offline.filter(|_| state == "stopped" || !synced) {
                 downloads.record_progress(&srv.id, &key, &state, t, d, synced);
             }
-        });
-    }
-
-    pub fn report_stopped_blocking(&self) {
-        let p = &self.player;
-        if p.active
-            && !p.key.is_empty()
-            && let Some(srv) = &p.server
-        {
-            let (t, d) = ((p.time * 1000.0) as u64, (p.duration * 1000.0) as u64);
-            if let Some(m) = &p.tracker {
-                self.services.trackers.on_progress(m, PlayState::Stopped, t, d);
-            }
-            let synced = srv.timeline(&self.client, &p.key, "stopped", t, d, p.transcode.as_deref());
-            if let Some(downloads) = self.downloads.as_ref().filter(|_| p.local) {
-                downloads.record_progress(&srv.id, &p.key, "stopped", t, d, synced);
-            }
-        }
+        })
     }
 
     fn on_mpv(&mut self, e: mpv::Event, cx: &mut Context<Self>) {
-        match e {
+        let shown = |this: &Self| (this.player.time as u64, this.active_skip().is_some());
+        let before = shown(self);
+        let notify = match e {
             mpv::Event::Time(t) => {
                 self.player.time = t;
                 if self.player.last_report.is_none_or(|r| r.elapsed() > Duration::from_secs(10)) {
                     let state = if self.player.paused { "paused" } else { "playing" };
-                    self.report(state);
+                    self.report(state, cx);
                 }
                 self.watch_feed(false);
                 self.auto_skip(cx);
                 if self.up_next().is_some_and(|(_, left)| left <= 0.0) {
                     self.play_up_next(cx);
                 }
+                shown(self) != before
             }
             mpv::Event::Duration(d) => {
                 self.player.duration = d;
                 self.watch_feed(true);
+                true
             }
-            mpv::Event::Cached(t) => self.player.cached = t,
+            mpv::Event::Cached(t) => {
+                self.player.cached = t;
+                self.controls_shown()
+            }
             mpv::Event::Pause(p) => {
                 self.player.paused = p;
-                self.report(if p { "paused" } else { "playing" });
+                self.report(if p { "paused" } else { "playing" }, cx);
                 self.watch_feed(true);
                 if !p {
                     self.wake_controls(cx);
                 }
+                true
             }
             mpv::Event::Buffering(b) => {
                 self.player.buffering = b;
                 self.watch_feed(true);
+                true
             }
-            mpv::Event::Volume(v) => self.player.volume = v,
-            mpv::Event::Mute(m) => self.player.muted = m,
+            mpv::Event::Volume(v) => {
+                self.player.volume = v;
+                true
+            }
+            mpv::Event::Mute(m) => {
+                self.player.muted = m;
+                true
+            }
             mpv::Event::Loaded => {
                 self.player.buffering = false;
                 if let Some(mpv) = &self.player.mpv {
@@ -781,12 +829,17 @@ impl Plaivo {
                     }
                 }
                 self.auto_tracks();
+                true
             }
-            mpv::Event::Tracks => self.refresh_tracks(),
+            mpv::Event::Tracks => {
+                self.refresh_tracks();
+                true
+            }
             mpv::Event::Started => {
                 self.player.video_ready = true;
                 self.sync_shader(cx);
                 self.watch_feed(true);
+                true
             }
             mpv::Event::Ended { eof, error } => {
                 log::info!("playback ended eof={eof} error={error:?}");
@@ -799,9 +852,12 @@ impl Plaivo {
                         None => self.stop_playback(cx),
                     }
                 }
+                true
             }
+        };
+        if notify {
+            cx.notify();
         }
-        cx.notify();
     }
 
     fn refresh_tracks(&mut self) {
@@ -840,8 +896,8 @@ impl Plaivo {
         log::info!("stop playback at {:.1}s / {:.1}s", self.player.time, self.player.duration);
         self.trim_images(false, cx);
         self.show_cursor();
-        self.report("stopped");
-        self.end_transcode();
+        self.report("stopped", cx);
+        self.end_transcode(cx);
         let p = &mut self.player;
         p.active = false;
         p.key.clear();

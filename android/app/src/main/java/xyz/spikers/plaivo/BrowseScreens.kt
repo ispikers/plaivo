@@ -24,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,14 +75,20 @@ fun LibraryScreen(library: Section, play: (MediaCard) -> Unit) {
     var cards by remember(library) { mutableStateOf<List<MediaCard>>(emptyList()) }
     var total by remember(library) { mutableLongStateOf(-1L) }
     var loading by remember(library) { mutableStateOf(false) }
+    var fetched by remember(library) { mutableIntStateOf(0) }
     var error by remember(library) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     fun more() {
-        if (loading || (total >= 0 && cards.size >= total)) return
+        if (loading || (total >= 0 && fetched >= total)) return
         loading = true
         scope.launch {
-            io { runCatching { core.libraryPage(library.server, library.key, cards.size.toULong(), PAGE) } }
-                .onSuccess { cards = cards + it.cards; total = it.total.toLong(); error = null }
+            io { runCatching { core.libraryPage(library.server, library.key, fetched.toULong(), PAGE) } }
+                .onSuccess { page ->
+                    cards = (cards + page.cards).distinctBy { it.key }
+                    fetched += page.cards.size
+                    total = page.total.toLong()
+                    error = null
+                }
                 .onFailure { error = it.message }
             loading = false
         }

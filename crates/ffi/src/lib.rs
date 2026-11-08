@@ -1,8 +1,8 @@
 use plaivo_core::downloads::{Downloads, State};
-use plaivo_core::plex::{Client, Ctx, Item, QUALITIES, Quality, Server, Source, fmt_bitrate, resolve_playable};
+use plaivo_core::plex::{Client, Ctx, Item, QUALITIES, Server, Source, fmt_bitrate, resolve_playable};
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{SUBTITLE_COLORS, Scale, Settings, SkipMode, library_key};
-use plaivo_core::trackers::{self, Ids, Media, PlayState, Poll, Service, Status, Trackers, ids_from_provider_ids};
+use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
 use plaivo_core::{Account, first, jellyfin, join, store};
 use qrcodegen::{QrCode, QrCodeEcc};
 use std::collections::HashMap;
@@ -359,7 +359,6 @@ pub struct Plaivo {
     downloads: OnceLock<Downloads>,
     trackers: Trackers,
     tracked: Mutex<HashMap<ItemKey, (Media, Option<String>)>>,
-    last_show: Mutex<Option<(ItemKey, Ids)>>,
     watch: Mutex<Option<watch::Session>>,
     watch_listener: OnceLock<Arc<dyn watch::WatchListener>>,
 }
@@ -417,6 +416,7 @@ impl Plaivo {
         let account = Account::load();
         let settings = Settings::load();
         apply_log_level(&settings);
+        std::thread::spawn(|| store::prune_cache(plaivo_core::DISK_CACHE_BYTES));
         let trackers = Trackers::start();
         trackers.set_watched_threshold(90.0);
         Arc::new(Self {
@@ -426,7 +426,6 @@ impl Plaivo {
             downloads: OnceLock::new(),
             trackers,
             tracked: Mutex::new(HashMap::new()),
-            last_show: Mutex::new(None),
             watch: Mutex::new(None),
             watch_listener: OnceLock::new(),
         })
@@ -451,15 +450,10 @@ impl Plaivo {
     }
 
     pub fn sign_out(&self) {
-        let mut account = self.account.lock().unwrap();
-        account.token = None;
-        account.servers.clear();
-        account.save();
-        prefs::forget();
-        let mut settings = self.settings.lock().unwrap();
-        settings.home_server.clear();
-        settings.recent_searches.clear();
-        settings.save();
+        plaivo_core::sign_out(&mut self.account.lock().unwrap(), &mut self.settings.lock().unwrap());
+        self.tracked.lock().unwrap().clear();
+        self.watch_leave();
+        self.sync_download_servers();
     }
 
     pub fn jellyfin_servers(&self) -> Vec<JellyfinServer> {
@@ -471,6 +465,8 @@ impl Plaivo {
         let mut account = self.account.lock().unwrap();
         account.jellyfin.retain(|s| s.id != id);
         account.save();
+        drop(account);
+        self.sync_download_servers();
     }
 
     pub fn jellyfin_probe(&self, address: String) -> R<JellyfinProbe> {
@@ -547,9 +543,16 @@ impl Plaivo {
     pub fn refresh_servers(&self) -> R<Vec<ServerInfo>> {
         let Some(token) = self.account.lock().unwrap().token.clone() else { return Ok(self.servers()) };
         let resources = self.client.servers(&token)?;
+        let previous = self.account.lock().unwrap().servers.clone();
         let connected: Vec<Server> = std::thread::scope(|s| {
-            let probes: Vec<_> = resources.iter().map(|r| s.spawn(|| self.client.connect(r, &token))).collect();
-            probes.into_iter().filter_map(|p| p.join().ok()?.inspect_err(|e| log::warn!("{e}")).ok()).collect()
+            let probes: Vec<_> = resources.iter().map(|r| (r, s.spawn(|| self.client.connect(r, &token)))).collect();
+            probes
+                .into_iter()
+                .filter_map(|(r, p)| {
+                    let probed = p.join().unwrap_or_else(|_| Err("probe panicked".into()));
+                    probed.inspect_err(|e| log::warn!("{e}")).ok().or_else(|| previous.iter().find(|s| s.id == r.client_identifier).cloned())
+                })
+                .collect()
         });
         let mut account = self.account.lock().unwrap();
         account.servers = connected;
@@ -588,7 +591,7 @@ impl Plaivo {
 
     pub fn library_page(&self, server_id: String, key: String, start: u64, size: u64) -> R<LibraryPage> {
         let srv = self.server(&server_id)?;
-        let (items, total) = srv.section_items(&Ctx::new(self.client.clone(), Source::Network), &key, start as usize, size as usize, "titleSort")?;
+        let (items, total) = srv.section_items(&Ctx::new(self.client.clone(), Source::Live), &key, start as usize, size as usize, "titleSort")?;
         Ok(LibraryPage { cards: items.iter().map(|it| card(&srv, it, false)).collect(), total: total as u64 })
     }
 
@@ -618,18 +621,7 @@ impl Plaivo {
         let it = resolve_playable(&srv, &Ctx::new(self.client.clone(), Source::Live), &key)?;
         let part = it.media.first().and_then(|m| m.part.first()).ok_or("This item has no playable media")?;
         let media = &it.media[0];
-        let transcode = if force_transcode { Some(Quality::find(quality_kbps).unwrap_or(&QUALITIES[0])) } else { Quality::find(quality_kbps).filter(|q| !q.covers(media)) };
-        let session = transcode.map(|_| {
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-            format!("plaivo-{nanos:x}")
-        });
-        let url = match (transcode, &session) {
-            (Some(q), Some(s)) => {
-                log::info!("transcoding {} at {} kbps", it.rating_key, q.kbps);
-                srv.transcode_url(&self.client, &it.rating_key, media, q, s)
-            }
-            _ => srv.media_url(&part.key),
-        };
+        let (url, transcode) = srv.stream_url(&self.client, &it.rating_key, media, quality_kbps, force_transcode);
         let subtitles = part
             .stream
             .iter()
@@ -639,9 +631,9 @@ impl Plaivo {
         let local = self.settings.lock().unwrap().languages();
         let token = self.account.lock().unwrap().token.clone();
         let languages = prefs::for_server(&self.client, &srv, token.as_deref(), &local);
-        let transcode_label = transcode.map(|q| format!("{} · {}", q.label, fmt_bitrate(q.kbps as u64))).unwrap_or_default();
+        let transcode_label = transcode.as_ref().map(|(q, _)| format!("{} · {}", q.label, fmt_bitrate(q.kbps as u64))).unwrap_or_default();
         let file = part.file.rsplit(['/', '\\']).next().unwrap_or_default().to_owned();
-        Ok(self.playback_for(&srv.id, &it, url, file, subtitles, session, transcode_label, languages))
+        Ok(self.playback_for(&srv.id, &it, url, file, subtitles, transcode.map(|(_, s)| s), transcode_label, languages))
     }
 
     pub fn account_languages(&self) -> R<Option<LanguagePrefs>> {
@@ -659,7 +651,7 @@ impl Plaivo {
     }
 
     pub fn queue(&self, server_id: String, show_key: String) -> R<Vec<Card>> {
-        let online = self.server(&server_id).and_then(|srv| Ok(srv.all_episodes(&Ctx::new(self.client.clone(), Source::Network), &show_key)?.iter().map(|it| card(&srv, it, true)).collect()));
+        let online = self.server(&server_id).and_then(|srv| Ok(srv.all_episodes(&Ctx::new(self.client.clone(), Source::Live), &show_key)?.iter().map(|it| card(&srv, it, true)).collect()));
         let Some(d) = self.downloads.get().filter(|_| online.is_err()) else { return online };
         let mut episodes: Vec<Item> = d.library().into_iter().filter(|(s, it)| *s == server_id && it.grandparent_rating_key == show_key).map(|(_, it)| it).collect();
         episodes.sort_by_key(|it| (it.parent_index, it.index));
@@ -673,7 +665,7 @@ impl Plaivo {
     }
 
     pub fn report(&self, server_id: String, key: String, state: String, time_ms: u64, duration_ms: u64, transcode_session: Option<String>) {
-        if let Some(state) = play_state(&state) {
+        if let Some(state) = PlayState::parse(&state) {
             self.scrobble(&server_id, &key, state, time_ms, duration_ms);
         }
         let synced = self.server(&server_id).is_ok_and(|srv| srv.timeline(&self.client, &key, &state, time_ms, duration_ms, transcode_session.as_deref()));
@@ -849,28 +841,6 @@ fn qr(text: &str) -> R<(u32, Vec<bool>)> {
     Ok((size as u32, (0..size).flat_map(|y| (0..size).map(move |x| (x, y))).map(|(x, y)| qr.get_module(x, y)).collect()))
 }
 
-fn play_state(state: &str) -> Option<PlayState> {
-    match state {
-        "playing" => Some(PlayState::Playing),
-        "paused" => Some(PlayState::Paused),
-        "stopped" => Some(PlayState::Stopped),
-        _ => None,
-    }
-}
-
-fn guid_ids(it: &Item) -> Ids {
-    ids_from_provider_ids(it.guids.iter().filter_map(|g| g.id.split_once("://")))
-}
-
-fn tracker_media(it: &Item) -> Option<Media> {
-    let index = |i: Option<i64>| i.and_then(|i| u32::try_from(i).ok());
-    match it.kind.as_str() {
-        "movie" => Some(Media { movie: true, ids: guid_ids(it), ..Default::default() }),
-        "episode" => Some(Media { ids: guid_ids(it), season: index(it.parent_index), episode: index(it.index), ..Default::default() }),
-        _ => None,
-    }
-}
-
 fn apply_log_level(settings: &Settings) {
     log::set_max_level(if settings.debug_logging { log::LevelFilter::Debug } else { log::LevelFilter::Info });
 }
@@ -900,25 +870,12 @@ impl Plaivo {
     fn tracked_media(&self, id: &ItemKey) -> Option<Media> {
         let (mut media, show) = self.tracked.lock().unwrap().get(id)?.clone();
         if let Some(show) = show {
-            media.show_ids = self.show_ids(&id.0, &show).unwrap_or_default();
+            media.show_ids = self.server(&id.0).ok().and_then(|srv| self.trackers.show_ids(&self.client, &srv, self.downloads.get(), &show)).unwrap_or_default();
             if let Some(entry) = self.tracked.lock().unwrap().get_mut(id) {
                 *entry = (media.clone(), None);
             }
         }
         Some(media)
-    }
-
-    fn show_ids(&self, server: &str, show: &str) -> Option<Ids> {
-        let id = (server.to_owned(), show.to_owned());
-        if let Some((k, ids)) = &*self.last_show.lock().unwrap()
-            && *k == id
-        {
-            return Some(ids.clone());
-        }
-        let it = self.downloads.get().and_then(|d| d.item(server, show)).or_else(|| self.server(server).ok()?.metadata(&Ctx::new(self.client.clone(), Source::Network), show).ok());
-        let ids = guid_ids(&it?);
-        *self.last_show.lock().unwrap() = Some((id, ids.clone()));
-        Some(ids)
     }
 
     fn sync_download_servers(&self) {
@@ -965,18 +922,10 @@ impl Plaivo {
         let markers = it
             .marker
             .iter()
-            .filter_map(|m| {
-                let label = match m.kind.as_str() {
-                    "intro" => "Skip Intro",
-                    "credits" => "Skip Credits",
-                    "commercial" => "Skip Ad",
-                    _ => return None,
-                };
-                Some(SkipMarker { kind: m.kind.clone(), mode: settings.skip_mode(&m.kind), label: label.into(), start_ms: m.start_time_offset, end_ms: m.end_time_offset })
-            })
+            .filter_map(|m| Some(SkipMarker { kind: m.kind.clone(), mode: settings.skip_mode(&m.kind), label: m.skip_label()?.into(), start_ms: m.start_time_offset, end_ms: m.end_time_offset }))
             .collect();
         drop(settings);
-        if let Some(m) = tracker_media(it) {
+        if let Some(m) = Media::for_item(it) {
             let show = (!m.movie && !it.grandparent_rating_key.is_empty()).then(|| it.grandparent_rating_key.clone());
             self.tracked.lock().unwrap().insert((server.to_owned(), it.rating_key.clone()), (m, show));
         }
@@ -1090,31 +1039,8 @@ mod tests {
     }
 
     #[test]
-    fn tracker_media_maps_movies_and_episodes() {
-        use super::{Item, PlayState, play_state, tracker_media};
-        use plaivo_core::plex::Guid;
-        let guids = |ids: &[&str]| ids.iter().map(|id| Guid { id: (*id).into() }).collect();
-        let movie = Item { kind: "movie".into(), guids: guids(&["imdb://tt1", "tmdb://2", "local://x", "myanimelist://7", "plex://movie/1"]), ..Default::default() };
-        let m = tracker_media(&movie).unwrap();
-        assert!(m.movie && m.season.is_none() && m.order.is_none());
-        assert_eq!(m.ids.get("imdb").map(String::as_str), Some("tt1"));
-        assert_eq!(m.ids.get("tmdb").map(String::as_str), Some("2"));
-        assert_eq!(m.ids.get("mal").map(String::as_str), Some("7"));
-        assert!(!m.ids.contains_key("local") && !m.ids.contains_key("plex"));
-        let episode = Item { kind: "episode".into(), parent_index: Some(2), index: Some(5), guids: guids(&["tvdb://9"]), ..Default::default() };
-        let e = tracker_media(&episode).unwrap();
-        assert_eq!((e.movie, e.season, e.episode, e.ids.get("tvdb").map(String::as_str)), (false, Some(2), Some(5), Some("9")));
-        assert_eq!(tracker_media(&Item { kind: "episode".into(), index: Some(-1), ..Default::default() }).unwrap().episode, None);
-        assert!(tracker_media(&Item { kind: "clip".into(), ..Default::default() }).is_none());
-        assert_eq!(play_state("playing"), Some(PlayState::Playing));
-        assert_eq!(play_state("paused"), Some(PlayState::Paused));
-        assert_eq!(play_state("stopped"), Some(PlayState::Stopped));
-        assert_eq!(play_state("buffering"), None);
-    }
-
-    #[test]
-    fn show_ids_fall_back_once_then_track_until_stopped() {
-        use super::{Ids, Media, PlayState, Plaivo};
+    fn show_ids_fall_back_once_then_track_until_stopped_and_sign_out_forgets() {
+        use super::{Media, PlayState, Plaivo};
         let dir = std::env::temp_dir().join(format!("plaivo-ffi-shows-{}", std::process::id()));
         let core = Plaivo::new(dir.join("config").display().to_string(), dir.join("cache").display().to_string());
         let id = ("nowhere".to_owned(), "1".to_owned());
@@ -1122,12 +1048,13 @@ mod tests {
         core.tracked.lock().unwrap().insert(id.clone(), (episode.clone(), Some("show".into())));
         assert_eq!(core.tracked_media(&id), Some(episode.clone()));
         assert_eq!(core.tracked.lock().unwrap().get(&id).unwrap().1, None);
-        let shown: Ids = [("tvdb".to_owned(), "9".to_owned())].into();
-        *core.last_show.lock().unwrap() = Some((("nowhere".into(), "show".into()), shown.clone()));
-        core.tracked.lock().unwrap().insert(id.clone(), (episode.clone(), Some("show".into())));
-        assert_eq!(core.tracked_media(&id).unwrap().show_ids, shown);
         core.scrobble("nowhere", "1", PlayState::Stopped, 0, 1000);
         assert!(core.tracked.lock().unwrap().is_empty());
+        core.tracked.lock().unwrap().insert(id.clone(), (episode, None));
+        core.account.lock().unwrap().token = Some("t".into());
+        core.settings.lock().unwrap().home_server = "p1".into();
+        core.sign_out();
+        assert!(!core.signed_in() && core.settings().home_server.is_empty() && core.tracked.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

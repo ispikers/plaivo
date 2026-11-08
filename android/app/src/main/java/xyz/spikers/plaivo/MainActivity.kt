@@ -2,6 +2,7 @@ package xyz.spikers.plaivo
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
@@ -29,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -99,6 +101,7 @@ class MainActivity : ComponentActivity() {
 
 private const val POLL_MS = 2000L
 private const val RETRY_MS = 3000L
+private const val REDISCOVER_MS = 10 * 60 * 1000L
 
 @Composable
 private fun SignInScreen(onJellyfin: () -> Unit, onBack: (() -> Unit)?, onDone: () -> Unit) {
@@ -204,9 +207,14 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
         (screen as? Screen.Browse)?.let { if (it.library.server !in ids) screen = Screen.Home }
         scope.launch { libraries = io { core.libraries(false) } }
     }
+    var discoveredAt by remember { mutableLongStateOf(0L) }
     LaunchedEffect(refresh) {
         if (libraries.isEmpty()) libraries = io { core.libraries(true) }
-        io { runCatching { core.refreshServers() } }.onSuccess { servers = it }
+        if (serversLoaded && SystemClock.elapsedRealtime() - discoveredAt < REDISCOVER_MS) return@LaunchedEffect
+        io { runCatching { core.refreshServers() } }.onSuccess {
+            servers = it
+            discoveredAt = SystemClock.elapsedRealtime()
+        }
         serversLoaded = true
         libraries = io { core.libraries(false) }
     }
@@ -233,8 +241,10 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                         arranged,
                         onEdit = { change -> settings = editSettings(change) },
                         onSignOut = {
-                            core.signOut()
-                            onAccountChanged()
+                            scope.launch {
+                                io { core.signOut() }
+                                onAccountChanged()
+                            }
                         },
                         onPlexSignIn = onPlexSignIn,
                         onServersChanged = ::reloadServers,

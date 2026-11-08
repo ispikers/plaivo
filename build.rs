@@ -10,7 +10,6 @@ fn main() {
     copy_runtime_libs(&root, &out);
 }
 
-// Copies the runtime libraries in deps/<os>/ (libmpv) and the mpv shaders next to the built executable, so every profile runs as-is.
 fn copy_runtime_libs(root: &Path, out: &Path) {
     let os = match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("windows") => "windows",

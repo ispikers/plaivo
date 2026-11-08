@@ -9,6 +9,7 @@ pub mod watch_together;
 
 use plex::Server;
 use serde::{Deserialize, Serialize};
+use settings::Settings;
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct Account {
@@ -65,6 +66,30 @@ impl Account {
     pub fn has_servers(&self) -> bool {
         self.token.is_some() || !self.jellyfin.is_empty()
     }
+}
+
+pub const DISK_CACHE_BYTES: u64 = 768 << 20;
+
+pub fn sign_out(account: &mut Account, settings: &mut Settings) {
+    account.token = None;
+    account.servers.clear();
+    account.save();
+    prefs::forget();
+    settings.home_server.clear();
+    settings.recent_searches.clear();
+    settings.save();
+    std::thread::spawn(store::clear_cache);
+}
+
+#[cfg(not(target_os = "android"))]
+pub(crate) fn http() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
+    ureq::Agent::config_builder().tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build())
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn http() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    ureq::Agent::config_builder()
 }
 
 pub fn first<'a>(options: &[&'a str]) -> &'a str {

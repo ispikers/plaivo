@@ -401,10 +401,12 @@ fun SettingsScreen(
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 SettingsRow(Glyph.Server, s.name, listOf(s.user, s.address).filter { it.isNotEmpty() }.joinToString(" · "), Modifier.weight(1f))
                                 MoveButton(Glyph.Close, true) {
-                                    core.removeJellyfin(s.id)
-                                    jellyfin = core.jellyfinServers()
-                                    onServersChanged()
-                                    runCatching { addServerFocus.requestFocus() }
+                                    scope.launch {
+                                        io { core.removeJellyfin(s.id) }
+                                        jellyfin = core.jellyfinServers()
+                                        onServersChanged()
+                                        runCatching { addServerFocus.requestFocus() }
+                                    }
                                 }
                             }
                         }

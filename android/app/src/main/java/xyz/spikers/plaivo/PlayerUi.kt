@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
@@ -86,6 +87,7 @@ import uniffi.plaivo_ffi.WatchConnection
 private const val CONTROLS_FOR_MS = 3000L
 private const val HOLD_EVERY = 5
 private const val HINT_MS = 1200L
+private const val MINUTE_MS = 60_000L
 
 private enum class Panel(val title: String, val parent: Panel? = null) {
     Settings("Playback settings"),
@@ -105,6 +107,7 @@ fun PlayerScreen(player: PlayerActivity) {
     val exo = player.exo
     val p = player.playback
     val context = LocalContext.current
+    val timeFormat = remember(context) { DateFormat.getTimeFormat(context) }
     var position by remember { mutableLongStateOf(0L) }
     var buffered by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
@@ -131,7 +134,6 @@ fun PlayerScreen(player: PlayerActivity) {
             buffered = exo.bufferedPosition.coerceAtLeast(0)
             duration = exo.duration.takeIf { it > 0 } ?: (player.playback?.durationMs?.toLong() ?: 0L)
             paused = !exo.playWhenReady
-            now = System.currentTimeMillis()
             player.feedWatch()
             if (!paused) {
                 player.autoSkip(position)?.let { hint = Glyph.FastForward to it }
@@ -143,9 +145,20 @@ fun PlayerScreen(player: PlayerActivity) {
             delay(250)
         }
     }
-    val skip = p?.markers?.withIndex()?.firstOrNull { (i, m) ->
-        position >= m.startMs.toLong() && position < m.endMs.toLong() - 1000 && (m.mode == SkipMode.BUTTON || (m.mode == SkipMode.AUTO && (i in player.autoSkipped || player.watching())))
-    }?.value?.takeIf { upNext == null }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(MINUTE_MS - now % MINUTE_MS)
+        }
+    }
+    val skipState = remember {
+        derivedStateOf {
+            player.playback?.markers?.withIndex()?.firstOrNull { (i, m) ->
+                position >= m.startMs.toLong() && position < m.endMs.toLong() - 1000 && (m.mode == SkipMode.BUTTON || (m.mode == SkipMode.AUTO && (i in player.autoSkipped || player.watching())))
+            }?.value?.takeIf { upNext == null }
+        }
+    }
+    val skip = skipState.value
     val hideable = !paused && panel == null
     LaunchedEffect(controls, lastInput, hideable) {
         if (controls && hideable) {
@@ -262,10 +275,10 @@ fun PlayerScreen(player: PlayerActivity) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 24.dp), verticalAlignment = Alignment.Top) {
                     Column(Modifier.weight(1f)) {
                         Text(p?.title ?: "", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = white, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (!p?.subtitle.isNullOrEmpty()) Text(p?.subtitle ?: "", fontSize = 14.sp, color = white.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        p?.subtitle?.takeIf { it.isNotEmpty() }?.let { Text(it, fontSize = 14.sp, color = white.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
                     }
                     room?.let { WatchPill(it, Modifier.padding(end = 16.dp)) }
-                    Text(DateFormat.getTimeFormat(context).format(Date(now)), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = white)
+                    Text(timeFormat.format(Date(now)), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = white)
                 }
                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 40.dp, end = 40.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -284,8 +297,8 @@ fun PlayerScreen(player: PlayerActivity) {
                         if (episodic) Control(Glyph.SkipNext, enabled = next != null) { next?.let { player.play(it.server, it.key) } }
                         Control(Glyph.Stop) { player.finish() }
                         if (duration > 0) {
-                            val ends = now + ((duration - position) / player.speed).toLong()
-                            Text("Ends at ${DateFormat.getTimeFormat(context).format(Date(ends))}", fontSize = 13.sp, color = white.copy(alpha = 0.7f), modifier = Modifier.padding(start = 12.dp))
+                            val ends = System.currentTimeMillis() + ((duration - position) / player.speed).toLong()
+                            Text("Ends at ${timeFormat.format(Date(ends))}", fontSize = 13.sp, color = white.copy(alpha = 0.7f), modifier = Modifier.padding(start = 12.dp))
                         }
                         Spacer(Modifier.weight(1f))
                         Control(Glyph.Tune, selected = panel?.let { it == Panel.Settings || it.parent == Panel.Settings } == true) { panel = if (panel == Panel.Settings) null else Panel.Settings }

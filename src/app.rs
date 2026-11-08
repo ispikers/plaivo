@@ -52,8 +52,6 @@ pub enum Page {
     Player,
 }
 
-pub type SidebarGroup = (SharedString, Vec<(String, String, SharedString, bool)>);
-
 #[derive(Clone, PartialEq, Debug)]
 pub enum Nav {
     Home,
@@ -168,7 +166,7 @@ pub struct SectionInfo {
     pub id: String,
     pub server: String,
     pub key: String,
-    pub title: String,
+    pub title: SharedString,
     pub kind: String,
 }
 
@@ -263,7 +261,8 @@ pub struct Plaivo {
     pub detail_scroll: ScrollHandle,
     pub home_scroll: ScrollHandle,
     queue: Arc<images::Queue>,
-    lru: Lru,
+    pub lru: Lru,
+    image_key: String,
     requested: HashSet<String>,
     failed: HashSet<String>,
     pub player: Player,
@@ -367,8 +366,6 @@ fn title_rank(title: &str, q: &str) -> u8 {
     }
 }
 
-// Library hits (episodes folded into their show) ranked by title match then server score; Discover hits the
-// account already owns are dropped, the rest follow in Discover's own order.
 fn rank_search(q: &str, home: &str, local: Vec<(String, Vec<(Item, f64)>)>, discover: Vec<Item>) -> Vec<(String, Item)> {
     let mut seen = HashSet::new();
     let mut owned_guids = HashSet::new();
@@ -416,8 +413,33 @@ pub fn shape_size(shape: Shape, scale: f32, width: u32) -> (u32, u32) {
     }
 }
 
-fn image_key(t: &Thumb, (w, h): (u32, u32)) -> String {
-    format!("{}{}@{w}x{h}", t.server, t.path)
+fn image_key(buf: &mut String, t: &Thumb, (w, h): (u32, u32)) {
+    use std::fmt::Write;
+    buf.clear();
+    let _ = write!(buf, "{}{}@{w}x{h}", t.server, t.path);
+}
+
+pub fn fmt_resolution(r: &str) -> String {
+    match r.to_ascii_lowercase().as_str() {
+        "" => String::new(),
+        "4k" => "4K".into(),
+        r if r.chars().all(|c| c.is_ascii_digit()) => format!("{r}p"),
+        r if r.ends_with('p') => r.into(),
+        r => r.to_uppercase(),
+    }
+}
+
+pub fn poll_until<T>(attempt: &AtomicU64, current: u64, every: Duration, deadline: Instant, mut step: impl FnMut() -> Option<T>) -> Option<T> {
+    while Instant::now() < deadline {
+        std::thread::sleep(every);
+        if attempt.load(Ordering::SeqCst) != current {
+            return None;
+        }
+        if let Some(v) = step() {
+            return Some(v);
+        }
+    }
+    None
 }
 
 type ImageRx = futures::channel::mpsc::UnboundedReceiver<(String, Option<Arc<RenderImage>>)>;
@@ -515,6 +537,7 @@ impl Plaivo {
             home_scroll: ScrollHandle::new(),
             queue,
             lru: Lru::new(IMAGE_BUDGET),
+            image_key: String::new(),
             requested: HashSet::new(),
             failed: HashSet::new(),
             player: Player::default(),
@@ -558,9 +581,13 @@ impl Plaivo {
         .detach();
     }
 
+    pub fn detach(cx: &mut Context<Self>, job: impl FnOnce() + Send + 'static) {
+        cx.background_executor().spawn(async move { job() }).detach();
+    }
+
     pub fn with_downloads(&self, cx: &mut Context<Self>, f: impl FnOnce(&Downloads) + Send + 'static) {
         let Some(d) = self.downloads.clone() else { return };
-        cx.background_executor().spawn(async move { f(&d) }).detach();
+        Self::detach(cx, move || f(&d));
     }
 
     fn open_downloads(&mut self, cx: &mut Context<Self>) {
@@ -711,19 +738,22 @@ impl Plaivo {
     pub fn image(&mut self, thumb: &Option<Thumb>, shape: Shape) -> Option<Arc<RenderImage>> {
         let t = thumb.as_ref()?;
         let size = self.size_for(shape);
-        let key = image_key(t, size);
-        if let Some(img) = self.lru.get(&key) {
+        image_key(&mut self.image_key, t, size);
+        if let Some(img) = self.lru.get(&self.image_key) {
             return Some(img);
         }
         let local = (shape != Shape::Backdrop).then(|| self.downloads.as_ref()?.image(&t.server, &t.path)).flatten();
-        let key = if local.is_some() { key + LOCAL_IMAGE } else { key };
-        if self.requested.contains(&key) || self.failed.contains(&key) {
+        if local.is_some() {
+            self.image_key.push_str(LOCAL_IMAGE);
+        }
+        if self.requested.contains(&self.image_key) || self.failed.contains(&self.image_key) {
             return None;
         }
         let url = match &local {
             Some(file) => file.to_string_lossy().into_owned(),
             None => self.image_url(&t.server, &t.path, size)?,
         };
+        let key = self.image_key.clone();
         self.requested.insert(key.clone());
         if let Some(dropped) = self.queue.push(images::Job { key, url, local: local.is_some(), size }) {
             self.requested.remove(&dropped.key);
@@ -742,7 +772,7 @@ impl Plaivo {
             cx.drop_image(img, None);
         }
         self.failed.clear();
-        std::thread::spawn(store::clear_cache);
+        Self::detach(cx, store::clear_cache);
         self.toast("Image cache cleared", cx);
     }
 
@@ -765,7 +795,8 @@ impl Plaivo {
 
     fn image_settled(&self, thumb: &Option<Thumb>, shape: Shape) -> bool {
         thumb.as_ref().is_none_or(|t| {
-            let key = image_key(t, self.size_for(shape));
+            let mut key = String::new();
+            image_key(&mut key, t, self.size_for(shape));
             self.lru.contains(&key) || self.failed.contains(&key) || self.failed.contains(&(key + LOCAL_IMAGE))
         })
     }
@@ -826,14 +857,7 @@ impl Plaivo {
                 let pin = c.create_pin(true)?;
                 log::info!("sign-in: PIN {} created, waiting for browser approval", pin.id);
                 open_url(&c.auth_url(&pin.code));
-                let deadline = Instant::now() + Duration::from_secs(600);
-                while pin_gen.load(Ordering::SeqCst) == gen_ && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_secs(1));
-                    if let Some(t) = c.check_pin(pin.id)? {
-                        return Ok(Some(t));
-                    }
-                }
-                Ok(None)
+                poll_until(&pin_gen, gen_, Duration::from_secs(1), Instant::now() + Duration::from_secs(600), || c.check_pin(pin.id).transpose()).transpose()
             },
             move |this, r, cx| {
                 if this.pin_gen.load(Ordering::SeqCst) != gen_ {
@@ -870,14 +894,8 @@ impl Plaivo {
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
         log::info!("signing out and clearing caches");
         self.stop_playback(cx);
-        self.account.token = None;
-        self.account.servers.clear();
-        self.account.save();
-        crate::prefs::forget();
+        plaivo_core::sign_out(&mut self.account, &mut self.settings);
         self.watch.account_name = None;
-        self.settings.home_server.clear();
-        self.settings.recent_searches.clear();
-        self.settings.save();
         self.servers.clear();
         self.sections.clear();
         self.nav.clear();
@@ -892,7 +910,6 @@ impl Plaivo {
         for img in self.lru.drain() {
             cx.drop_image(img, None);
         }
-        std::thread::spawn(store::clear_cache);
         self.servers_changed(cx);
         if self.page != Page::Auth {
             self.nav = vec![Nav::Home];
@@ -1016,6 +1033,7 @@ impl Plaivo {
             return;
         }
         self.servers_error = None;
+        self.failed.clear();
         if list != self.account.servers {
             self.account.servers = list;
             self.account.save();
@@ -1067,24 +1085,23 @@ impl Plaivo {
             self.load(cx, move |c| srv.sections(c), move |this, r, _| match r {
                 Ok(dirs) => {
                     this.sections.retain(|x| x.server != id);
-                    this.sections.extend(dirs.into_iter().map(|d| SectionInfo { id: library_key(&id, &d.key), server: id.clone(), key: d.key, title: d.title, kind: d.kind }));
+                    this.sections.extend(dirs.into_iter().map(|d| SectionInfo { id: library_key(&id, &d.key), server: id.clone(), key: d.key, title: d.title.into(), kind: d.kind }));
                 }
                 Err(e) => log::warn!("sections for {id}: {e}"),
             });
         }
     }
 
-    pub fn sections_in_order(&self, hidden: bool) -> Vec<SidebarGroup> {
-        let home = self.home_server().map(|s| s.id).unwrap_or_default();
+    pub fn sections_in_order(&self, hidden: bool) -> Vec<(&str, Vec<&SectionInfo>)> {
+        let home = self.servers.iter().find(|s| s.id == self.settings.home_server).or(self.servers.first()).map(|s| s.id.as_str());
         let mut order: Vec<&Server> = self.servers.iter().collect();
-        order.sort_by_key(|s| s.id != home);
+        order.sort_by_key(|s| Some(s.id.as_str()) != home);
         order
             .into_iter()
             .map(|srv| {
                 let mut rows: Vec<&SectionInfo> = self.sections.iter().filter(|x| x.server == srv.id && (hidden || !self.settings.library_hidden(&x.id))).collect();
                 rows.sort_by_key(|x| self.settings.library_rank(&x.id));
-                let rows = rows.into_iter().map(|x| (x.server.clone(), x.key.clone(), SharedString::from(x.title.clone()), x.kind == "movie")).collect::<Vec<_>>();
-                (SharedString::from(srv.name.clone()), rows)
+                (srv.name.as_str(), rows)
             })
             .filter(|(_, rows)| !rows.is_empty())
             .collect()
@@ -1169,6 +1186,7 @@ impl Plaivo {
     pub fn load_home(&mut self, cx: &mut Context<Self>) {
         let Some(srv) = self.home_server() else { return };
         self.home_error = None;
+        self.failed.clear();
         if !self.home_ready {
             self.hero.clear();
             self.hubs.clear();
@@ -1295,7 +1313,7 @@ impl Plaivo {
         let title = self.sections.iter().find(|s| s.server == key.server && s.key == key.section).map(|s| s.title.clone()).unwrap_or_default();
         self.library = Some(match self.library_cache.iter().position(|l| l.key == key) {
             Some(i) => self.library_cache.remove(i),
-            None => Library { key, title: title.into(), items: vec![None; 48], pages: HashSet::new(), scroll: UniformListScrollHandle::new() },
+            None => Library { key, title, items: vec![None; 48], pages: HashSet::new(), scroll: UniformListScrollHandle::new() },
         });
         self.refresh_library_page(0, cx);
     }
@@ -1437,12 +1455,6 @@ impl Plaivo {
 
     fn apply_detail(&mut self, server: &str, it: Item, seasons: Vec<Item>, cx: &mut Context<Self>) {
         let media = it.media.first();
-        let resolution = media.map(|m| match m.video_resolution.as_str() {
-            "4k" => "4K".to_owned(),
-            "" => String::new(),
-            r if r.chars().all(|c| c.is_ascii_digit()) => format!("{r}p"),
-            r => r.to_uppercase(),
-        });
         let on_deck = it.on_deck.as_ref().and_then(|d| d.metadata.as_ref());
         let (mut play_key, mut play_label, progress) = match it.kind.as_str() {
             "show" => match on_deck {
@@ -1460,7 +1472,7 @@ impl Plaivo {
             it.content_rating.clone(),
             it.duration.filter(|_| it.kind != "show").map(plex::fmt_duration).unwrap_or_default(),
             it.child_count.filter(|_| it.kind == "show").map(|n| format!("{n} season{}", if n == 1 { "" } else { "s" })).unwrap_or_default(),
-            resolution.unwrap_or_default(),
+            media.map(|m| fmt_resolution(&m.video_resolution)).unwrap_or_default(),
             media.map(|m| m.video_dynamic_range.clone()).filter(|r| r != "SDR").unwrap_or_default(),
             it.audience_rating.map(|r| format!("★ {r:.1}")).unwrap_or_default(),
         ];
@@ -1566,6 +1578,31 @@ mod tests {
     fn word_prefix_beats_substring() {
         assert!(title_rank("The Dexter Files", "dex") < title_rank("Index", "dex"));
         assert_eq!(title_rank("Dexter", "DEXTER"), 0);
+    }
+
+    #[test]
+    fn resolutions_read_like_labels() {
+        assert_eq!(fmt_resolution("1080"), "1080p");
+        assert_eq!(fmt_resolution("720p"), "720p");
+        assert_eq!(fmt_resolution("4k"), "4K");
+        assert_eq!(fmt_resolution("sd"), "SD");
+        assert_eq!(fmt_resolution(""), "");
+    }
+
+    #[test]
+    fn polling_stops_on_a_result_a_cancel_or_the_deadline() {
+        let attempt = AtomicU64::new(1);
+        let later = || Instant::now() + Duration::from_secs(5);
+        let mut n = 0;
+        assert_eq!(
+            poll_until(&attempt, 1, Duration::ZERO, later(), || {
+                n += 1;
+                (n == 3).then_some(n)
+            }),
+            Some(3)
+        );
+        assert_eq!(poll_until(&attempt, 2, Duration::ZERO, later(), || Some(1)), None);
+        assert_eq!(poll_until(&attempt, 1, Duration::ZERO, Instant::now(), || Some(1)), None);
     }
 
     #[test]

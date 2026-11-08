@@ -92,7 +92,9 @@ pub fn prune_cache(max_bytes: u64) {
 }
 
 pub fn clear_cache() {
-    let _ = std::fs::remove_dir_all(cache_dir());
+    for kind in ["img", "meta"] {
+        let _ = std::fs::remove_dir_all(cache_dir().join(kind));
+    }
 }
 
 #[cfg(test)]

@@ -3,11 +3,13 @@ mod http;
 mod lists;
 mod trakt;
 
+use crate::downloads::Downloads;
+use crate::plex::{Client, Ctx, Item, Server, Source};
 use crate::store;
 use http::{Request, Response, send};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -40,15 +42,12 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-pub fn ids_from_provider_ids<'a>(ids: impl IntoIterator<Item = (&'a str, &'a str)>) -> Ids {
-    ids.into_iter()
-        .filter(|(_, v)| !v.is_empty())
-        .filter_map(|(k, v)| {
-            let k = k.to_ascii_lowercase();
-            let k = if k == "myanimelist" { "mal".to_owned() } else { k };
-            matches!(k.as_str(), "imdb" | "tmdb" | "tvdb" | "anidb" | "anilist" | "mal").then(|| (k, v.to_owned()))
-        })
-        .collect()
+const ID_KINDS: [&str; 6] = ["imdb", "tmdb", "tvdb", "anidb", "anilist", "mal"];
+
+fn item_ids(it: &Item) -> Ids {
+    let mut ids = ids_from_guids(it.guids.iter().map(|g| g.id.as_str()));
+    ids.retain(|k, _| ID_KINDS.contains(&k.as_str()));
+    ids
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -172,6 +171,28 @@ pub enum PlayState {
     Playing,
     Paused,
     Stopped,
+}
+
+impl PlayState {
+    pub fn parse(state: &str) -> Option<Self> {
+        match state {
+            "playing" => Some(Self::Playing),
+            "paused" => Some(Self::Paused),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+}
+
+impl Media {
+    pub fn for_item(it: &Item) -> Option<Self> {
+        let number = |n: Option<i64>| n.and_then(|n| u32::try_from(n).ok());
+        match it.kind.as_str() {
+            "movie" => Some(Media { movie: true, ids: item_ids(it), ..Media::default() }),
+            "episode" => Some(Media { ids: item_ids(it), season: number(it.parent_index), episode: number(it.index), ..Media::default() }),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -325,6 +346,7 @@ struct Shared {
     accounts: Accounts,
     session: Option<Session>,
     threshold: f64,
+    shows: HashMap<(String, String), Ids>,
 }
 
 struct Inner {
@@ -354,7 +376,7 @@ impl Trackers {
     fn detached(config: PathBuf, configured: [bool; 3]) -> (Self, Receiver<Job>) {
         let accounts = store::read_json(&config.join(ACCOUNTS_FILE)).unwrap_or_default();
         let (tx, rx) = channel();
-        let shared = Mutex::new(Shared { accounts, session: None, threshold: 90.0 });
+        let shared = Mutex::new(Shared { accounts, session: None, threshold: 90.0, shows: HashMap::new() });
         let queue = Mutex::new(Queue::load(config.join(QUEUE_FILE)));
         (Self(Arc::new(Inner { dir: config, configured, shared, queue, tx })), rx)
     }
@@ -440,6 +462,17 @@ impl Trackers {
             (Service::Mal | Service::Anilist, 403) => Poll::Failed(resp.json()["error"].as_str().unwrap_or("denied").to_owned()),
             _ => Poll::Pending,
         }
+    }
+
+    pub fn show_ids(&self, client: &Client, srv: &Server, downloads: Option<&Downloads>, show: &str) -> Option<Ids> {
+        let key = (srv.id.clone(), show.to_owned());
+        if let Some(ids) = self.0.lock().shows.get(&key) {
+            return Some(ids.clone());
+        }
+        let it = downloads.and_then(|d| d.item(&srv.id, show)).filter(|s| !s.guids.is_empty()).or_else(|| srv.metadata(&Ctx::new(client.clone(), Source::Network), show).ok())?;
+        let ids = item_ids(&it);
+        self.0.lock().shows.insert(key, ids.clone());
+        Some(ids)
     }
 
     pub fn on_progress(&self, media: &Media, state: PlayState, position_ms: u64, duration_ms: u64) {
@@ -637,8 +670,37 @@ mod tests {
         let plex = ids_from_guids(["imdb://tt0213338", "tmdb://30991", "tvdb://76885", "plex://show/5d9c", "local://1"]);
         assert_eq!(plex.get("tvdb").map(String::as_str), Some("76885"));
         assert_eq!(plex.get("imdb").map(String::as_str), Some("tt0213338"));
-        let jelly = ids_from_provider_ids([("Imdb", "tt0213338"), ("Tmdb", "30991"), ("Tvdb", "76885"), ("TvRage", "1"), ("AniList", "1"), ("Tvdb", "")]);
-        assert_eq!(jelly, ids(&[("imdb", "tt0213338"), ("tmdb", "30991"), ("tvdb", "76885"), ("anilist", "1")]));
+        let jelly = ids_from_guids(["Imdb://tt0213338", "tmdb://30991", "tvdb://76885", "tvrage://1", "AniList://1", "MyAnimeList://7", "tvdb://"]);
+        assert_eq!(jelly, ids(&[("imdb", "tt0213338"), ("tmdb", "30991"), ("tvdb", "76885"), ("anilist", "1"), ("mal", "7")]));
+    }
+
+    #[test]
+    fn media_for_movies_and_episodes() {
+        use crate::plex::Guid;
+        let guids = |ids: &[&str]| ids.iter().map(|id| Guid { id: (*id).into() }).collect();
+        let movie = Item { kind: "movie".into(), guids: guids(&["imdb://tt1", "tmdb://2", "local://x", "myanimelist://7", "plex://movie/1", "kitsu://3"]), ..Default::default() };
+        let m = Media::for_item(&movie).unwrap();
+        assert!(m.movie && m.season.is_none() && m.order.is_none());
+        assert_eq!(m.ids, ids(&[("imdb", "tt1"), ("tmdb", "2"), ("mal", "7")]));
+        let episode = Item { kind: "episode".into(), parent_index: Some(2), index: Some(5), guids: guids(&["tvdb://9"]), ..Default::default() };
+        let e = Media::for_item(&episode).unwrap();
+        assert_eq!((e.movie, e.season, e.episode, e.ids.get("tvdb").map(String::as_str)), (false, Some(2), Some(5), Some("9")));
+        assert_eq!(Media::for_item(&Item { kind: "episode".into(), index: Some(-1), ..Default::default() }).unwrap().episode, None);
+        assert!(Media::for_item(&Item { kind: "clip".into(), ..Default::default() }).is_none());
+        assert_eq!(["playing", "paused", "stopped", "buffering"].map(PlayState::parse), [Some(PlayState::Playing), Some(PlayState::Paused), Some(PlayState::Stopped), None]);
+    }
+
+    #[test]
+    fn show_ids_are_cached_and_a_failed_fetch_is_not() {
+        let dir = std::env::temp_dir().join(format!("plaivo-trackers-shows-{}", std::process::id()));
+        let (t, _rx) = Trackers::detached(dir.clone(), [false; 3]);
+        let srv = Server { id: "s".into(), uri: "http://127.0.0.1:9".into(), ..Default::default() };
+        let client = Client::new("test".into());
+        assert_eq!(t.show_ids(&client, &srv, None, "1"), None);
+        assert!(t.0.lock().shows.is_empty());
+        t.0.lock().shows.insert(("s".into(), "1".into()), ids(&[("tvdb", "9")]));
+        assert_eq!(t.show_ids(&client, &srv, None, "1"), Some(ids(&[("tvdb", "9")])));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

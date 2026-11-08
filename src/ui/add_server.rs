@@ -1,16 +1,17 @@
-use crate::app::{Nav, Page, Plaivo, join};
+use crate::app::{Nav, Page, Plaivo, join, poll_until};
 use crate::plex::{R, Server};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::settings::note;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, nav_row, pill, round_button, row, section};
-use gpui::{AnyElement, AppContext, Context, Div, Entity, FocusHandle, FontWeight, SharedString, Window, div, prelude::*, px, rgb};
+use gpui::{AnyElement, AppContext, Context, Div, Entity, FocusHandle, FontWeight, SharedString, Window, div, prelude::*, px};
 use plaivo_core::jellyfin::{self, ServerInfo};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const QUICK_CONNECT_POLL: Duration = Duration::from_secs(2);
+const QUICK_CONNECT_FOR: Duration = Duration::from_secs(600);
 
 pub struct AddServer {
     address: Entity<TextInput>,
@@ -147,21 +148,15 @@ impl Plaivo {
         let (c, flag) = (self.client.clone(), self.add_server.attempt.clone());
         Self::bg(
             cx,
-            move || -> R<Option<Server>> {
-                loop {
-                    std::thread::sleep(QUICK_CONNECT_POLL);
-                    if flag.load(Ordering::SeqCst) != attempt {
-                        return Ok(None);
-                    }
-                    if jellyfin::quick_connect_ready(&c, &info, &secret)? {
-                        return jellyfin::quick_connect_finish(&c, &info, &secret).map(Some);
-                    }
-                }
+            move || -> R<Server> {
+                let ready = || match jellyfin::quick_connect_ready(&c, &info, &secret) {
+                    Ok(false) => None,
+                    Ok(true) => Some(jellyfin::quick_connect_finish(&c, &info, &secret)),
+                    Err(e) => Some(Err(e)),
+                };
+                poll_until(&flag, attempt, QUICK_CONNECT_POLL, Instant::now() + QUICK_CONNECT_FOR, ready).unwrap_or_else(|| Err("Quick Connect timed out. Try again.".into()))
             },
-            move |this, r, cx| match r {
-                Ok(None) => {}
-                r => this.jellyfin_signed_in(attempt, r.map(Option::unwrap), cx),
-            },
+            move |this, r, cx| this.jellyfin_signed_in(attempt, r, cx),
         );
     }
 
@@ -278,7 +273,7 @@ impl Plaivo {
         });
         let status = div()
             .when(a.busy, |d| d.text_size(px(13.)).text_color(theme::muted()).child("Connecting…"))
-            .when_some(a.error.clone(), |d, e| d.text_size(px(13.)).text_color(rgb(0xFF8A80)).child(e));
+            .when_some(a.error.clone(), |d, e| d.text_size(px(13.)).text_color(theme::error()).child(e));
         div()
             .id("add-server")
             .size_full()

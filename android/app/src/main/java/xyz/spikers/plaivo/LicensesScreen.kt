@@ -97,7 +97,8 @@ fun LicensesScreen(onBack: () -> Unit) {
         } else {
             Heading(shown.name)
             Text(shown.detail, fontSize = 13.sp, color = Palette.muted)
-            LicenseText(remember(shown) { shown.text() }, Modifier.focusRequester(target))
+            val text by produceState("", shown) { value = io { shown.text() } }
+            LicenseText(text, Modifier.focusRequester(target))
         }
     }
 }

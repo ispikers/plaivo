@@ -1,23 +1,22 @@
-use crate::app::{Choice, Nav, Plaivo, Shape};
+use crate::app::{Card, Choice, Nav, Plaivo, Shape, fmt_resolution};
 use crate::clock;
 use crate::player::{Panel, SPEEDS};
 use crate::plex::{self, QUALITIES};
 use crate::settings::Scale;
+use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{bounds_probe, fmt_time, icon, pill, progress_bar, round_button, shadow, stepper, tip};
 use crate::shaders;
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, SharedString, Transformation, Window, div, img,
-    linear_color_stop, linear_gradient, percentage, prelude::*, px, rgb, svg,
+    Animation, AnimationExt, AnyElement, Context, ElementId, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, SharedString, Transformation, Window, div, img,
+    linear_color_stop, linear_gradient, percentage, prelude::*, px, rgb, svg, uniform_list,
 };
 use std::time::Duration;
 
-fn white() -> Hsla {
-    rgb(0xFFFFFF).into()
-}
+const QUEUE_ROW: f32 = 75.;
 
 fn control(id: impl Into<ElementId>, i: Icon, size: f32, label: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
-    round_button(id, i, 40., size, theme::black(0.), white().opacity(0.12), white()).tooltip(tip(label))
+    round_button(id, i, 40., size, theme::black(0.), theme::white().opacity(0.12), theme::white()).tooltip(tip(label))
 }
 
 fn seek_button(id: &'static str, i: Icon, secs: u32, back: bool) -> gpui::Stateful<gpui::Div> {
@@ -27,16 +26,6 @@ fn seek_button(id: &'static str, i: Icon, secs: u32, back: bool) -> gpui::Statef
 
 fn fmt_speed(s: f64) -> String {
     if s == 1.0 { "Normal".into() } else { format!("{s}×") }
-}
-
-fn fmt_resolution(r: &str) -> String {
-    match r.to_ascii_lowercase().as_str() {
-        "" => String::new(),
-        "4k" => "4K".into(),
-        "sd" => "SD".into(),
-        r if r.ends_with('p') => r.into(),
-        r => format!("{r}p"),
-    }
 }
 
 fn scale_icon(s: Scale) -> Icon {
@@ -114,8 +103,7 @@ impl Plaivo {
     }
 
     pub fn render_player(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let p = &self.player;
-        let hide = !p.controls && !p.paused && p.panel.is_none();
+        let hide = !self.controls_shown();
         if hide != self.view.cursor_hidden {
             self.view.cursor_hidden = hide;
             if let Some(host) = &self.player.host {
@@ -152,7 +140,7 @@ impl Plaivo {
                 svg()
                     .path(Icon::Refresh.path())
                     .size(px(48.))
-                    .text_color(white())
+                    .text_color(theme::white())
                     .with_animation("buffering", Animation::new(Duration::from_secs(1)).repeat(), |s, d| s.with_transformation(Transformation::rotate(percentage(d)))),
             )
         });
@@ -170,8 +158,8 @@ impl Plaivo {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .bg(white().opacity(0.92))
-                .hover(|s| s.bg(white()))
+                .bg(theme::white().opacity(0.92))
+                .hover(|s| s.bg(theme::white()))
                 .shadow(shadow(12., 0.4))
                 .cursor_pointer()
                 .text_size(px(15.))
@@ -220,11 +208,11 @@ impl Plaivo {
                         .h(px(bar))
                         .rounded_full()
                         .overflow_hidden()
-                        .bg(white().opacity(0.2))
-                        .child(div().absolute().left_0().h_full().w(gpui::relative(cached.max(frac))).bg(white().opacity(0.35)))
-                        .child(div().absolute().left_0().h_full().w(gpui::relative(frac)).bg(white())),
+                        .bg(theme::white().opacity(0.2))
+                        .child(div().absolute().left_0().h_full().w(gpui::relative(cached.max(frac))).bg(theme::white().opacity(0.35)))
+                        .child(div().absolute().left_0().h_full().w(gpui::relative(frac)).bg(theme::white())),
                 )
-                .child(div().absolute().top(px(3.)).left(gpui::relative(frac)).ml(px(-1.5)).w(px(3.)).h(px(14.)).rounded(px(1.5)).bg(white()))
+                .child(div().absolute().top(px(3.)).left(gpui::relative(frac)).ml(px(-1.5)).w(px(3.)).h(px(14.)).rounded(px(1.5)).bg(theme::white()))
                 .when_some(hover.filter(|_| dur > 0.), |d, h| {
                     d.child(
                         div()
@@ -240,7 +228,7 @@ impl Plaivo {
                             .items_center()
                             .justify_center()
                             .text_size(px(12.))
-                            .text_color(white())
+                            .text_color(theme::white())
                             .child(fmt_time(h as f64 * dur)),
                     )
                 })
@@ -255,8 +243,8 @@ impl Plaivo {
                 .h(px(20.))
                 .cursor_pointer()
                 .child(bounds_probe(move |b, _, cx| e2.update(cx, |this, _| this.view.volume = b)))
-                .child(div().absolute().left_0().right_0().top(px(8.)).h(px(4.)).rounded_full().overflow_hidden().bg(white().opacity(0.2)).child(div().h_full().w(gpui::relative(level)).bg(white())))
-                .child(div().absolute().top(px(3.)).left(gpui::relative(level)).ml(px(-1.5)).w(px(3.)).h(px(14.)).rounded(px(1.5)).bg(white()))
+                .child(div().absolute().left_0().right_0().top(px(8.)).h(px(4.)).rounded_full().overflow_hidden().bg(theme::white().opacity(0.2)).child(div().h_full().w(gpui::relative(level)).bg(theme::white())))
+                .child(div().absolute().top(px(3.)).left(gpui::relative(level)).ml(px(-1.5)).w(px(3.)).h(px(14.)).rounded(px(1.5)).bg(theme::white()))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, cx| {
                     this.view.volume_drag = true;
                     let f = this.frac_in(f32::from(ev.position.x), this.view.volume);
@@ -318,12 +306,12 @@ impl Plaivo {
                             .flex()
                             .flex_col()
                             .items_start()
-                            .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).text_color(white()).child(self.link("title", self.player.title.clone(), self.player.title_link.clone(), cx)))
-                            .when(!self.player.crumbs.is_empty(), |d| d.child(self.crumbs("player", cx).text_size(px(14.)).text_color(white().opacity(0.7)))),
+                            .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).text_color(theme::white()).child(self.link("title", self.player.title.clone(), self.player.title_link.clone(), cx)))
+                            .when(!self.player.crumbs.is_empty(), |d| d.child(self.crumbs("player", cx).text_size(px(14.)).text_color(theme::white().opacity(0.7)))),
                     )
                     .child(div().flex_1())
                     .children(self.render_watch_pill(cx))
-                    .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(white()).child(clock::local_time_in(0.))),
+                    .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::white()).child(clock::local_time_in(0.))),
             )
             .child(
                 div()
@@ -345,9 +333,9 @@ impl Plaivo {
                             .items_center()
                             .gap(px(12.))
                             .px(px(4.))
-                            .child(div().min_w(px(44.)).text_size(px(13.)).text_color(white()).child(fmt_time(pos)))
+                            .child(div().min_w(px(44.)).text_size(px(13.)).text_color(theme::white()).child(fmt_time(pos)))
                             .child(timeline)
-                            .child(div().min_w(px(52.)).flex().justify_end().text_size(px(13.)).text_color(white()).child(format!("-{}", fmt_time(dur - pos)))),
+                            .child(div().min_w(px(52.)).flex().justify_end().text_size(px(13.)).text_color(theme::white()).child(format!("-{}", fmt_time(dur - pos)))),
                     )
                     .child(
                         div()
@@ -360,7 +348,7 @@ impl Plaivo {
                             .child(seek_button("fwd", Icon::Forward, small, false).on_click(cx.listener(move |this, _, _, _| this.seek_by(small as f64))))
                             .when(episodic, |d| d.child(skip_button("next", Icon::SkipNext, 1, next, cx)))
                             .child(control("stop", Icon::Stop, 24., "Stop").on_click(cx.listener(|this, _, _, cx| this.stop_playback(cx))))
-                            .when_some(ends, |d, e| d.child(div().ml(px(12.)).text_size(px(13.)).text_color(white().opacity(0.7)).child(e)))
+                            .when_some(ends, |d, e| d.child(div().ml(px(12.)).text_size(px(13.)).text_color(theme::white().opacity(0.7)).child(e)))
                             .child(div().flex_1())
                             .child(control("mute", if muted { Icon::VolumeOff } else { Icon::Volume }, 24., if muted { "Unmute" } else { "Mute" }).on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))))
                             .child(volume)
@@ -402,8 +390,8 @@ impl Plaivo {
                     .shadow(shadow(12., 0.3))
                     .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(white())
-                    .child(icon(i, 20., white()))
+                    .text_color(theme::white())
+                    .child(icon(i, 20., theme::white()))
                     .child(text),
             )
         });
@@ -604,9 +592,9 @@ impl Plaivo {
         let body = div().id("panel-body").min_h_0().overflow_y_scroll().py(px(6.)).flex().flex_col();
         let body = match panel {
             Panel::Settings => {
-                let quality = match plex::Quality::find(self.settings.quality) {
-                    Some(q) => format!("{} · {}", q.label, plex::fmt_bitrate(q.kbps as u64)),
-                    None => self.player.media.bitrate.map_or("Original".into(), |b| format!("Original · {}", plex::fmt_bitrate(b))),
+                let quality = match (plex::Quality::find(self.settings.quality), self.player.media.bitrate) {
+                    (None, Some(b)) => format!("Original · {}", plex::fmt_bitrate(b)),
+                    _ => quality_label(self.settings.quality),
                 };
                 let device = self.settings.audio_device.clone();
                 let output = if device.is_empty() { "Auto".into() } else { self.player.devices.iter().find(|d| d.id.as_ref() == device).map_or(device, |d| d.label.to_string()) };
@@ -637,60 +625,60 @@ impl Plaivo {
 
     fn render_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let max_h = (f32::from(window.viewport_size().height) - 120.) * 0.75;
-        let current = self.queue_index();
-        let rows: Vec<AnyElement> = self
-            .player
-            .queue
-            .clone()
-            .into_iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let image = self.image(&c.thumb, Shape::Wide);
-                let now = current == Some(i);
+        let count = self.player.queue.len();
+        let list = uniform_list(
+            "queue-body",
+            count,
+            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                let current = this.queue_index();
+                range.filter_map(|i| Some(this.queue_entry(i, current == Some(i), this.player.queue.get(i)?.clone(), cx))).collect()
+            }),
+        )
+        .track_scroll(&self.player.queue_scroll)
+        .py(px(6.))
+        .h(px((count as f32 * QUEUE_ROW + 12.).min(max_h - 52.)));
+        self.panel_shell("queue-panel", Panel::Queue, cx).w(px(440.)).child(list)
+    }
+
+    fn queue_entry(&mut self, i: usize, now: bool, c: Card, cx: &mut Context<Self>) -> AnyElement {
+        let image = self.image(&c.thumb, Shape::Wide);
+        div()
+            .id(("queue", i))
+            .h(px(QUEUE_ROW))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .when(now, |d| d.bg(theme::tint(0.08)))
+            .when(!now, |d| d.cursor_pointer().hover(|s| s.bg(theme::tint(0.05))))
+            .child(
                 div()
-                    .id(("queue", i))
+                    .relative()
+                    .w(px(112.))
+                    .h(px(63.))
                     .flex_none()
-                    .px(px(10.))
-                    .py(px(6.))
+                    .rounded(px(6.))
+                    .overflow_hidden()
+                    .bg(theme::bg())
+                    .when_some(image, |d, im| d.child(img(im).size_full().rounded(px(6.)).object_fit(ObjectFit::Cover)))
+                    .when(now, |d| d.child(div().absolute().size_full().rounded(px(6.)).bg(theme::black(0.5)).flex().items_center().justify_center().child(icon(Icon::Play, 24., theme::white()))))
+                    .when(c.watched && !now, |d| {
+                        d.child(div().absolute().top(px(3.)).right(px(3.)).size(px(18.)).rounded_full().bg(theme::text()).flex().items_center().justify_center().child(icon(Icon::Check, 12., theme::bg())))
+                    })
+                    .when(c.progress > 0. && !c.watched && !now, |d| d.child(div().absolute().bottom(px(6.)).left(px(6.)).right(px(6.)).child(progress_bar(c.progress, 3., theme::surface())))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .when(now, |d| d.bg(theme::tint(0.08)))
-                    .when(!now, |d| d.cursor_pointer().hover(|s| s.bg(theme::tint(0.05))))
-                    .child(
-                        div()
-                            .relative()
-                            .w(px(112.))
-                            .h(px(63.))
-                            .flex_none()
-                            .rounded(px(6.))
-                            .overflow_hidden()
-                            .bg(theme::bg())
-                            .when_some(image, |d, im| d.child(img(im).size_full().rounded(px(6.)).object_fit(ObjectFit::Cover)))
-                            .when(now, |d| d.child(div().absolute().size_full().rounded(px(6.)).bg(theme::black(0.5)).flex().items_center().justify_center().child(icon(Icon::Play, 24., white()))))
-                            .when(c.watched && !now, |d| {
-                                d.child(div().absolute().top(px(3.)).right(px(3.)).size(px(18.)).rounded_full().bg(theme::text()).flex().items_center().justify_center().child(icon(Icon::Check, 12., theme::bg())))
-                            })
-                            .when(c.progress > 0. && !c.watched && !now, |d| d.child(div().absolute().bottom(px(6.)).left(px(6.)).right(px(6.)).child(progress_bar(c.progress, 3., theme::surface())))),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(div().text_size(px(14.)).font_weight(if now { FontWeight::BOLD } else { FontWeight::SEMIBOLD }).truncate().child(c.subtitle.clone()))
-                            .child(div().text_size(px(12.)).text_color(theme::muted()).child(if now { "Now playing".into() } else { c.meta.clone() })),
-                    )
-                    .when(!now, |d| d.on_click(cx.listener(move |this, _, _, cx| this.play_card(c.clone(), cx))))
-                    .into_any_element()
-            })
-            .collect();
-        self.panel_shell("queue-panel", Panel::Queue, cx)
-            .w(px(440.))
-            .max_h(px(max_h))
-            .child(div().id("queue-body").min_h_0().overflow_y_scroll().track_scroll(&self.player.queue_scroll).py(px(6.)).flex().flex_col().children(rows))
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(div().text_size(px(14.)).font_weight(if now { FontWeight::BOLD } else { FontWeight::SEMIBOLD }).truncate().child(c.subtitle.clone()))
+                    .child(div().text_size(px(12.)).text_color(theme::muted()).child(if now { "Now playing".into() } else { c.meta.clone() })),
+            )
+            .when(!now, |d| d.on_click(cx.listener(move |this, _, _, cx| this.play_card(c.clone(), cx))))
+            .into_any_element()
     }
 
     fn delay_stepper(&self, audio: bool, cx: &mut Context<Self>) -> impl IntoElement {

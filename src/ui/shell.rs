@@ -27,6 +27,7 @@ impl Render for Plaivo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.scale = window.scale_factor();
         self.viewport_w = (f32::from(window.viewport_size().width) * self.scale) as u32;
+        self.lru.start_frame();
         let standalone = self.add_server_standalone();
         let chrome = !matches!(self.page, Page::Splash | Page::Auth | Page::Player) && !standalone;
         let mini = chrome && self.player.mini && self.playing();
@@ -170,18 +171,20 @@ impl Plaivo {
         };
         let groups = self.sections_in_order(false);
         let multi = groups.len() > 1;
-        let active = self.library.as_ref().filter(|_| self.page == Page::Library).map(|l| (l.key.server.clone(), l.key.section.clone()));
+        let active = self.library.as_ref().filter(|_| self.page == Page::Library).map(|l| (l.key.server.as_str(), l.key.section.as_str()));
         let mut libs = div().id("libs").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(2.));
+        let mut n = 0usize;
         for (server_name, rows) in groups {
             if multi {
-                libs = libs.child(div().h(px(28.)).flex_none().flex().items_end().pb(px(4.)).pl(px(14.)).opacity(label_alpha).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::muted()).whitespace_nowrap().child(server_name));
+                libs = libs.child(div().h(px(28.)).flex_none().flex().items_end().pb(px(4.)).pl(px(14.)).opacity(label_alpha).text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::muted()).whitespace_nowrap().child(server_name.to_owned()));
             }
-            for (server, key, title, movie) in rows {
-                let selected = active.as_ref() == Some(&(server.clone(), key.clone()));
-                let id: ElementId = SharedString::from(format!("lib-{server}-{key}")).into();
-                libs = libs.child(item(id, if movie { Icon::Movie } else { Icon::Tv }, title, selected).on_click(cx.listener(move |this, _, _, cx| {
+            for x in rows {
+                let selected = active == Some((x.server.as_str(), x.key.as_str()));
+                let (server, key) = (x.server.clone(), x.key.clone());
+                libs = libs.child(item(("lib", n).into(), if x.kind == "movie" { Icon::Movie } else { Icon::Tv }, x.title.clone(), selected).on_click(cx.listener(move |this, _, _, cx| {
                     this.navigate(Nav::Library(server.clone(), key.clone()), true, cx)
                 })));
+                n += 1;
             }
         }
         let fullscreen = window.is_fullscreen();
@@ -301,7 +304,7 @@ impl Plaivo {
                             .flex_col()
                             .gap(px(16.))
                             .child(right)
-                            .when_some(self.auth_error.clone(), |d, e| d.child(div().text_size(px(13.)).text_color(rgb(0xFF8A80)).child(e))),
+                            .when_some(self.auth_error.clone(), |d, e| d.child(div().text_size(px(13.)).text_color(theme::error()).child(e))),
                     ),
             )
             .into_any_element()
@@ -323,7 +326,7 @@ impl Plaivo {
                     .gap(px(12.))
                     .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Home server"))
                     .child(div().text_size(px(13.)).text_color(theme::muted()).child("Home shows Continue Watching and recommendations from this server. Libraries from every server stay in the sidebar."))
-                    .when_some(self.servers_error.clone(), |d, e| d.child(div().text_color(rgb(0xFF8A80)).child(e)))
+                    .when_some(self.servers_error.clone(), |d, e| d.child(div().text_color(theme::error()).child(e)))
                     .when(self.servers_loading && self.servers.is_empty(), |d| d.child(div().text_color(theme::muted()).child("Looking for servers…")))
                     .children(self.server_rows(cx)),
             )

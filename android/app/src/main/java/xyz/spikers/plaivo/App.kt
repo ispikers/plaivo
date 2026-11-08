@@ -19,12 +19,12 @@ class App : Application() {
         migratePrefs()
         DownloadQueue.start(this)
         Watch.start()
-        background.launch { cacheDir.resolve("meta").deleteRecursively() }
     }
 
     private fun migratePrefs() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         if (prefs.getBoolean(MIGRATED, false)) return
+        background.launch { cacheDir.resolve("meta").deleteRecursively() }
         val saved = core.migrateAndroidPrefs(
             prefs.getBoolean("sidebar_compact", true),
             prefs.getString("home_server", null),

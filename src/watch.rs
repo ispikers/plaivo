@@ -257,13 +257,12 @@ impl Plaivo {
                 }
                 (wt, account)
             },
-            move |this, (wt, account): (Result<WatchTogether, PartyError>, Option<String>), _| {
+            move |this, (wt, account): (Result<WatchTogether, PartyError>, Option<String>), cx| {
                 if account.is_some() {
                     this.watch.account_name = account;
                 }
                 if this.watch.generation != generation {
-                    std::thread::spawn(move || drop(wt));
-                    return;
+                    return Self::detach(cx, move || drop(wt));
                 }
                 this.watch.starting = false;
                 match wt {
@@ -363,6 +362,7 @@ impl Plaivo {
             return;
         }
         let (srv, downloads, c) = (self.server(&server), self.downloads.clone(), self.client.clone());
+        let file = (server.clone(), key.clone());
         Self::bg(
             cx,
             move || {
@@ -373,6 +373,9 @@ impl Plaivo {
                 describe(&server, &it, show.as_ref()).ok()
             },
             move |this, media, cx| {
+                if this.playing_file() != Some((file.0.as_str(), file.1.as_str())) {
+                    return;
+                }
                 let Some(media) = media else {
                     return this.toast("This video can't be shared with the room.", cx);
                 };

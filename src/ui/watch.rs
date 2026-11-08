@@ -2,7 +2,7 @@ use crate::app::{Nav, Plaivo, join};
 use crate::ui::settings::{note, toggle_row};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{chip, icon, pill, row, section};
-use gpui::{AnyElement, ClipboardItem, Context, Div, FontWeight, Hsla, SharedString, Window, div, prelude::*, px, rgb};
+use gpui::{AnyElement, ClipboardItem, Context, Div, FontWeight, SharedString, Window, div, prelude::*, px};
 use plaivo_core::watch_together::{Connection, Control, Match, MatchState, PlayerState, format_code};
 
 fn sync_label(player: PlayerState, m: Option<Match>, connected: bool) -> &'static str {
@@ -20,7 +20,7 @@ fn sync_label(player: PlayerState, m: Option<Match>, connected: bool) -> &'stati
 }
 
 fn error_text(text: SharedString) -> Div {
-    div().text_size(px(13.)).text_color(rgb(0xFF8A80)).child(text)
+    div().text_size(px(13.)).text_color(theme::error()).child(text)
 }
 
 fn code_of(code: &str) -> String {
@@ -138,7 +138,6 @@ impl Plaivo {
             _ if self.watch.unavailable => "Not in your libraries",
             _ => sync_label(s.player, s.match_, true),
         };
-        let white = Hsla::from(rgb(0xFFFFFF));
         Some(
             div()
                 .id("watch-pill")
@@ -154,8 +153,8 @@ impl Plaivo {
                 .cursor_pointer()
                 .text_size(px(13.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(white)
-                .child(icon(Icon::Group, 18., white))
+                .text_color(theme::white())
+                .child(icon(Icon::Group, 18., theme::white()))
                 .child(join(&[code_of(&room.code), room.participants.len().to_string(), state.into()]))
                 .on_click(cx.listener(|this, _, _, cx| this.open_from_player(Nav::Watch, cx)))
                 .into_any_element(),

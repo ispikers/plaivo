@@ -15,8 +15,6 @@ use plaivo_core::{downloads, plex, prefs, settings, store};
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size};
 use std::sync::Arc;
 
-const DISK_CACHE_BYTES: u64 = 768 << 20;
-
 fn main() {
     let settings = settings::Settings::load();
     logging::init(settings.debug_logging);
@@ -27,7 +25,7 @@ fn main() {
     images::spawn_workers(queue.clone(), client.clone(), move |key, img| {
         let _ = tx.unbounded_send((key, img));
     });
-    std::thread::spawn(|| store::prune_cache(DISK_CACHE_BYTES));
+    std::thread::spawn(|| store::prune_cache(plaivo_core::DISK_CACHE_BYTES));
 
     gpui_platform::application().with_assets(ui::theme::Assets).run(move |cx: &mut App| {
         ui::input::bind_keys(cx);

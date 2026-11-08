@@ -3,7 +3,7 @@ use crate::ui::shell::{ease_out, progress};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, round_button, skeleton};
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, ScrollEvent, SharedString, Window, div, img, linear_color_stop, linear_gradient,
+    AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, ScrollEvent, Window, div, img, linear_color_stop, linear_gradient,
     point, prelude::*, px, rgb,
 };
 use std::time::{Duration, Instant};
@@ -14,6 +14,11 @@ const SLIDE_ANIM: Duration = Duration::from_millis(320);
 pub fn content_width(this: &Plaivo, window: &Window) -> f32 {
     let sidebar = if this.settings.sidebar_compact { theme::SIDEBAR_COMPACT } else { theme::SIDEBAR };
     f32::from(window.viewport_size().width) - sidebar
+}
+
+pub fn card_height(w: f32, wide: bool) -> f32 {
+    let art = w - 6.;
+    (if wide { art * 9. / 16. } else { art * 1.5 }) + 46.
 }
 
 pub fn card_width(content_w: f32, wide: bool, scale: f32) -> f32 {
@@ -52,7 +57,17 @@ impl Plaivo {
         let hubs: Vec<AnyElement> = if self.hubs.is_empty() {
             (0..3).map(|i| self.render_hub_skeleton(i, cw)).collect()
         } else {
-            (0..self.hubs.len()).map(|i| self.render_hub(i, cw, window, cx)).collect()
+            let scrolled = -f32::from(self.home_scroll.offset().y);
+            let mut top = if self.hero.is_empty() { 0. } else { vh * 0.75 + 16. };
+            (0..self.hubs.len())
+                .map(|i| {
+                    let w = card_width(cw, self.hubs[i].wide, self.settings.card_scale());
+                    let height = 38. + card_height(w, self.hubs[i].wide);
+                    let near = top + height > scrolled - vh && top < scrolled + 2. * vh;
+                    top += height + 16.;
+                    self.render_hub(i, cw, near, window, cx)
+                })
+                .collect()
         };
         div()
             .id("home")
@@ -198,13 +213,12 @@ impl Plaivo {
             .into_any_element()
     }
 
-    fn render_hub(&mut self, i: usize, cw: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let (title, resume, wide, items, scroll) = {
+    fn render_hub(&mut self, i: usize, cw: f32, near: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let (title, resume, wide, scroll) = {
             let h = &self.hubs[i];
-            (h.title.clone(), h.resume, h.wide, h.items.clone(), h.scroll.clone())
+            (h.title.clone(), h.resume, h.wide, h.scroll.clone())
         };
         let w = card_width(cw, wide, self.settings.card_scale());
-        let cards: Vec<AnyElement> = items.iter().enumerate().map(|(j, c)| self.media_card(SharedString::from(format!("hub-{i}-{j}")), c, w, wide, cx)).collect();
         let hovered = self.view.hub_hover == Some(i);
         if let Some((from, to, t0)) = self.hubs[i].slide {
             let p = ease_out(progress(Some(t0), SLIDE_ANIM, window));
@@ -214,6 +228,21 @@ impl Plaivo {
             }
         }
         let offset = f32::from(scroll.offset().x);
+        let first = ((-offset - cw) / w).floor().max(0.) as usize;
+        let last = if near { ((-offset + 2. * cw) / w).ceil() as usize } else { 0 };
+        let items = std::mem::take(&mut self.hubs[i].items);
+        let cards: Vec<AnyElement> = items
+            .iter()
+            .enumerate()
+            .map(|(j, c)| {
+                if (first..last).contains(&j) {
+                    self.media_card(("card", j), c, w, wide, cx)
+                } else {
+                    div().w(px(w)).h(px(card_height(w, wide))).flex_none().into_any_element()
+                }
+            })
+            .collect();
+        self.hubs[i].items = items;
         let base = self.hubs[i].slide.map_or(offset, |(_, to, _)| to);
         let max = f32::from(scroll.max_offset().x);
         let page = (cw - 16.) * 0.8;

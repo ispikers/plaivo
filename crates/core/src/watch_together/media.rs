@@ -126,8 +126,12 @@ pub fn ids_from_guids<'a>(guids: impl IntoIterator<Item = &'a str>) -> BTreeMap<
         .into_iter()
         .filter_map(|guid| {
             let (ns, id) = guid.split_once("://")?;
+            let ns = match ns.to_ascii_lowercase() {
+                ns if ns == "myanimelist" => "mal".to_owned(),
+                ns => ns,
+            };
             let value = if ns == "plex" { guid } else { id };
-            (NAMESPACES.contains(&ns) && !id.is_empty()).then(|| (ns.to_owned(), value.to_owned()))
+            (NAMESPACES.contains(&ns.as_str()) && !id.is_empty()).then(|| (ns, value.to_owned()))
         })
         .collect()
 }

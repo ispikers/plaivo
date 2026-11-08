@@ -1,5 +1,5 @@
 use crate::app::{Category, Nav, Plaivo, open_url};
-use crate::settings::{COUNTDOWN_MAX, DENSITY_MAX, SkipMode, library_key};
+use crate::settings::{COUNTDOWN_MAX, DENSITY_MAX, SkipMode};
 use crate::ui::licenses::LICENSES;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{chip, nav_row, pill, round_button, row, section, stepper, toggle};
@@ -149,8 +149,8 @@ impl Plaivo {
         let mut body = div().flex().flex_col().gap(px(28.)).child(note("Order and visibility are saved for each library on each server."));
         for (server, rows) in groups {
             let last = rows.len().saturating_sub(1);
-            body = body.child(section(server).children(rows.into_iter().enumerate().map(|(i, (srv, key, title, movie))| {
-                let id = library_key(&srv, &key);
+            body = body.child(section(server.to_owned()).children(rows.into_iter().enumerate().map(|(i, x)| {
+                let id = x.id.clone();
                 let hidden = self.settings.library_hidden(&id);
                 let mover = |n: usize, i_: Icon, step: isize, enabled: bool| {
                     let id = id.clone();
@@ -165,7 +165,7 @@ impl Plaivo {
                 };
                 let up = mover(0, Icon::ExpandLess, -1, i > 0);
                 let down = mover(1, Icon::ExpandMore, 1, i < last);
-                row(SharedString::from(format!("lib-{id}")), Some(if movie { Icon::Movie } else { Icon::Tv }), title, if hidden { "Hidden" } else { "" })
+                row(SharedString::from(format!("lib-{id}")), Some(if x.kind == "movie" { Icon::Movie } else { Icon::Tv }), x.title.clone(), if hidden { "Hidden" } else { "" })
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::tint(0.12)))
                     .child(up)
@@ -182,7 +182,7 @@ impl Plaivo {
     }
 
     fn move_library(&mut self, id: &str, step: isize, cx: &mut Context<Self>) {
-        let arranged: Vec<String> = self.sections_in_order(true).into_iter().flat_map(|(_, rows)| rows.into_iter().map(|r| library_key(&r.0, &r.1))).collect();
+        let arranged: Vec<String> = self.sections_in_order(true).into_iter().flat_map(|(_, rows)| rows.into_iter().map(|r| r.id.clone())).collect();
         self.settings.move_library(&arranged, id, step);
         self.settings.save();
         cx.notify();
@@ -326,7 +326,7 @@ impl Category {
     }
 }
 
-fn quality_label(kbps: u32) -> String {
+pub fn quality_label(kbps: u32) -> String {
     plex::Quality::find(kbps).map_or("Original".into(), |q| format!("{} · {}", q.label, plex::fmt_bitrate(q.kbps as u64)))
 }
 
