@@ -529,7 +529,9 @@ impl Plaivo {
         });
         cx.on_app_quit(|this, _| {
             this.report_stopped_blocking();
-            this.watch.shutdown();
+            if this.watch.shutdown() {
+                this.settings.save();
+            }
             async {}
         })
         .detach();
@@ -872,6 +874,7 @@ impl Plaivo {
         self.account.servers.clear();
         self.account.save();
         crate::prefs::forget();
+        self.watch.account_name = None;
         self.settings.home_server.clear();
         self.settings.recent_searches.clear();
         self.settings.save();

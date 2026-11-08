@@ -1,21 +1,18 @@
 use crate::app::{Page, Plaivo};
-use crate::plex::{Client, Ctx, Item, Server, Source};
+use crate::plex::{Ctx, Item, Source};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::theme::Icon;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
-use gpui::{AppContext, Context, Entity, SharedString};
+use gpui::{AppContext, Context, Entity, SharedString, Task};
 use plaivo_core::watch_together::{
-    Connection, EndReason, Event, Match, MatchState, Media, MediaFile, MediaKind, PartyError, PartyState, PlaivoExt, PlayerCommand, PlayerFeed, Relays, Series, Update, WatchTogether, ids_from_guids,
-    normalize_code,
+    Connection, EndReason, Event, Match, MatchState, Media, PartyError, PartyState, PlaivoExt, PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy, match_for, normalize_code,
 };
-use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
 const CLIENT: &str = concat!("Plaivo/", env!("CARGO_PKG_VERSION"));
 const FEED_EVERY: Duration = Duration::from_millis(400);
-const SAME_LENGTH_MS: i64 = 2000;
-const CANDIDATES: usize = 5;
+const SAVE_AFTER: Duration = Duration::from_millis(600);
 const NAME_MAX: usize = 32;
 
 pub struct Watch {
@@ -37,6 +34,8 @@ pub struct Watch {
     pub code: Entity<TextInput>,
     pub name: Entity<TextInput>,
     pub relay: Entity<TextInput>,
+    pub account_name: Option<String>,
+    save_task: Option<Task<()>>,
 }
 
 impl Watch {
@@ -69,11 +68,12 @@ impl Watch {
             }
         })
         .detach();
-        cx.subscribe(&name_input, |this: &mut Plaivo, _, ev: &InputEvent, _| {
-            if let InputEvent::Changed(name) = ev {
+        cx.subscribe(&name_input, |this: &mut Plaivo, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Changed(name) => {
                 this.settings.watch_name = name.trim().to_owned();
-                this.settings.save();
+                this.save_settings_soon(cx);
             }
+            InputEvent::Submit(_) => this.save_settings_now(),
         })
         .detach();
         cx.subscribe(&relay_input, |this: &mut Plaivo, _, ev: &InputEvent, cx| {
@@ -101,6 +101,8 @@ impl Watch {
             code,
             name: name_input,
             relay: relay_input,
+            account_name: None,
+            save_task: None,
         }
     }
 
@@ -112,9 +114,10 @@ impl Watch {
         self.starting || self.in_room() || self.state.connection == Connection::Connecting
     }
 
-    pub fn shutdown(&mut self) {
+    pub fn shutdown(&mut self) -> bool {
         self.generation += 1;
         drop(self.wt.take());
+        self.save_task.take().is_some()
     }
 }
 
@@ -122,103 +125,47 @@ pub fn relays(setting: &str) -> Relays {
     if setting.is_empty() { Relays::public() } else { Relays::custom(setting).unwrap_or_else(Relays::public) }
 }
 
-pub fn clean(s: &str, max: usize) -> String {
-    let bidi = |c: char| matches!(c, '\u{61C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
-    s.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c| !c.is_control() && !bidi(*c)).take(max).collect()
-}
-
 pub fn pick_name(setting: &str, account: impl FnOnce() -> Option<String>, jellyfin: Option<&str>) -> String {
     let usable = |s: &str| Some(clean(s, NAME_MAX)).filter(|s| !s.is_empty());
     usable(setting).or_else(|| account().and_then(|n| usable(&n))).or_else(|| jellyfin.and_then(usable)).unwrap_or_else(|| "Plaivo".into())
 }
 
-fn item_ids(it: &Item) -> BTreeMap<String, String> {
-    ids_from_guids(it.guids.iter().map(|g| g.id.as_str()).chain([it.guid.as_str()]))
+#[derive(Debug, PartialEq)]
+pub enum Bind {
+    Resolve(Box<Media>, i64),
+    Own(String, String),
+    Clear,
 }
 
-pub fn same_title(wanted: &BTreeMap<String, String>, it: &Item) -> bool {
-    let ours = item_ids(it);
-    wanted.iter().any(|(ns, id)| ours.get(ns) == Some(id))
-}
-
-pub fn describe(server: &str, it: &Item, show: Option<&Item>) -> Option<Media> {
-    let kind = match it.kind.as_str() {
-        "movie" => MediaKind::Movie,
-        "episode" => MediaKind::Episode,
-        _ => MediaKind::Video,
-    };
-    let episode = kind == MediaKind::Episode;
-    let title = Some(clean(&it.title, usize::MAX)).filter(|t| !t.is_empty()).unwrap_or_else(|| it.index.map_or("Untitled".into(), |n| format!("Episode {n}")));
-    let series = episode.then(|| Series {
-        title: clean(show.map_or(&it.grandparent_title, |s| &s.title), usize::MAX),
-        year: show.and_then(|s| s.year),
-        ids: show.map(item_ids).unwrap_or_default(),
-    });
-    let name = it.media.first().and_then(|m| m.part.first()).and_then(|p| p.file.rsplit(['/', '\\']).next()).map(|n| clean(n, usize::MAX)).filter(|n| !n.is_empty());
-    let mut media = Media {
-        kind,
-        title,
-        year: it.year.filter(|_| !episode),
-        ids: if kind == MediaKind::Video { BTreeMap::new() } else { item_ids(it) },
-        series,
-        season: it.parent_index.filter(|_| episode),
-        episode: it.index.filter(|_| episode),
-        duration_ms: it.duration.unwrap_or(0) as i64,
-        file: name.map(|name| MediaFile { name: Some(name), ..Default::default() }),
-        ext: Default::default(),
-    };
-    media.set_plaivo(&PlaivoExt { server: server.into(), item: it.rating_key.clone() });
-    if media.check(true).is_err() {
-        media.file = None;
-    }
-    media.check(true).ok().map(|_| media)
-}
-
-pub fn match_for(ours_ms: Option<u64>, theirs_ms: i64) -> Match {
-    match ours_ms.filter(|d| *d > 0) {
-        Some(d) => {
-            let delta = d as i64 - theirs_ms;
-            Match { state: if delta.abs() <= SAME_LENGTH_MS { MatchState::Matched } else { MatchState::Mismatched }, delta_ms: Some(delta) }
-        }
-        None => Match { state: MatchState::Matched, delta_ms: None },
+pub fn on_epoch(s: &PartyState) -> Bind {
+    let epoch = s.room.as_ref().map(|r| r.epoch);
+    match (&s.media, epoch, s.match_.map(|m| m.state)) {
+        (Some(media), Some(epoch), Some(MatchState::Searching)) => Bind::Resolve(Box::new(media.clone()), epoch),
+        (Some(media), Some(_), Some(MatchState::Matched | MatchState::Mismatched)) => media.plaivo().map_or(Bind::Clear, |h| Bind::Own(h.server, h.item)),
+        _ => Bind::Clear,
     }
 }
 
-fn find_copy(media: &Media, servers: &[Server], c: &Client) -> Option<(String, Item)> {
-    let ctx = Ctx::new(c.clone(), Source::Live);
-    if let Some(hint) = media.plaivo()
-        && let Some(srv) = servers.iter().find(|s| s.id == hint.server)
-        && let Ok(it) = srv.metadata(&ctx, &hint.item)
-    {
-        return Some((srv.id.clone(), it));
+pub fn holds(s: &PartyState, file: Option<&(String, String)>, playing: Option<(&str, &str)>) -> bool {
+    matches!(s.connection, Connection::Connected | Connection::Reconnecting)
+        && s.match_.is_some_and(|m| matches!(m.state, MatchState::Matched | MatchState::Mismatched))
+        && file.zip(playing).is_some_and(|((fs, fk), (ps, pk))| fs == ps && fk == pk)
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Share {
+    Send,
+    Queue,
+    Drop,
+}
+
+pub fn share_now(s: &PartyState, creating: bool) -> Share {
+    match s.connection {
+        Connection::Connected if s.is_host() => Share::Send,
+        Connection::Reconnecting if s.is_host() => Share::Queue,
+        _ if creating => Share::Queue,
+        _ => Share::Drop,
     }
-    let (title, ids, kind) = match (media.kind, &media.series) {
-        (MediaKind::Movie, _) => (&media.title, &media.ids, "movie"),
-        (MediaKind::Episode, Some(s)) => (&s.title, &s.ids, "show"),
-        _ => return None,
-    };
-    if ids.is_empty() {
-        return None;
-    }
-    for srv in servers {
-        let Ok(hits) = srv.search(&ctx, title) else { continue };
-        let mut seen = HashSet::new();
-        let candidates = hits.into_iter().map(|(it, _)| it.as_show()).filter(|it| it.kind == kind && seen.insert(it.rating_key.clone()));
-        for hit in candidates.take(CANDIDATES) {
-            let Ok(found) = srv.metadata(&ctx, &hit.rating_key) else { continue };
-            if !same_title(ids, &found) {
-                continue;
-            }
-            if kind == "movie" {
-                return Some((srv.id.clone(), found));
-            }
-            let episodes = srv.all_episodes(&ctx, &found.rating_key).unwrap_or_default();
-            if let Some(ep) = episodes.into_iter().find(|e| e.parent_index == media.season && e.index == media.episode) {
-                return Some((srv.id.clone(), ep));
-            }
-        }
-    }
-    None
 }
 
 fn error_text(e: &PartyError) -> Option<&'static str> {
@@ -284,22 +231,36 @@ impl Plaivo {
         let generation = w.generation;
         let (old, tx) = (w.wt.take(), w.tx.clone());
         let (setting, relays, client, token) = (self.settings.watch_name.clone(), relays(&self.settings.watch_relay), self.client.clone(), self.account.token.clone());
-        let jellyfin = self.account.jellyfin.first().map(|s| s.user.clone());
+        let (jellyfin, mut account) = (self.account.jellyfin.first().map(|s| s.user.clone()), w.account_name.clone());
         Self::bg(
             cx,
             move || {
                 drop(old);
-                let name = pick_name(&setting, || client.account_name(token.as_deref()?).ok(), jellyfin.as_deref());
+                let name = pick_name(
+                    &setting,
+                    || {
+                        if account.is_none() {
+                            account = token.and_then(|t| client.account_name(&t).ok());
+                        }
+                        account.clone()
+                    },
+                    jellyfin.as_deref(),
+                );
                 let wt = WatchTogether::new(&name, CLIENT, relays, move |u| {
                     let _ = tx.unbounded_send((generation, u));
-                })?;
-                match code {
-                    Some(code) => wt.join(&code, false),
-                    None => wt.create(),
+                });
+                if let Ok(wt) = &wt {
+                    match code {
+                        Some(code) => wt.join(&code, false),
+                        None => wt.create(),
+                    }
                 }
-                Ok(wt)
+                (wt, account)
             },
-            move |this, wt: Result<WatchTogether, PartyError>, _| {
+            move |this, (wt, account): (Result<WatchTogether, PartyError>, Option<String>), _| {
+                if account.is_some() {
+                    this.watch.account_name = account;
+                }
                 if this.watch.generation != generation {
                     std::thread::spawn(move || drop(wt));
                     return;
@@ -341,15 +302,29 @@ impl Plaivo {
         self.watch.relay_error = (!valid).then(|| "Enter the relay's address, starting with https:// or http://".into());
         if valid && self.settings.watch_relay != url {
             self.settings.watch_relay = url.to_owned();
-            self.settings.save();
+            self.save_settings_soon(cx);
         }
         cx.notify();
+    }
+
+    fn save_settings_soon(&mut self, cx: &mut Context<Self>) {
+        self.watch.save_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_AFTER).await;
+            this.update(cx, |this, _| this.save_settings_now()).ok();
+        }));
+    }
+
+    fn save_settings_now(&mut self) {
+        if self.watch.save_task.take().is_some() {
+            self.settings.save();
+        }
     }
 
     pub fn use_public_relay(&mut self, public: bool, cx: &mut Context<Self>) {
         self.watch.custom_relay = !public;
         if public {
             self.watch.relay_error = None;
+            self.watch.save_task = None;
             self.settings.watch_relay.clear();
             self.settings.save();
         } else {
@@ -384,7 +359,6 @@ impl Plaivo {
         }
         let hint = PlaivoExt { server: server.clone(), item: key.clone() };
         let shared = w.state.media.as_ref().and_then(Media::plaivo).as_ref() == Some(&hint) || w.share.as_ref().and_then(|(m, _)| m.plaivo()).as_ref() == Some(&hint);
-        w.file = Some((server.clone(), key.clone()));
         if shared {
             return;
         }
@@ -396,17 +370,17 @@ impl Plaivo {
                 let fetch = |k: &str| downloads.as_ref().and_then(|d| d.item(&server, k)).filter(|i| !i.guids.is_empty()).or_else(|| srv.as_ref()?.metadata(&ctx, k).ok());
                 let it = item.or_else(|| fetch(&key))?;
                 let show = (it.kind == "episode" && !it.grandparent_rating_key.is_empty()).then(|| fetch(&it.grandparent_rating_key)).flatten();
-                describe(&server, &it, show.as_ref())
+                describe(&server, &it, show.as_ref()).ok()
             },
             move |this, media, cx| {
                 let Some(media) = media else {
                     return this.toast("This video can't be shared with the room.", cx);
                 };
                 let w = &mut this.watch;
-                match &w.wt {
-                    Some(wt) if w.state.connection == Connection::Connected && w.state.is_host() => wt.set_media(media, position_ms.max(0)),
-                    _ if w.creating => w.share = Some((media, position_ms.max(0))),
-                    _ => {}
+                match (share_now(&w.state, w.creating), &w.wt) {
+                    (Share::Send, Some(wt)) => wt.set_media(media, position_ms.max(0)),
+                    (Share::Send | Share::Queue, _) => w.share = Some((media, position_ms.max(0))),
+                    (Share::Drop, _) => {}
                 }
             },
         );
@@ -436,16 +410,15 @@ impl Plaivo {
         let mut resolve = None;
         if epoch != w.epoch {
             w.epoch = epoch;
-            if let (Some(media), Some(epoch), Some(m)) = (&s.media, epoch, s.match_)
-                && m.state == MatchState::Searching
-            {
-                w.file = None;
-                w.unavailable = false;
-                resolve = Some((media.clone(), epoch));
+            w.unavailable = false;
+            w.file = None;
+            match on_epoch(&s) {
+                Bind::Resolve(media, epoch) => resolve = Some((*media, epoch)),
+                Bind::Own(server, key) => w.file = Some((server, key)),
+                Bind::Clear => {}
             }
         }
-        if s.connection == Connection::Connected
-            && s.is_host()
+        if share_now(&s, w.creating) == Share::Send
             && let (Some(wt), Some((media, at))) = (&w.wt, w.share.take())
         {
             wt.set_media(media, at);
@@ -479,11 +452,9 @@ impl Plaivo {
                 w.unavailable = true;
                 return this.toast(format!("{} isn't in your libraries.", media.series.as_ref().map_or(&media.title, |s| &s.title)), cx);
             };
-            wt.set_match(epoch, match_for(it.duration, media.duration_ms));
+            wt.set_match(epoch, match_for(it.duration.map(|d| d as i64), media.duration_ms));
             w.file = Some((server.clone(), it.rating_key.clone()));
-            if this.watch_holds() {
-                this.watch_feed(true);
-            } else {
+            if this.playing_file() != Some((server.as_str(), it.rating_key.as_str())) {
                 this.play(server, it.rating_key, cx);
             }
         });
@@ -515,12 +486,13 @@ impl Plaivo {
         }
     }
 
+    fn playing_file(&self) -> Option<(&str, &str)> {
+        let server = self.player.server.as_ref().filter(|_| self.playing())?;
+        Some((server.id.as_str(), self.player.key.as_str()))
+    }
+
     pub fn watch_holds(&self) -> bool {
-        let w = &self.watch;
-        w.in_room()
-            && w.state.match_.is_some_and(|m| matches!(m.state, MatchState::Matched | MatchState::Mismatched))
-            && self.playing()
-            && w.file.as_ref().is_some_and(|(server, key)| *key == self.player.key && self.player.server.as_ref().is_some_and(|s| s.id == *server))
+        holds(&self.watch.state, self.watch.file.as_ref(), self.playing_file())
     }
 
     pub fn watch_following(&self) -> bool {
@@ -592,63 +564,53 @@ impl Plaivo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plex::{Guid, Media as PlexMedia, Part};
+    use plaivo_core::watch_together::{Control, MediaKind, Participant, Phase, PlayerState, Room};
 
-    fn item(kind: &str, guids: &[&str]) -> Item {
-        Item {
-            rating_key: "42".into(),
-            kind: kind.into(),
-            title: "Arrival".into(),
-            guid: "plex://movie/5d776".into(),
-            year: Some(2016),
-            duration: Some(6_960_000),
-            guids: guids.iter().map(|g| Guid { id: (*g).into() }).collect(),
-            media: vec![PlexMedia { part: vec![Part { file: "/data/movies/Arrival (2016).mkv".into(), ..Default::default() }], ..Default::default() }],
-            ..Default::default()
-        }
+    fn state(connection: Connection, host: bool, epoch: i64, media: Option<(&str, &str)>, m: Option<MatchState>) -> PartyState {
+        let me = Participant { peer_id: "me".into(), name: "Me".into(), client: CLIENT.into(), host, connected: true, player: PlayerState::Ready, match_: None, offset_ms: 0 };
+        let room = Room { rev: 1, code: "ABCDEF".into(), epoch, phase: Phase::Paused, position_ms: 0, at_ms: 0, rate: 1.0, control: Control::Host, locked: false, waiting_on: vec![], participants: vec![me] };
+        let media = media.map(|(server, item)| {
+            let mut media = Media { kind: MediaKind::Video, title: "x".into(), year: None, ids: Default::default(), series: None, season: None, episode: None, duration_ms: 1, file: None, ext: Default::default() };
+            media.set_plaivo(&PlaivoExt { server: server.into(), item: item.into() });
+            media
+        });
+        PartyState { connection, peer_id: Some("me".into()), room: Some(room), media, match_: m.map(|state| Match { state, delta_ms: None }), ..Default::default() }
+    }
+
+    fn file(server: &str, key: &str) -> (String, String) {
+        (server.into(), key.into())
     }
 
     #[test]
-    fn movies_describe_with_ids_file_name_and_plaivo_hint() {
-        let m = describe("srv", &item("movie", &["imdb://tt2543164", "tmdb://329865"]), None).unwrap();
-        assert_eq!((m.kind, m.title.as_str(), m.year, m.duration_ms), (MediaKind::Movie, "Arrival", Some(2016), 6_960_000));
-        assert_eq!(m.ids["imdb"], "tt2543164");
-        assert_eq!(m.ids["plex"], "plex://movie/5d776");
-        assert_eq!(m.file.as_ref().and_then(|f| f.name.as_deref()), Some("Arrival (2016).mkv"));
-        assert_eq!(m.plaivo(), Some(PlaivoExt { server: "srv".into(), item: "42".into() }));
-        assert!(describe("srv", &Item { duration: None, ..item("movie", &[]) }, None).is_none());
+    fn a_new_epoch_binds_own_media_resolves_others_and_clears_otherwise() {
+        let own = state(Connection::Connected, true, 2, Some(("srv", "ep2")), Some(MatchState::Matched));
+        assert_eq!(on_epoch(&own), Bind::Own("srv".into(), "ep2".into()));
+        let theirs = state(Connection::Connected, false, 3, Some(("other", "9")), Some(MatchState::Searching));
+        assert!(matches!(on_epoch(&theirs), Bind::Resolve(_, 3)));
+        assert_eq!(on_epoch(&state(Connection::Connected, true, 4, None, None)), Bind::Clear);
     }
 
     #[test]
-    fn episodes_carry_their_show_and_numbers() {
-        let mut ep = item("episode", &["tvdb://349232"]);
-        ep.title = String::new();
-        ep.grandparent_title = "Severance".into();
-        ep.parent_index = Some(1);
-        ep.index = Some(3);
-        let show = Item { title: "Severance".into(), year: Some(2022), guids: vec![Guid { id: "tvdb://371980".into() }], ..Default::default() };
-        let m = describe("srv", &ep, Some(&show)).unwrap();
-        assert_eq!((m.title.as_str(), m.year, m.season, m.episode), ("Episode 3", None, Some(1), Some(3)));
-        let series = m.series.unwrap();
-        assert_eq!((series.title.as_str(), series.year, series.ids["tvdb"].as_str()), ("Severance", Some(2022), "371980"));
-        assert!(describe("srv", &ep, None).unwrap().series.unwrap().ids.is_empty());
+    fn only_the_bound_file_of_a_matched_room_is_held() {
+        let s = state(Connection::Connected, true, 1, Some(("srv", "ep1")), Some(MatchState::Matched));
+        let ep1 = file("srv", "ep1");
+        assert!(holds(&s, Some(&ep1), Some(("srv", "ep1"))));
+        assert!(!holds(&s, Some(&ep1), Some(("srv", "ep2"))), "Up next's new episode must not feed the old epoch");
+        assert!(!holds(&s, Some(&ep1), Some(("other", "ep1"))));
+        assert!(!holds(&s, Some(&ep1), None));
+        assert!(!holds(&s, None, Some(("srv", "ep1"))));
+        assert!(holds(&state(Connection::Reconnecting, true, 1, Some(("srv", "ep1")), Some(MatchState::Mismatched)), Some(&ep1), Some(("srv", "ep1"))));
+        assert!(!holds(&state(Connection::Connected, false, 1, Some(("srv", "ep1")), Some(MatchState::Searching)), Some(&ep1), Some(("srv", "ep1"))));
+        assert!(!holds(&state(Connection::Ended, true, 1, Some(("srv", "ep1")), Some(MatchState::Matched)), Some(&ep1), Some(("srv", "ep1"))));
     }
 
     #[test]
-    fn copies_match_on_any_shared_catalogue_id() {
-        let ours = item("movie", &["imdb://tt2543164", "tmdb://329865"]);
-        let wanted = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
-        assert!(same_title(&wanted(&[("tmdb", "329865")]), &ours));
-        assert!(same_title(&wanted(&[("plex", "plex://movie/5d776")]), &ours));
-        assert!(!same_title(&wanted(&[("imdb", "tt0000001")]), &ours));
-        assert!(!same_title(&wanted(&[]), &ours));
-    }
-
-    #[test]
-    fn lengths_within_two_seconds_count_as_the_same_file() {
-        assert_eq!(match_for(Some(6_961_000), 6_960_000), Match { state: MatchState::Matched, delta_ms: Some(1000) });
-        assert_eq!(match_for(Some(6_900_000), 6_960_000).state, MatchState::Mismatched);
-        assert_eq!(match_for(None, 6_960_000), Match { state: MatchState::Matched, delta_ms: None });
+    fn shares_send_when_hosting_and_queue_while_creating_or_reconnecting() {
+        assert_eq!(share_now(&state(Connection::Connected, true, 1, None, None), false), Share::Send);
+        assert_eq!(share_now(&state(Connection::Reconnecting, true, 1, None, None), false), Share::Queue);
+        assert_eq!(share_now(&PartyState { connection: Connection::Connecting, ..Default::default() }, true), Share::Queue);
+        assert_eq!(share_now(&state(Connection::Connected, false, 1, None, None), false), Share::Drop);
+        assert_eq!(share_now(&PartyState::default(), false), Share::Drop);
     }
 
     #[test]
@@ -658,7 +620,6 @@ mod tests {
         assert_eq!(pick_name("\u{200E}", || None, Some("jf")), "jf");
         assert_eq!(pick_name("", || None, None), "Plaivo");
         assert_eq!(pick_name(&"x".repeat(40), || None, None).len(), NAME_MAX);
-        assert_eq!(clean("a\tb\n\u{202E}c", 99), "a b c");
     }
 
     #[test]

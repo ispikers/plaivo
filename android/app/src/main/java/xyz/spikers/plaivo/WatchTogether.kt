@@ -38,7 +38,6 @@ import androidx.tv.material3.Text
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
-import uniffi.plaivo_ffi.Settings
 import uniffi.plaivo_ffi.WatchCommand
 import uniffi.plaivo_ffi.WatchConnection
 import uniffi.plaivo_ffi.WatchListener
@@ -54,13 +53,18 @@ object Watch : WatchListener {
         private set
     var item by mutableStateOf<Bound?>(null)
         private set
+    var rooms by mutableStateOf<List<String>>(emptyList())
+        private set
     var player: PlayerActivity? = null
     private var pendingShare: MediaCard? = null
     private var resolving: Pair<String, Long>? = null
 
     val inRoom get() = state?.connection.let { it == WatchConnection.CONNECTED || it == WatchConnection.RECONNECTING }
 
-    fun start() = core.watchListen(this)
+    fun start() {
+        rooms = core.settings().watchRooms
+        core.watchListen(this)
+    }
 
     override fun state(state: WatchState) {
         main.post { onState(state) }
@@ -95,10 +99,14 @@ object Watch : WatchListener {
         epochFor(server, key)?.let { core.watchMatched(it, durationMs) }
     }
 
+    fun failed(server: String, key: String) {
+        epochFor(server, key)?.let { core.watchUnavailable(it) }
+    }
+
     fun open() {
         val b = item ?: return
         val p = player
-        if (p != null) return p.watch(b)
+        if (p != null) return if (p.started()) p.watch(b) else Unit
         App.instance.startActivity(Intent(App.instance, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("server", b.server).putExtra("key", b.key))
     }
 
@@ -111,7 +119,7 @@ object Watch : WatchListener {
             resolving = null
             return
         }
-        if (s.code != before?.code) editSettings { rememberRoom(it, s.code) }
+        if (s.code != before?.code) rooms = editSettings { rememberRoom(it, s.code) }.watchRooms
         if (s.host) pendingShare?.let {
             pendingShare = null
             share(it)
@@ -146,7 +154,7 @@ object Watch : WatchListener {
 }
 
 @Composable
-fun WatchTogetherScreen(settings: Settings) {
+fun WatchTogetherScreen() {
     val s = Watch.state
     val connection = s?.connection ?: WatchConnection.IDLE
     val anchor = remember { FocusRequester() }
@@ -216,9 +224,9 @@ fun WatchTogetherScreen(settings: Settings) {
                     Field(code, { code = it.uppercase().take(12) }, "Room code, like ABC-234", KeyboardType.Ascii, ImeAction.Go, ::join)
                     ActionButton("Join", ::join)
                 }
-                if (settings.watchRooms.isNotEmpty()) {
+                if (Watch.rooms.isNotEmpty()) {
                     SectionTitle("Recent rooms")
-                    settings.watchRooms.forEach { c -> SettingsRow(Glyph.Group, formatRoomCode(c), "", onClick = { Watch.join(c) }) }
+                    Watch.rooms.forEach { c -> SettingsRow(Glyph.Group, formatRoomCode(c), "", onClick = { Watch.join(c) }) }
                 }
             }
         }

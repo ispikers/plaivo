@@ -175,6 +175,7 @@ class PlayerActivity : ComponentActivity() {
             val p = try {
                 io { core.playback(server, key, quality.toUInt(), forceTranscode) }
             } catch (e: PlaivoException) {
+                Watch.failed(server, key)
                 if (advancing) upNextCancelled = true
                 advancing = false
                 Toast.makeText(this@PlayerActivity, e.message, Toast.LENGTH_LONG).show()
@@ -291,9 +292,11 @@ class PlayerActivity : ComponentActivity() {
 
     private fun watchEpoch(): Long? {
         val p = playback ?: return null
-        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return null
+        if (!started()) return null
         return Watch.epochFor(p.server, p.key)
     }
+
+    fun started() = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
 
     fun watch(b: Watch.Bound) {
         val p = playback
@@ -303,7 +306,10 @@ class PlayerActivity : ComponentActivity() {
     fun feedWatch(force: Boolean = false) {
         val epoch = watchEpoch()
         if (epoch == null) {
-            if (watchAttached) core.watchDetach()
+            if (watchAttached) {
+                core.watchDetach()
+                exo.setPlaybackSpeed(speed)
+            }
             watchAttached = false
             return
         }
@@ -412,6 +418,13 @@ class PlayerActivity : ComponentActivity() {
             "Audio" to join(codecName(a?.sampleMimeType), channelLayout(a?.channelCount ?: 0), a?.sampleRate?.takeIf { it > 0 }?.let { "${it / 1000.0} kHz" } ?: ""),
         )
         return rows.filter { it.second.isNotEmpty() }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val b = Watch.item ?: return
+        val p = playback ?: return
+        if (p.server != b.server || p.key != b.key) watch(b)
     }
 
     override fun onStop() {

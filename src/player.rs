@@ -485,10 +485,10 @@ impl Plaivo {
     }
 
     pub fn set_speed(&mut self, speed: f64) {
-        self.player.speed = speed;
         if self.watch_holds() {
             return self.watch_call(|wt| wt.set_rate(speed));
         }
+        self.player.speed = speed;
         self.mpv(|m| m.set("speed", &speed.to_string()));
     }
 
