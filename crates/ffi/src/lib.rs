@@ -59,6 +59,7 @@ pub struct Settings {
     pub audio_device: String,
     pub autoplay_next: bool,
     pub autoplay_countdown: u32,
+    pub stop_on_close: bool,
     pub skip_intro: SkipMode,
     pub skip_credits: SkipMode,
     pub seek_small: u32,

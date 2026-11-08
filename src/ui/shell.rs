@@ -94,6 +94,8 @@ impl Plaivo {
                     self.player.panel = None;
                 } else if window.is_fullscreen() {
                     window.toggle_fullscreen();
+                } else if self.settings.stop_on_close {
+                    self.stop_playback(cx);
                 } else {
                     self.minimize_player(cx);
                 }

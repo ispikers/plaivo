@@ -134,6 +134,13 @@ impl Plaivo {
                     .child(seek_row("seek-small", "Small step", "← and → keys, and the seek buttons", s.seek_small, false, cx))
                     .child(seek_row("seek-large", "Large step", "Shift + ← and Shift + →", s.seek_large, true, cx)),
             )
+            .child(section("Player").child(
+                toggle_row("stop-on-close", "Close stops playback", "The top-left button and Esc stop playback. Minimize moves to the bottom bar.", s.stop_on_close).on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.stop_on_close = !this.settings.stop_on_close;
+                    this.settings.save();
+                    cx.notify();
+                })),
+            ))
             .child(section("Video").child(
                 nav_row("shader", Icon::Sparkle, "Default shader", shaders::name(&s.shader)).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(Some(Category::Shaders)), true, cx))),
             ))

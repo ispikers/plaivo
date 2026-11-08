@@ -262,6 +262,7 @@ impl Plaivo {
         };
         let up_next = up_next.map(|(card, left)| self.render_up_next(card, left, hide, cx));
         let small = self.settings.seek_small;
+        let stop_on_close = self.settings.stop_on_close;
         let paused = self.player.paused;
         let episodic = !self.player.queue.is_empty();
         let (prev, next) = (self.neighbor(-1), self.neighbor(1));
@@ -297,7 +298,11 @@ impl Plaivo {
                     .flex()
                     .items_center()
                     .gap(px(16.))
-                    .child(control("minimize", Icon::ExpandMore, 28., "Minimize").on_click(cx.listener(|this, _, _, cx| this.minimize_player(cx))))
+                    .child(if stop_on_close {
+                        control("stop", Icon::Close, 26., "Stop").on_click(cx.listener(|this, _, _, cx| this.stop_playback(cx)))
+                    } else {
+                        control("minimize", Icon::ExpandMore, 28., "Minimize").on_click(cx.listener(|this, _, _, cx| this.minimize_player(cx)))
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -347,7 +352,11 @@ impl Plaivo {
                             .child(control("pause", if paused { Icon::Play } else { Icon::Pause }, 30., if paused { "Play" } else { "Pause" }).on_click(cx.listener(|this, _, _, _| this.toggle_pause())))
                             .child(seek_button("fwd", Icon::Forward, small, false).on_click(cx.listener(move |this, _, _, _| this.seek_by(small as f64))))
                             .when(episodic, |d| d.child(skip_button("next", Icon::SkipNext, 1, next, cx)))
-                            .child(control("stop", Icon::Stop, 24., "Stop").on_click(cx.listener(|this, _, _, cx| this.stop_playback(cx))))
+                            .child(if stop_on_close {
+                                control("minimize", Icon::ExpandMore, 28., "Minimize").on_click(cx.listener(|this, _, _, cx| this.minimize_player(cx)))
+                            } else {
+                                control("stop", Icon::Stop, 24., "Stop").on_click(cx.listener(|this, _, _, cx| this.stop_playback(cx)))
+                            })
                             .when_some(ends, |d, e| d.child(div().ml(px(12.)).text_size(px(13.)).text_color(theme::white().opacity(0.7)).child(e)))
                             .child(div().flex_1())
                             .child(control("mute", if muted { Icon::VolumeOff } else { Icon::Volume }, 24., if muted { "Unmute" } else { "Mute" }).on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))))
