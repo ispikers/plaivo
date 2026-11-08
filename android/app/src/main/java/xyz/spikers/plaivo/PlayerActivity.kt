@@ -30,9 +30,15 @@ import androidx.tv.material3.MaterialTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
+import uniffi.plaivo_ffi.LanguagePrefs
 import uniffi.plaivo_ffi.Playback
 import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.Scale as CoreScale
+import uniffi.plaivo_ffi.Settings
+import uniffi.plaivo_ffi.SkipMode
+import uniffi.plaivo_ffi.SubtitleMode
+import uniffi.plaivo_ffi.TrackInfo
+import uniffi.plaivo_ffi.pickTracks
 
 enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
     Fit("Letterbox", Glyph.ScaleFit, AspectRatioFrameLayout.RESIZE_MODE_FIT),
@@ -41,6 +47,8 @@ enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
 
     fun next() = entries[(ordinal + 1) % entries.size]
 }
+
+private const val UP_NEXT_LEAD_MS = 30_000L
 
 val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
@@ -66,28 +74,43 @@ class PlayerActivity : ComponentActivity() {
     var quality by mutableIntStateOf(0)
         private set
     val qualities by lazy { core.qualities() }
+    val prefs: Settings = core.settings()
+    var upNextCancelled by mutableStateOf(false)
+        private set
+    var advancing = false
+        private set
+    private var upNextAnchor: ULong? = null
+    val autoSkipped = mutableSetOf<Int>()
     private var queueShow: String? = null
     private var fellBack = false
+    private var manualTracks = false
+    private var autoTracks = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val server = intent.getStringExtra("server") ?: return finish()
         val key = intent.getStringExtra("key") ?: return finish()
-        val settings = core.settings()
-        quality = settings.quality.toInt()
-        scale = Scale.entries[settings.scale.ordinal]
+        quality = prefs.quality.toInt()
+        scale = Scale.entries[prefs.scale.ordinal]
         exo = ExoPlayer.Builder(this).build()
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) = report(if (isPlaying) "playing" else "paused")
 
             override fun onTracksChanged(tracks: Tracks) {
                 tracksVersion++
+                val p = playback
+                if (autoTracks && p != null && !tracks.isEmpty) {
+                    autoTracks = false
+                    autoSelectTracks(p.languages)
+                }
                 val unsupported = listOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO).filter { tracks.containsType(it) && !tracks.isTypeSupported(it) }
                 if (unsupported.isNotEmpty()) fallBack(if (C.TRACK_TYPE_VIDEO in unsupported) "video" else "audio")
             }
 
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_ENDED) neighbor(1)?.let { play(it.server, it.key) } ?: finish()
+                if (state != Player.STATE_ENDED || advancing) return
+                val next = neighbor(1)?.takeIf { prefs.autoplayNext && !upNextCancelled }
+                if (next != null) playNext() else finish()
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -130,6 +153,8 @@ class PlayerActivity : ComponentActivity() {
             val p = try {
                 io { core.playback(server, key, quality.toUInt(), forceTranscode) }
             } catch (e: PlaivoException) {
+                if (advancing) upNextCancelled = true
+                advancing = false
                 Toast.makeText(this@PlayerActivity, e.message, Toast.LENGTH_LONG).show()
                 if (playback == null) finish()
                 return@launch
@@ -139,6 +164,21 @@ class PlayerActivity : ComponentActivity() {
             if (previous != null && previous.key != p.key) report("stopped")
             previous?.let { stopTranscode(it) }
             playback = p
+            if (previous?.key != p.key) manualTracks = false
+            if (!manualTracks) {
+                autoTracks = true
+                val l = p.languages
+                exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                    .clearOverrides()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                    .setPreferredAudioLanguage(l.audio.ifEmpty { null })
+                    .setPreferredTextLanguage(l.subtitles.ifEmpty { null }.takeIf { l.mode != SubtitleMode.OFF })
+                    .build()
+            }
+            advancing = false
+            upNextCancelled = false
+            upNextAnchor = null
+            autoSkipped.clear()
             exo.setMediaItem(mediaItem(p), startAt ?: p.startMs.toLong())
             exo.prepare()
             exo.playWhenReady = true
@@ -169,6 +209,38 @@ class PlayerActivity : ComponentActivity() {
     fun neighbor(step: Int): MediaCard? {
         val i = queue.indexOfFirst { it.key == playback?.key }
         return if (i < 0) null else queue.getOrNull(i + step)
+    }
+
+    fun playNext() {
+        val next = neighbor(1) ?: return
+        advancing = true
+        play(next.server, next.key)
+    }
+
+    fun cancelUpNext() {
+        upNextCancelled = true
+    }
+
+    fun upNextIn(positionMs: Long, durationMs: Long): Double? {
+        val p = playback ?: return null
+        if (upNextCancelled || advancing || durationMs <= 0) return null
+        val credits = p.markers.firstOrNull { it.kind == "credits" }?.startMs
+        if (positionMs < minOf(credits?.toLong() ?: durationMs, durationMs - UP_NEXT_LEAD_MS)) {
+            upNextAnchor = null
+            return null
+        }
+        if (neighbor(1) == null) return null
+        val next = core.upNextIn(positionMs.coerceAtLeast(0).toULong(), durationMs.toULong(), credits, upNextAnchor)
+        upNextAnchor = next?.anchorMs
+        return next?.leftS
+    }
+
+    fun autoSkip(positionMs: Long): String? {
+        val markers = playback?.markers ?: return null
+        val i = markers.indexOfFirst { it.mode == SkipMode.AUTO && positionMs >= it.startMs.toLong() && positionMs < it.endMs.toLong() - 1000 }
+        if (i < 0 || !autoSkipped.add(i)) return null
+        exo.seekTo(markers[i].endMs.toLong())
+        return markers[i].label.replaceFirst("Skip", "Skipped")
     }
 
     fun togglePause() {
@@ -208,7 +280,25 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    private fun TrackChoice.info(): TrackInfo {
+        val f = group!!.getTrackFormat(index)
+        return TrackInfo(f.language ?: "", f.selectionFlags and C.SELECTION_FLAG_FORCED != 0, f.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0)
+    }
+
+    private fun autoSelectTracks(languages: LanguagePrefs) {
+        val audio = tracks(C.TRACK_TYPE_AUDIO)
+        val text = tracks(C.TRACK_TYPE_TEXT)
+        val pick = pickTracks(audio.map { it.info() }, text.map { it.info() }, languages)
+        val params = exo.trackSelectionParameters.buildUpon()
+        pick.audio?.let { audio[it.toInt()] }?.let { params.setOverrideForType(TrackSelectionOverride(it.group!!.mediaTrackGroup, it.index)) }
+        val sub = pick.text?.let { text[it.toInt()] }
+        params.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, sub == null)
+        sub?.let { params.setOverrideForType(TrackSelectionOverride(it.group!!.mediaTrackGroup, it.index)) }
+        exo.trackSelectionParameters = params.build()
+    }
+
     fun select(type: Int, choice: TrackChoice?) {
+        manualTracks = true
         val params = exo.trackSelectionParameters.buildUpon()
         if (choice?.group == null) {
             params.setTrackTypeDisabled(type, true)
@@ -262,7 +352,7 @@ class PlayerActivity : ComponentActivity() {
     private fun report(state: String) {
         val p = playback ?: return
         val time = exo.currentPosition.coerceAtLeast(0).toULong()
-        background.launch { core.report(p.server, p.key, state, time, p.durationMs) }
+        background.launch { core.report(p.server, p.key, state, time, p.durationMs, p.transcodeSession) }
     }
 
     private fun mediaItem(p: Playback): MediaItem {
@@ -273,7 +363,7 @@ class PlayerActivity : ComponentActivity() {
                 "vtt", "webvtt" -> MimeTypes.TEXT_VTT
                 else -> return@mapNotNull null
             }
-            MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(s.url)).setMimeType(mime).setLanguage(s.language).setLabel(s.title).build()
+            MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(s.url)).setMimeType(mime).setLanguage(s.language).setLabel(s.title).setSelectionFlags(if (s.forced) C.SELECTION_FLAG_FORCED else 0).build()
         }
         return MediaItem.Builder()
             .setUri(p.url)

@@ -5,17 +5,20 @@ import androidx.core.content.edit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.plaivo_ffi.Plaivo
 import uniffi.plaivo_ffi.Settings
 
 class App : Application() {
-    val core by lazy { Plaivo(filesDir.absolutePath, cacheDir.absolutePath) }
+    val core by lazy { Plaivo(filesDir.absolutePath, cacheDir.resolve("core").absolutePath) }
 
     override fun onCreate() {
         super.onCreate()
         instance = this
         migratePrefs()
+        DownloadQueue.start(this)
+        background.launch { cacheDir.resolve("meta").deleteRecursively() }
     }
 
     private fun migratePrefs() {

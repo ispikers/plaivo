@@ -48,7 +48,9 @@ import uniffi.plaivo_ffi.Section
 sealed interface Screen {
     data object Home : Screen
     data object Search : Screen
+    data object Downloads : Screen
     data object Settings : Screen
+    data object AddServer : Screen
     data class Browse(val library: Section) : Screen
 }
 
@@ -91,6 +93,7 @@ fun Sidebar(
         Spacer(Modifier.height(8.dp))
         NavItem(Glyph.Home, "Home", screen == Screen.Home, labelAlpha, { onNavigate(Screen.Home) }, Modifier.selectedFocus(screen == Screen.Home))
         NavItem(Glyph.Search, "Search", screen == Screen.Search, labelAlpha, { onNavigate(Screen.Search) }, Modifier.selectedFocus(screen == Screen.Search))
+        NavItem(Glyph.Download, "Downloads", screen == Screen.Downloads, labelAlpha, { onNavigate(Screen.Downloads) }, Modifier.selectedFocus(screen == Screen.Downloads))
         Box(Modifier.fillMaxWidth().height(32.dp)) {
             Text("LIBRARIES", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted, softWrap = false, modifier = Modifier.align(Alignment.BottomStart).padding(start = 11.dp, bottom = 5.dp).alpha(labelAlpha))
             Box(Modifier.align(Alignment.BottomStart).padding(start = 11.dp, bottom = 10.dp).width(20.dp).height(1.dp).alpha(1f - labelAlpha).background(Palette.outline))
@@ -108,6 +111,7 @@ fun Sidebar(
                 }
             }
         }
+        NavItem(Glyph.Add, "Add Library", screen == Screen.AddServer, labelAlpha, { onNavigate(Screen.AddServer) }, Modifier.selectedFocus(screen == Screen.AddServer))
         NavItem(Glyph.Settings, "Settings", screen == Screen.Settings, labelAlpha, { onNavigate(Screen.Settings) }, Modifier.selectedFocus(screen == Screen.Settings))
     }
 }

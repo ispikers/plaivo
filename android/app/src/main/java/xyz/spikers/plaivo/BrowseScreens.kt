@@ -51,7 +51,7 @@ private const val SEARCH_DEBOUNCE_MS = 500L
 @Composable
 private fun PosterGrid(cards: List<MediaCard>, play: (MediaCard) -> Unit, header: @Composable () -> Unit, onNearEnd: () -> Unit = {}) {
     LazyVerticalGrid(
-        columns = GridCells.FixedSize(Dims.poster + 14.dp),
+        columns = GridCells.FixedSize(Dims.poster * LocalCardScale.current + 14.dp),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = Dims.edge - 7.dp, end = Dims.edge - 7.dp, top = 28.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),

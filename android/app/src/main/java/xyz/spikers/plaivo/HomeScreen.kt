@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.Row as MediaRow
+import uniffi.plaivo_ffi.DownloadState
 import uniffi.plaivo_ffi.ServerInfo
 
 private const val SPOTLIGHT_DEBOUNCE_MS = 150L
@@ -69,7 +71,7 @@ private val centerFocused = object : BringIntoViewSpec {
 }
 
 @Composable
-fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFocus: Boolean, onFocusTaken: () -> Unit, play: (MediaCard) -> Unit) {
+fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFocus: Boolean, onFocusTaken: () -> Unit, play: (MediaCard) -> Unit, openDownloads: () -> Unit) {
     var rows by remember(server?.id) { mutableStateOf<List<MediaRow>>(emptyList()) }
     var error by remember(server?.id) { mutableStateOf<String?>(null) }
     LaunchedEffect(server?.id, refresh) {
@@ -80,15 +82,20 @@ fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFo
             .onFailure { if (rows.isEmpty()) error = it.message }
     }
     when {
-        server == null -> Message(if (serversLoaded) "No reachable Plex server" else "Loading…")
-        rows.isEmpty() -> Message(error ?: "Loading…")
+        server == null -> Message(if (serversLoaded) "No reachable server" else "Loading…", openDownloads.takeIf { serversLoaded })
+        rows.isEmpty() -> Message(error ?: "Loading…", openDownloads.takeIf { error != null })
         else -> Spotlight(rows, takeFocus, onFocusTaken, play)
     }
 }
 
 @Composable
-fun Message(text: String) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(text, color = Palette.muted) }
+fun Message(text: String, openDownloads: (() -> Unit)? = null) {
+    val entries by DownloadQueue.entries.collectAsState()
+    val offline = openDownloads?.takeIf { entries.any { it.state == DownloadState.DONE } }
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(text, color = Palette.muted)
+        if (offline != null) ActionButton("Watch your downloads", offline)
+    }
 }
 
 @Composable

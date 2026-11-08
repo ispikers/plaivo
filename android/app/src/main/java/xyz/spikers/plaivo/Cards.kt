@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
@@ -34,11 +35,15 @@ import uniffi.plaivo_ffi.Card as MediaCard
 
 private val cardShape = RoundedCornerShape(8.dp)
 
+val LocalCardMenu = staticCompositionLocalOf<((MediaCard) -> Unit)?> { null }
+
 @Composable
 fun MediaTile(card: MediaCard, wide: Boolean, modifier: Modifier = Modifier, dim: Boolean = false, onFocus: () -> Unit = {}, onClick: () -> Unit) {
-    Column(modifier.width(if (wide) Dims.wide else Dims.poster)) {
+    val menu = LocalCardMenu.current
+    Column(modifier.width((if (wide) Dims.wide else Dims.poster) * LocalCardScale.current)) {
         Card(
             onClick = onClick,
+            onLongClick = menu?.let { { it(card) } },
             modifier = Modifier.fillMaxWidth().aspectRatio(if (wide) 16f / 9f else 2f / 3f).onFocusChanged { if (it.isFocused) onFocus() },
             shape = CardDefaults.shape(cardShape),
             colors = CardDefaults.colors(containerColor = Palette.surface, focusedContainerColor = Palette.surface),

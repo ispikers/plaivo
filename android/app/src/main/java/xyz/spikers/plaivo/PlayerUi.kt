@@ -52,6 +52,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
@@ -67,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.ui.CaptionStyleCompat
+import androidx.media3.ui.SubtitleView
 import androidx.media3.ui.PlayerView
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
@@ -75,10 +77,13 @@ import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import java.util.Date
+import kotlin.math.ceil
+import uniffi.plaivo_ffi.Settings
 import uniffi.plaivo_ffi.Card as MediaCard
+import uniffi.plaivo_ffi.SkipMode
 
 private const val CONTROLS_FOR_MS = 3000L
-private const val SEEK_MS = 10_000L
+private const val HOLD_EVERY = 5
 private const val HINT_MS = 1200L
 
 private enum class Panel(val title: String, val parent: Panel? = null) {
@@ -110,6 +115,9 @@ fun PlayerScreen(player: PlayerActivity) {
     var target by remember { mutableStateOf<Target?>(Target.Play) }
     var swallow by remember { mutableStateOf<Key?>(null) }
     var hint by remember { mutableStateOf<Pair<Glyph, String>?>(null) }
+    var upNext by remember { mutableStateOf<Double?>(null) }
+    val small = player.prefs.seekSmall.toLong() * 1000
+    val large = player.prefs.seekLarge.toLong() * 1000
     val root = remember { FocusRequester() }
     val playButton = remember { FocusRequester() }
     val timeline = remember { FocusRequester() }
@@ -122,10 +130,19 @@ fun PlayerScreen(player: PlayerActivity) {
             duration = exo.duration.takeIf { it > 0 } ?: (player.playback?.durationMs?.toLong() ?: 0L)
             paused = !exo.playWhenReady
             now = System.currentTimeMillis()
+            if (!paused) {
+                player.autoSkip(position)?.let { hint = Glyph.FastForward to it }
+                upNext = player.upNextIn(position, duration)
+                if ((upNext ?: 1.0) <= 0.0) player.playNext()
+            } else if (player.upNextCancelled) {
+                upNext = null
+            }
             delay(250)
         }
     }
-    val skip = p?.markers?.firstOrNull { position >= it.startMs.toLong() && position < it.endMs.toLong() - 1000 }
+    val skip = p?.markers?.withIndex()?.firstOrNull { (i, m) ->
+        position >= m.startMs.toLong() && position < m.endMs.toLong() - 1000 && (m.mode == SkipMode.BUTTON || (m.mode == SkipMode.AUTO && i in player.autoSkipped))
+    }?.value?.takeIf { upNext == null }
     val hideable = !paused && panel == null
     LaunchedEffect(controls, lastInput, hideable) {
         if (controls && hideable) {
@@ -164,6 +181,7 @@ fun PlayerScreen(player: PlayerActivity) {
                 panel = open.parent
                 if (open.parent == null) target = Target.Play
             }
+            upNext != null && !controls -> player.cancelUpNext()
             controls && !paused -> {
                 controls = false
                 runCatching { root.requestFocus() }
@@ -192,17 +210,22 @@ fun PlayerScreen(player: PlayerActivity) {
                         show(Target.Play)
                         return@onPreviewKeyEvent true
                     }
-                    Key.MediaFastForward -> { player.seekBy(SEEK_MS); return@onPreviewKeyEvent true }
-                    Key.MediaRewind -> { player.seekBy(-SEEK_MS); return@onPreviewKeyEvent true }
+                    Key.MediaFastForward -> { player.seekBy(large); return@onPreviewKeyEvent true }
+                    Key.MediaRewind -> { player.seekBy(-large); return@onPreviewKeyEvent true }
                     Key.MediaNext -> { player.neighbor(1)?.let { player.play(it.server, it.key) }; return@onPreviewKeyEvent true }
                     Key.MediaPrevious -> { player.neighbor(-1)?.let { player.play(it.server, it.key) }; return@onPreviewKeyEvent true }
                 }
                 if (controls) return@onPreviewKeyEvent false
                 swallow = e.key
+                val step = seekStep(e, small, large)
                 when (e.key) {
-                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> if (skip != null) player.seekTo(skip.endMs.toLong()) else show(Target.Play)
-                    Key.DirectionLeft -> { player.seekBy(-SEEK_MS); show(Target.Timeline) }
-                    Key.DirectionRight -> { player.seekBy(SEEK_MS); show(Target.Timeline) }
+                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> when {
+                        upNext != null -> player.playNext()
+                        skip != null -> player.seekTo(skip.endMs.toLong())
+                        else -> show(Target.Play)
+                    }
+                    Key.DirectionLeft -> { if (step != 0L) player.seekBy(-step); show(Target.Timeline) }
+                    Key.DirectionRight -> { if (step != 0L) player.seekBy(step); show(Target.Timeline) }
                     Key.DirectionUp, Key.DirectionDown -> show(Target.Play)
                     else -> {
                         swallow = null
@@ -221,7 +244,7 @@ fun PlayerScreen(player: PlayerActivity) {
                     isFocusable = false
                     keepScreenOn = true
                     setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
-                    subtitleView?.setStyle(CaptionStyleCompat(android.graphics.Color.WHITE, android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT, CaptionStyleCompat.EDGE_TYPE_OUTLINE, android.graphics.Color.BLACK, null))
+                    subtitleView?.let { styleSubtitles(it, player.prefs) }
                     this.player = exo
                 }
             },
@@ -243,7 +266,7 @@ fun PlayerScreen(player: PlayerActivity) {
                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 40.dp, end = 40.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(fmtTime(position), fontSize = 13.sp, color = white, modifier = Modifier.widthIn(min = 48.dp))
-                        Timeline(position, buffered, duration, Modifier.weight(1f).focusRequester(timeline), onSeek = { player.seekBy(it); position = (position + it).coerceIn(0, duration) }, onToggle = player::togglePause)
+                        Timeline(position, buffered, duration, small, large, Modifier.weight(1f).focusRequester(timeline), onSeek = { player.seekBy(it); position = (position + it).coerceIn(0, duration) }, onToggle = player::togglePause)
                         Text("-${fmtTime((duration - position).coerceAtLeast(0))}", fontSize = 13.sp, color = white, modifier = Modifier.widthIn(min = 52.dp))
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -251,9 +274,9 @@ fun PlayerScreen(player: PlayerActivity) {
                         val prev = player.neighbor(-1)
                         val next = player.neighbor(1)
                         if (episodic) Control(Glyph.SkipPrevious, enabled = prev != null) { prev?.let { player.play(it.server, it.key) } }
-                        Control(Glyph.Replay, badge = "10") { player.seekBy(-SEEK_MS) }
+                        Control(Glyph.Replay, badge = "${small / 1000}") { player.seekBy(-small) }
                         Control(if (paused) Glyph.Play else Glyph.Pause, size = 52.dp, icon = 30.dp, modifier = Modifier.focusRequester(playButton)) { player.togglePause() }
-                        Control(Glyph.Forward, badge = "10") { player.seekBy(SEEK_MS) }
+                        Control(Glyph.Forward, badge = "${small / 1000}") { player.seekBy(small) }
                         if (episodic) Control(Glyph.SkipNext, enabled = next != null) { next?.let { player.play(it.server, it.key) } }
                         Control(Glyph.Stop) { player.finish() }
                         if (duration > 0) {
@@ -294,6 +317,12 @@ fun PlayerScreen(player: PlayerActivity) {
             }
         }
 
+        val next = player.neighbor(1)
+        val left = upNext
+        if (left != null && next != null && panel == null) {
+            UpNext(next, left, controls, player::playNext, player::cancelUpNext, Modifier.align(Alignment.BottomEnd).padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp))
+        }
+
         hint?.let { (glyph, label) ->
             Row(
                 Modifier.align(Alignment.TopCenter).padding(top = 32.dp).background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(12.dp)).padding(horizontal = 16.dp, vertical = 10.dp),
@@ -332,8 +361,33 @@ private fun Control(glyph: Glyph, modifier: Modifier = Modifier, size: Dp = 44.d
     }
 }
 
+private fun seekStep(e: KeyEvent, small: Long, large: Long): Long {
+    val repeat = e.nativeKeyEvent.repeatCount
+    return if (repeat == 0) small else if (repeat % HOLD_EVERY == 0) large else 0L
+}
+
 @Composable
-private fun Timeline(position: Long, buffered: Long, duration: Long, modifier: Modifier, onSeek: (Long) -> Unit, onToggle: () -> Unit) {
+private fun UpNext(next: MediaCard, left: Double, controls: Boolean, onPlay: () -> Unit, onCancel: () -> Unit, modifier: Modifier) {
+    Column(modifier.width(440.dp).background(Palette.surface.copy(alpha = 0.97f), RoundedCornerShape(12.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            AsyncImage(model = next.image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.width(128.dp).height(72.dp).clip(RoundedCornerShape(6.dp)).background(Palette.bg))
+            Column(Modifier.weight(1f)) {
+                Text("Up next in ${ceil(left).toInt().coerceAtLeast(0)}s", fontSize = 12.sp, color = Palette.muted)
+                Text(next.subtitle, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (!controls) Text("OK plays now · Back cancels", fontSize = 12.sp, color = Palette.muted)
+            }
+        }
+        if (controls) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PanelRow(Glyph.Play, "Play now", "", Modifier.weight(1f), onClick = onPlay)
+                PanelRow(Glyph.Close, "Cancel", "", Modifier.weight(1f), onClick = onCancel)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Timeline(position: Long, buffered: Long, duration: Long, small: Long, large: Long, modifier: Modifier, onSeek: (Long) -> Unit, onToggle: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier
@@ -341,9 +395,10 @@ private fun Timeline(position: Long, buffered: Long, duration: Long, modifier: M
             .onFocusChanged { focused = it.isFocused }
             .onKeyEvent { e ->
                 if (e.type != KeyEventType.KeyDown) return@onKeyEvent false
+                val step = seekStep(e, small, large)
                 when (e.key) {
-                    Key.DirectionLeft -> { onSeek(-SEEK_MS); true }
-                    Key.DirectionRight -> { onSeek(SEEK_MS); true }
+                    Key.DirectionLeft -> { if (step != 0L) onSeek(-step); true }
+                    Key.DirectionRight -> { if (step != 0L) onSeek(step); true }
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> { onToggle(); true }
                     else -> false
                 }
@@ -519,4 +574,13 @@ private fun fmtTime(ms: Long): String {
     val s = ms / 1000
     val (h, m, sec) = Triple(s / 3600, s % 3600 / 60, s % 60)
     return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
+}
+
+private fun styleSubtitles(view: SubtitleView, s: Settings) {
+    val color = (s.subtitleColor.toIntOrNull(16) ?: 0xFFFFFF) or 0xFF000000.toInt()
+    val back = android.graphics.Color.argb(s.subtitleBackground.toInt().coerceIn(0, 100) * 255 / 100, 0, 0, 0)
+    val edge = if (s.subtitleOutline > 0u) CaptionStyleCompat.EDGE_TYPE_OUTLINE else CaptionStyleCompat.EDGE_TYPE_NONE
+    view.setStyle(CaptionStyleCompat(color, back, android.graphics.Color.TRANSPARENT, edge, android.graphics.Color.BLACK, null))
+    view.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * s.subtitleSize.toFloat() / 100f)
+    view.setBottomPaddingFraction(SubtitleView.DEFAULT_BOTTOM_PADDING_FRACTION + (100 - s.subtitlePosition.toInt().coerceAtMost(100)) / 100f)
 }

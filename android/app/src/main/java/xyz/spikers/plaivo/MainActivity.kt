@@ -2,6 +2,7 @@ package xyz.spikers.plaivo
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -22,8 +23,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,6 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -41,11 +46,13 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.Section
 import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.SignIn as Pin
+import uniffi.plaivo_ffi.cardScale
 import kotlin.math.floor
 
 class MainActivity : ComponentActivity() {
@@ -56,8 +63,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = plaivoColors) {
                 Surface(Modifier.fillMaxSize()) {
-                    var signedIn by remember { mutableStateOf(core.signedIn()) }
-                    if (signedIn) Shell(resumes, ::play) { signedIn = false } else SignInScreen { signedIn = true }
+                    var signedIn by remember { mutableStateOf(core.hasServers()) }
+                    var session by remember { mutableIntStateOf(0) }
+                    var addingFirst by remember { mutableStateOf(false) }
+                    val enter: () -> Unit = {
+                        addingFirst = false
+                        signedIn = true
+                        session++
+                    }
+                    when {
+                        signedIn -> key(session) {
+                            Shell(resumes, ::play, onAccountChanged = {
+                                signedIn = core.hasServers()
+                                session++
+                            }, onPlexSignIn = { signedIn = false })
+                        }
+                        addingFirst -> AddServerScreen(onBack = { addingFirst = false }) { enter() }
+                        else -> SignInScreen(onJellyfin = { addingFirst = true }, onBack = if (core.hasServers()) enter else null, onDone = enter)
+                    }
                 }
             }
         }
@@ -65,6 +88,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        DownloadService.unblock()
         resumes++
     }
 
@@ -77,7 +101,8 @@ private const val POLL_MS = 2000L
 private const val RETRY_MS = 3000L
 
 @Composable
-private fun SignInScreen(onDone: () -> Unit) {
+private fun SignInScreen(onJellyfin: () -> Unit, onBack: (() -> Unit)?, onDone: () -> Unit) {
+    if (onBack != null) BackHandler(onBack = onBack)
     var pin by remember { mutableStateOf<Pin?>(null) }
     var problem by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
@@ -139,6 +164,8 @@ private fun SignInScreen(onDone: () -> Unit) {
             color = colors.onSurfaceVariant,
             modifier = Modifier.padding(top = 40.dp),
         )
+        Spacer(Modifier.height(16.dp))
+        ActionButton("Add a Jellyfin server instead", onJellyfin)
     }
 }
 
@@ -155,7 +182,9 @@ private fun QrCode(modules: Int, dark: List<Boolean>, modifier: Modifier) {
 }
 
 @Composable
-private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onSignedOut: () -> Unit) {
+private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () -> Unit, onPlexSignIn: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var settings by remember(refresh) { mutableStateOf(core.settings()) }
     val pinned = !settings.sidebarCompact
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
@@ -165,6 +194,16 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onSignedOut: () -> Un
     var inSidebar by remember { mutableStateOf(false) }
     var focusHome by remember { mutableStateOf(true) }
     val sidebarFocus = remember { FocusRequester() }
+    var menu by remember { mutableStateOf<MediaCard?>(null) }
+    val openMenu = remember { { card: MediaCard -> menu = card } }
+    fun reloadServers() {
+        if (!core.hasServers()) return onAccountChanged()
+        servers = core.servers()
+        val ids = servers.map { it.id }.toSet()
+        libraries = libraries.filter { it.server in ids }
+        (screen as? Screen.Browse)?.let { if (it.library.server !in ids) screen = Screen.Home }
+        scope.launch { libraries = io { core.libraries(false) } }
+    }
     LaunchedEffect(refresh) {
         if (libraries.isEmpty()) libraries = io { core.libraries(true) }
         io { runCatching { core.refreshServers() } }.onSuccess { servers = it }
@@ -172,37 +211,52 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onSignedOut: () -> Un
         libraries = io { core.libraries(false) }
     }
     val home = servers.firstOrNull { it.id == settings.homeServer } ?: servers.firstOrNull()
+    val arranged = remember(libraries, settings.libraryOrder) { core.arrangeLibraries(libraries) }
+    val shown = remember(arranged, settings.hiddenLibraries, home) { arranged.filter { it.id !in settings.hiddenLibraries }.sortedBy { it.server != home?.id } }
+    val cardScale = remember(settings.density) { cardScale(settings.density) }
     BackHandler(enabled = !inSidebar || screen != Screen.Home) {
         if (!inSidebar) runCatching { sidebarFocus.requestFocus() } else screen = Screen.Home
     }
     val inset by animateDpAsState(if (pinned) Dims.sidebar else Dims.sidebarCompact, tween(180, easing = EaseOutQuart), label = "inset")
     Box(Modifier.fillMaxSize().background(Palette.bg)) {
         Box(Modifier.fillMaxSize().padding(start = inset)) {
-            when (val s = screen) {
-                Screen.Home -> HomeScreen(home, serversLoaded, refresh, focusHome, { focusHome = false }, play)
-                Screen.Search -> SearchScreen(play)
-                Screen.Settings -> SettingsScreen(
-                    servers,
-                    home,
-                    settings.quality.toInt(),
-                    onHome = { id -> settings = editSettings { it.copy(homeServer = id) } },
-                    onQuality = { kbps -> settings = editSettings { it.copy(quality = kbps.toUInt()) } },
-                    onSignOut = {
-                        core.signOut()
-                        onSignedOut()
-                    },
-                )
-                is Screen.Browse -> LibraryScreen(s.library, play)
+            CompositionLocalProvider(LocalCardScale provides cardScale, LocalCardMenu provides openMenu) {
+                when (val s = screen) {
+                    Screen.Home -> HomeScreen(home, serversLoaded, refresh, focusHome, { focusHome = false }, play) { screen = Screen.Downloads }
+                    Screen.Search -> SearchScreen(play)
+                    Screen.Downloads -> DownloadsScreen(play)
+                    Screen.Settings -> SettingsScreen(
+                        servers,
+                        home,
+                        settings,
+                        arranged,
+                        onEdit = { change -> settings = editSettings(change) },
+                        onSignOut = {
+                            core.signOut()
+                            onAccountChanged()
+                        },
+                        onPlexSignIn = onPlexSignIn,
+                        onServersChanged = ::reloadServers,
+                    )
+                    Screen.AddServer -> AddServerScreen(onBack = null) { name ->
+                        Toast.makeText(context, "Added $name", Toast.LENGTH_SHORT).show()
+                        reloadServers()
+                        focusHome = true
+                        screen = Screen.Home
+                    }
+                    is Screen.Browse -> LibraryScreen(s.library, play)
+                }
             }
         }
         Sidebar(
             pinned = pinned,
             screen = screen,
-            libraries = libraries.sortedBy { it.server != home?.id },
+            libraries = shown,
             focus = sidebarFocus,
             onTogglePin = { settings = editSettings { it.copy(sidebarCompact = !it.sidebarCompact) } },
             onNavigate = { screen = it },
             onFocusChanged = { inSidebar = it },
         )
     }
+    menu?.let { CardMenu(it) { menu = null } }
 }

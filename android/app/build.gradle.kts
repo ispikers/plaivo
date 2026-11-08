@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.mikepenz.aboutlibraries.plugin.android")
 }
 
 android {
@@ -49,6 +50,59 @@ val generateBindings = tasks.register<Exec>("generateBindings") {
 }
 
 tasks.named("preBuild") { dependsOn(generateBindings) }
+
+val licenseConfig = layout.buildDirectory.dir("generated/aboutLibrariesConfig")
+val licenseTexts = mapOf("Apache-2.0" to "Apache-2.0.txt", "LGPL-2.1-or-later" to "LGPL-2.1.txt")
+val writeLicenseConfig = tasks.register("writeLicenseConfig") {
+    val sources = licenseTexts.mapValues { File(workspace, "licenses/${it.value}") }
+    inputs.files(sources.values)
+    outputs.dir(licenseConfig)
+    doLast {
+        val dir = licenseConfig.get().dir("licenses").asFile.apply { mkdirs() }
+        sources.forEach { (id, file) ->
+            File(dir, "$id.json").writeText(groovy.json.JsonOutput.toJson(mapOf("name" to id, "hash" to id, "spdxId" to id, "content" to file.readText().replace("\r\n", "\n").trim())))
+        }
+    }
+}
+tasks.matching { it.name.startsWith("prepareLibraryDefinitions") }.configureEach { dependsOn(writeLicenseConfig) }
+
+aboutLibraries {
+    offlineMode = true
+    collect { configPath = licenseConfig.get().asFile }
+    export { excludeFields.addAll("description", "developers", "organization", "scm", "funding") }
+}
+
+androidComponents.onVariants { variant ->
+    val name = variant.name.replaceFirstChar { it.uppercase() }
+    val json = layout.buildDirectory.file("generated/aboutLibraries/${variant.name}/res/raw/aboutlibraries.json")
+    val graph = configurations.named("${variant.name}RuntimeClasspath").flatMap { it.incoming.resolutionResult.rootComponent }
+    val check = tasks.register("check${name}Licenses") {
+        dependsOn("prepareLibraryDefinitions$name")
+        inputs.file(json)
+        doLast {
+            val root = groovy.json.JsonSlurper().parse(json.get().asFile) as Map<*, *>
+            val texts = root["licenses"] as Map<*, *>
+            val libraries = (root["libraries"] as List<*>).map { it as Map<*, *> }
+            val listed = libraries.map { it["uniqueId"] as String }.toSet()
+            val problems = libraries.filter { lib ->
+                val ids = lib["licenses"] as List<*>? ?: emptyList<Any>()
+                ids.isEmpty() || ids.any { ((texts[it] as Map<*, *>?)?.get("content") as String?).isNullOrBlank() }
+            }.map { "${it["uniqueId"]} has no license text" }.toMutableList()
+            val modules = mutableSetOf<String>()
+            fun walk(c: org.gradle.api.artifacts.result.ResolvedComponentResult) {
+                c.dependencies.filterIsInstance<org.gradle.api.artifacts.result.ResolvedDependencyResult>().forEach { d ->
+                    val id = d.selected.id
+                    if (id is org.gradle.api.artifacts.component.ModuleComponentIdentifier && modules.add("${id.group}:${id.module}")) walk(d.selected)
+                }
+            }
+            walk(graph.get())
+            problems += modules.filter { it !in listed && it.removeSuffix("-android").removeSuffix("-jvm") !in listed }.map { "$it is missing from the license list" }
+            if (problems.isNotEmpty()) throw GradleException("Licenses:\n" + problems.joinToString("\n"))
+            logger.lifecycle("${libraries.size} Maven libraries, ${modules.size} runtime modules, all licensed")
+        }
+    }
+    tasks.matching { it.name == "assemble$name" }.configureEach { dependsOn(check) }
+}
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
