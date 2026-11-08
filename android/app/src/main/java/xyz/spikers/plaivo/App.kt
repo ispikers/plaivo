@@ -18,6 +18,7 @@ class App : Application() {
         instance = this
         migratePrefs()
         DownloadQueue.start(this)
+        Watch.start()
         background.launch { cacheDir.resolve("meta").deleteRecursively() }
     }
 

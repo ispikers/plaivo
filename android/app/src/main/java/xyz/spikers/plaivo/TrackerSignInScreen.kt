@@ -66,7 +66,7 @@ fun TrackerSignInScreen(service: Service, onClose: () -> Unit) {
         val expires = System.currentTimeMillis() + s.expiresInSecs.toLong() * 1000
         while (System.currentTimeMillis() < expires) {
             delay(interval * 1000)
-            when (val r = io { core.pollTrackerSignIn() }) {
+            when (val r = io { s.session.poll() }) {
                 is TrackerPoll.Pending -> interval = r.intervalSecs.toLong()
                 is TrackerPoll.Done -> {
                     Toast.makeText(context, "Connected to ${service.title}", Toast.LENGTH_SHORT).show()

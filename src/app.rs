@@ -7,6 +7,7 @@ use crate::store;
 use crate::ui::add_server::AddServer;
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::services::Services;
+use crate::watch::Watch;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{AppContext, Bounds, Context, Entity, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString, Task, UniformListScrollHandle, Window};
@@ -47,6 +48,7 @@ pub enum Page {
     Licenses,
     AddServer,
     Downloads,
+    Watch,
     Player,
 }
 
@@ -63,6 +65,7 @@ pub enum Nav {
     Licenses(Option<usize>),
     AddServer,
     Downloads(Option<(String, String)>),
+    Watch,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -77,6 +80,7 @@ pub enum Category {
     SubtitleLanguage,
     Downloads,
     Services,
+    WatchTogether,
     Connections,
     Advanced,
     About,
@@ -214,6 +218,7 @@ pub struct Plaivo {
     pub license: Option<usize>,
     pub add_server: AddServer,
     pub services: Services,
+    pub watch: Watch,
     pub licenses_scroll: UniformListScrollHandle,
     pub toast: Option<SharedString>,
     toast_task: Option<Task<()>>,
@@ -436,6 +441,7 @@ impl Plaivo {
         })
         .detach();
         let add_server = AddServer::new(cx);
+        let watch = Watch::new(&settings.watch_name, &settings.watch_relay, cx);
         let (downloads_tx, mut downloads_rx) = futures::channel::mpsc::unbounded();
         cx.spawn(async move |this, cx| {
             while downloads_rx.next().await.is_some() {
@@ -463,6 +469,7 @@ impl Plaivo {
             license: None,
             add_server,
             services: Services::start(),
+            watch,
             licenses_scroll: UniformListScrollHandle::new(),
             toast: None,
             toast_task: None,
@@ -522,6 +529,7 @@ impl Plaivo {
         });
         cx.on_app_quit(|this, _| {
             this.report_stopped_blocking();
+            this.watch.shutdown();
             async {}
         })
         .detach();
@@ -1110,6 +1118,7 @@ impl Plaivo {
                 self.page = Page::Downloads;
                 self.offline_view = view;
             }
+            Nav::Watch => self.page = Page::Watch,
             Nav::Library(server, section) => {
                 self.page = Page::Library;
                 let sort = self.library.as_ref().filter(|l| l.key.server == server && l.key.section == section).map(|l| l.key.sort.clone());

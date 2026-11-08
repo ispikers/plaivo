@@ -205,7 +205,7 @@ impl Plaivo {
         }
         if self.playing() && self.player.key == key && self.player.server.as_ref().is_some_and(|s| s.id == server) {
             if self.player.paused {
-                self.mpv(|m| m.set("pause", "no"));
+                self.toggle_pause();
             }
             return self.expand_player(cx);
         }
@@ -269,6 +269,9 @@ impl Plaivo {
         self.launch(&url, &it.rating_key, &title, &subtitle, it.duration.unwrap_or(0) as f64 / 1000.0, resume.then_some(offset), subs, cx)?;
         self.player.local = local.is_some();
         self.resolve_tracker_media(&it, cx);
+        let server = self.player.server.as_ref().map(|s| s.id.clone()).unwrap_or_default();
+        let at = if resume { (offset * 1000.0) as i64 } else { 0 };
+        self.watch_share(server, it.rating_key.clone(), Some(it.clone()), at, cx);
         let id = &self.player.server.as_ref().unwrap().id;
         let link = |key: &str, season: Option<&str>| (!key.is_empty()).then(|| Nav::Detail(id.clone(), key.to_owned(), season.map(str::to_owned)));
         let (title_link, crumbs): (_, Vec<Crumb>) = match it.kind.as_str() {
@@ -364,6 +367,9 @@ impl Plaivo {
     }
 
     pub fn up_next(&mut self) -> Option<(Card, f64)> {
+        if self.watch_following() {
+            return None;
+        }
         let p = &mut self.player;
         if p.up_next_cancelled || p.advancing {
             return None;
@@ -383,6 +389,9 @@ impl Plaivo {
     }
 
     fn auto_skip(&mut self, cx: &mut Context<Self>) {
+        if self.watch_holds() && !self.watch_controls() {
+            return;
+        }
         let t = self.player.time;
         let Some(s) = self.player.skips.iter_mut().find(|s| s.auto && t >= s.start && t < s.end - 1.0) else { return };
         s.auto = false;
@@ -477,6 +486,9 @@ impl Plaivo {
 
     pub fn set_speed(&mut self, speed: f64) {
         self.player.speed = speed;
+        if self.watch_holds() {
+            return self.watch_call(|wt| wt.set_rate(speed));
+        }
         self.mpv(|m| m.set("speed", &speed.to_string()));
     }
 
@@ -736,21 +748,29 @@ impl Plaivo {
                     let state = if self.player.paused { "paused" } else { "playing" };
                     self.report(state);
                 }
+                self.watch_feed(false);
                 self.auto_skip(cx);
                 if self.up_next().is_some_and(|(_, left)| left <= 0.0) {
                     self.play_up_next(cx);
                 }
             }
-            mpv::Event::Duration(d) => self.player.duration = d,
+            mpv::Event::Duration(d) => {
+                self.player.duration = d;
+                self.watch_feed(true);
+            }
             mpv::Event::Cached(t) => self.player.cached = t,
             mpv::Event::Pause(p) => {
                 self.player.paused = p;
                 self.report(if p { "paused" } else { "playing" });
+                self.watch_feed(true);
                 if !p {
                     self.wake_controls(cx);
                 }
             }
-            mpv::Event::Buffering(b) => self.player.buffering = b,
+            mpv::Event::Buffering(b) => {
+                self.player.buffering = b;
+                self.watch_feed(true);
+            }
             mpv::Event::Volume(v) => self.player.volume = v,
             mpv::Event::Mute(m) => self.player.muted = m,
             mpv::Event::Loaded => {
@@ -766,6 +786,7 @@ impl Plaivo {
             mpv::Event::Started => {
                 self.player.video_ready = true;
                 self.sync_shader(cx);
+                self.watch_feed(true);
             }
             mpv::Event::Ended { eof, error } => {
                 log::info!("playback ended eof={eof} error={error:?}");
@@ -773,7 +794,7 @@ impl Plaivo {
                     if let Some(e) = error {
                         self.toast(format!("Playback error: {e}"), cx);
                     }
-                    match self.neighbor(1).filter(|_| eof && self.settings.autoplay_next && !self.player.up_next_cancelled) {
+                    match self.neighbor(1).filter(|_| eof && self.settings.autoplay_next && !self.player.up_next_cancelled && !self.watch_following()) {
                         Some(next) => self.play_card(next, cx),
                         None => self.stop_playback(cx),
                     }
@@ -836,6 +857,7 @@ impl Plaivo {
         if let Some(h) = &p.host {
             h.set_visible(false);
         }
+        self.watch_feed(true);
         match self.nav.last().cloned() {
             Some(Nav::Home) => {
                 self.navigate(Nav::Home, false, cx);
@@ -855,14 +877,23 @@ impl Plaivo {
     }
 
     pub fn seek_to(&self, t: f64) {
+        if self.watch_holds() {
+            return self.watch_call(|wt| wt.seek((t.max(0.0) * 1000.0) as i64));
+        }
         self.mpv(|m| m.command(&["seek", &t.to_string(), "absolute"]));
     }
 
     pub fn seek_by(&self, d: f64) {
+        if self.watch_holds() {
+            return self.seek_to(self.player.time + d);
+        }
         self.mpv(|m| m.command(&["seek", &d.to_string(), "relative"]));
     }
 
     pub fn toggle_pause(&self) {
+        if self.watch_holds() {
+            return self.watch_call(|wt| if self.player.paused { wt.play() } else { wt.pause() });
+        }
         self.mpv(|m| m.command(&["cycle", "pause"]));
     }
 

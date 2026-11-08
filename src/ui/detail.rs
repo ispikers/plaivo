@@ -77,7 +77,9 @@ impl Plaivo {
                             .gap(px(12.))
                             .when(!play_key.is_empty(), |d| {
                                 let (s, k) = (server.to_string(), play_key.to_string());
+                                let (ws, wk) = (s.clone(), k.clone());
                                 d.child(pill("play", play_label, Some(Icon::Play), true).h(px(48.)).on_click(cx.listener(move |this, _, _, cx| this.play(s.clone(), k.clone(), cx))))
+                                    .child(pill("watch-together", "Watch together", Some(Icon::Group), false).h(px(48.)).on_click(cx.listener(move |this, _, _, cx| this.watch_together(ws.clone(), wk.clone(), cx))))
                             })
                             .children(download)
                             .when(progress > 0., |d| d.child(div().w(px(120.)).rounded(px(2.)).overflow_hidden().child(progress_bar(progress, 4., theme::outline())))),

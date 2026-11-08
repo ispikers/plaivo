@@ -36,6 +36,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
@@ -61,6 +63,7 @@ import uniffi.plaivo_ffi.subtitleColors
 import uniffi.plaivo_ffi.subtitleModeLabel
 import uniffi.plaivo_ffi.languages
 import uniffi.plaivo_ffi.moveLibrary
+import uniffi.plaivo_ffi.validRelay
 
 private enum class Category(val title: String, val glyph: Glyph, val parent: Category? = null) {
     General("General", Glyph.Settings),
@@ -71,6 +74,7 @@ private enum class Category(val title: String, val glyph: Glyph, val parent: Cat
     AudioLanguage("Audio language", Glyph.Subtitles, AudioSubtitles),
     SubtitleLanguage("Subtitle language", Glyph.Subtitles, AudioSubtitles),
     Services("Services", Glyph.Check),
+    WatchTogether("Watch Together", Glyph.Group),
     Downloads("Downloads", Glyph.Download),
     Connections("Connections", Glyph.Link),
     Advanced("Advanced", Glyph.Build),
@@ -147,6 +151,10 @@ fun SettingsScreen(
     var trackerTick by remember { mutableIntStateOf(0) }
     val trackers = remember(trackerTick) { Service.entries.associateWith { core.trackerStatus(it) } }
     val traktProgress = remember(trackerTick) { core.traktProgress() }
+    fun editTrackers(write: () -> Unit) = scope.launch {
+        io(write)
+        trackerTick++
+    }
     var lastService by rememberSaveable { mutableStateOf(Service.TRAKT) }
     var connecting by rememberSaveable { mutableStateOf<Service?>(null) }
     connecting?.let {
@@ -194,6 +202,7 @@ fun SettingsScreen(
                         Category.Appearance -> "Poster size: ${densityLabel(settings.density)}"
                         Category.Playback -> "Default quality: $qualityLabel · Autoplay ${onOff(settings.autoplayNext)}"
                         Category.Services -> Service.entries.joinToString(" · ") { "${it.title}: ${trackers.getValue(it).label}" }
+                        Category.WatchTogether -> "Name: ${settings.watchName.ifBlank { Watch.deviceName() }} · Relay: ${if (settings.watchRelay.isBlank()) "Public" else "Custom"}"
                         Category.Downloads -> "Auto-remove watched ${onOff(settings.autoRemoveWatched)}"
                         Category.Connections -> {
                             fun count(n: Int) = if (n == 1) "1 server" else "$n servers"
@@ -327,22 +336,43 @@ fun SettingsScreen(
                         SettingsRow(Glyph.Person, "Account", status.label, Modifier.takeFocus(s == lastService), onClick = {
                             lastService = s
                             if (status.signedIn) {
-                                core.trackerSignOut(s)
-                                trackerTick++
+                                editTrackers { core.trackerSignOut(s) }
                             } else {
                                 connecting = s
                             }
                         }) { Value(if (status.signedIn) "Disconnect" else "Connect") }
                         SettingsRow(Glyph.Check, "Scrobble", "Send what you watch to ${s.title}", onClick = {
-                            core.setTrackerScrobble(s, !status.scrobble)
-                            trackerTick++
+                            editTrackers { core.setTrackerScrobble(s, !status.scrobble) }
                         }) { Switch(status.scrobble) }
                         if (s == Service.TRAKT) {
                             SettingsRow(Glyph.PlayCircle, "Scrobble progress", "Shows what you are watching now. Off sends a play only once you finish.", onClick = {
-                                core.setTraktProgress(!traktProgress)
-                                trackerTick++
+                                editTrackers { core.setTraktProgress(!traktProgress) }
                             }) { Switch(traktProgress) }
                         }
+                    }
+                }
+                Category.WatchTogether -> {
+                    SectionTitle("Display name")
+                    Note("Shown to everyone in the room. Leave it empty to use this TV's name.")
+                    var name by remember { mutableStateOf(settings.watchName) }
+                    Field(name, { v ->
+                        name = v.take(32)
+                        onEdit { it.copy(watchName = name.trim()) }
+                    }, Watch.deviceName(), KeyboardType.Text, ImeAction.Done, {}, Modifier.takeFocus(true))
+                    SectionTitle("Relay")
+                    Note("Rooms go through a relay server. Everyone in a room must use the same relay. Changes apply the next time you create or join a room.")
+                    var custom by remember { mutableStateOf(settings.watchRelay.isNotBlank()) }
+                    SettingsRow(Glyph.Link, "Relay", if (custom) "Your own openwatchparty relay" else "The public openwatchparty relays", onClick = {
+                        custom = !custom
+                        if (!custom) onEdit { it.copy(watchRelay = "") }
+                    }) { Value(if (custom) "Custom" else "Public") }
+                    if (custom) {
+                        var url by remember { mutableStateOf(settings.watchRelay) }
+                        Field(url, { v ->
+                            url = v
+                            onEdit { it.copy(watchRelay = v.trim()) }
+                        }, "https://relay.example.com", KeyboardType.Uri, ImeAction.Done, {})
+                        if (url.isNotBlank() && !validRelay(url)) Note("That address isn't valid. It needs to start with http:// or https://")
                     }
                 }
                 Category.Downloads -> {
@@ -414,12 +444,12 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun Value(text: String) {
+fun Value(text: String) {
     Text(text, fontSize = 14.sp, color = Palette.muted)
 }
 
 @Composable
-private fun Switch(on: Boolean) {
+fun Switch(on: Boolean) {
     Box(Modifier.width(40.dp).height(24.dp).background(if (on) Palette.text else Palette.tint(0.2f), CircleShape).padding(3.dp), contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart) {
         Box(Modifier.size(18.dp).background(if (on) Palette.bg else Palette.text, CircleShape))
     }
@@ -441,12 +471,12 @@ fun MoveButton(glyph: Glyph, enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun SectionTitle(text: String) {
+fun SectionTitle(text: String) {
     Text(text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted, modifier = Modifier.padding(top = 8.dp))
 }
 
 @Composable
-private fun Note(text: String) {
+fun Note(text: String) {
     Text(text, fontSize = 13.sp, color = Palette.muted)
 }
 

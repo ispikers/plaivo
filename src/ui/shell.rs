@@ -116,10 +116,11 @@ impl Plaivo {
             Page::Library => self.render_library(window, cx),
             Page::Search => self.render_search(window, cx),
             Page::Detail => self.render_detail(window, cx),
-            Page::Settings => self.render_settings_page(cx),
+            Page::Settings => self.render_settings_page(window, cx),
             Page::Licenses => self.render_licenses(cx),
             Page::AddServer => self.render_add_server(window, cx),
             Page::Downloads => self.render_downloads(window, cx),
+            Page::Watch => self.render_watch(window, cx),
             _ => div().into_any_element(),
         };
         let sidebar = self.render_sidebar(window, cx);
@@ -210,6 +211,7 @@ impl Plaivo {
                 window.focus(&focus, cx);
             })))
             .child(item("downloads".into(), Icon::Download, "Downloads".into(), self.page == Page::Downloads).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Downloads(None), true, cx))))
+            .child(item("watch".into(), Icon::Group, "Watch Together".into(), self.page == Page::Watch).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Watch, true, cx))))
             .child(
                 div()
                     .h(px(36.))

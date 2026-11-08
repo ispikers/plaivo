@@ -11,4 +11,5 @@ pub mod services;
 mod settings;
 mod shell;
 pub mod theme;
+mod watch;
 mod widgets;

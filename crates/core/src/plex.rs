@@ -436,6 +436,18 @@ impl Client {
         Ok(pin.auth_token.filter(|t| !t.is_empty()))
     }
 
+    pub fn account_name(&self, token: &str) -> R<String> {
+        #[derive(Deserialize, Default)]
+        #[serde(default, rename_all = "camelCase")]
+        struct User {
+            friendly_name: String,
+            title: String,
+            username: String,
+        }
+        let u: User = self.get(&format!("{PLEX_TV}/user"), Some(token)).call().map_err(err)?.body_mut().read_json().map_err(err)?;
+        Ok(first(&[&u.friendly_name, &u.title, &u.username]).to_owned())
+    }
+
     pub fn servers(&self, token: &str) -> R<Vec<Resource>> {
         let all: Vec<Resource> = self
             .get(&format!("{PLEX_TV}/resources?includeHttps=1&includeRelay=1"), Some(token))

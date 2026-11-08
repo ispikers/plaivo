@@ -322,6 +322,7 @@ impl Plaivo {
                             .when(!self.player.crumbs.is_empty(), |d| d.child(self.crumbs("player", cx).text_size(px(14.)).text_color(white().opacity(0.7)))),
                     )
                     .child(div().flex_1())
+                    .children(self.render_watch_pill(cx))
                     .child(div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(white()).child(clock::local_time_in(0.))),
             )
             .child(

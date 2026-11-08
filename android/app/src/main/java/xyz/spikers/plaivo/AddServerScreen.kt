@@ -160,7 +160,7 @@ fun AddServerScreen(onBack: (() -> Unit)?, onAdded: (String) -> Unit) {
 }
 
 @Composable
-private fun Field(
+fun Field(
     value: String,
     onChange: (String) -> Unit,
     hint: String,

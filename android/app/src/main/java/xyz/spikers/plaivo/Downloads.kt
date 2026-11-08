@@ -207,6 +207,12 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit) {
                     })
                 }
             }
+            if (scopes.isNotEmpty() && (!Watch.inRoom || Watch.state?.host == true)) {
+                SettingsRow(Glyph.Group, "Watch together", if (Watch.inRoom) "Plays it for everyone in the room" else "Starts a room and plays it there", onClick = {
+                    Watch.share(card)
+                    onDismiss()
+                })
+            }
         }
         LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
     }

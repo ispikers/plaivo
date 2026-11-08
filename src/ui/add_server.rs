@@ -203,7 +203,7 @@ impl Plaivo {
         self.page == Page::AddServer && !self.account.has_servers()
     }
 
-    fn field(&self, id: &'static str, input: &Entity<TextInput>, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+    pub fn field(&self, id: &'static str, input: &Entity<TextInput>, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let focused = input.read(cx).focus.is_focused(window);
         div()
             .id(id)

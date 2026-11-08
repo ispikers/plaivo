@@ -81,6 +81,7 @@ import kotlin.math.ceil
 import uniffi.plaivo_ffi.Settings
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.SkipMode
+import uniffi.plaivo_ffi.WatchConnection
 
 private const val CONTROLS_FOR_MS = 3000L
 private const val HOLD_EVERY = 5
@@ -122,6 +123,7 @@ fun PlayerScreen(player: PlayerActivity) {
     val playButton = remember { FocusRequester() }
     val timeline = remember { FocusRequester() }
     val skipButton = remember { FocusRequester() }
+    val room = Watch.state?.takeIf { Watch.inRoom }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -130,6 +132,7 @@ fun PlayerScreen(player: PlayerActivity) {
             duration = exo.duration.takeIf { it > 0 } ?: (player.playback?.durationMs?.toLong() ?: 0L)
             paused = !exo.playWhenReady
             now = System.currentTimeMillis()
+            player.feedWatch()
             if (!paused) {
                 player.autoSkip(position)?.let { hint = Glyph.FastForward to it }
                 upNext = player.upNextIn(position, duration)
@@ -141,7 +144,7 @@ fun PlayerScreen(player: PlayerActivity) {
         }
     }
     val skip = p?.markers?.withIndex()?.firstOrNull { (i, m) ->
-        position >= m.startMs.toLong() && position < m.endMs.toLong() - 1000 && (m.mode == SkipMode.BUTTON || (m.mode == SkipMode.AUTO && i in player.autoSkipped))
+        position >= m.startMs.toLong() && position < m.endMs.toLong() - 1000 && (m.mode == SkipMode.BUTTON || (m.mode == SkipMode.AUTO && (i in player.autoSkipped || player.watching())))
     }?.value?.takeIf { upNext == null }
     val hideable = !paused && panel == null
     LaunchedEffect(controls, lastInput, hideable) {
@@ -206,7 +209,7 @@ fun PlayerScreen(player: PlayerActivity) {
                 if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (e.key) {
                     Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> {
-                        if (e.key == Key.MediaPlayPause) player.togglePause() else exo.playWhenReady = e.key == Key.MediaPlay
+                        if (e.key == Key.MediaPlayPause) player.togglePause() else player.setPlaying(e.key == Key.MediaPlay)
                         show(Target.Play)
                         return@onPreviewKeyEvent true
                     }
@@ -261,6 +264,7 @@ fun PlayerScreen(player: PlayerActivity) {
                         Text(p?.title ?: "", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = white, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (!p?.subtitle.isNullOrEmpty()) Text(p?.subtitle ?: "", fontSize = 14.sp, color = white.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
+                    room?.let { WatchPill(it, Modifier.padding(end = 16.dp)) }
                     Text(DateFormat.getTimeFormat(context).format(Date(now)), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = white)
                 }
                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 40.dp, end = 40.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -299,6 +303,10 @@ fun PlayerScreen(player: PlayerActivity) {
                     }
                 }
             }
+        }
+
+        if (!controls && room != null && (room.status.isNotEmpty() || room.connection != WatchConnection.CONNECTED)) {
+            WatchPill(room, Modifier.align(Alignment.TopEnd).padding(top = 24.dp, end = 40.dp))
         }
 
         if (skip != null && panel == null) {

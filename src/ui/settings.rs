@@ -4,11 +4,22 @@ use crate::ui::licenses::LICENSES;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{chip, nav_row, pill, round_button, row, section, stepper, toggle};
 use crate::{logging, mpv, plex, shaders};
-use gpui::{AnyElement, Context, Div, FontWeight, SharedString, Stateful, div, prelude::*, px};
+use gpui::{AnyElement, Context, Div, FontWeight, SharedString, Stateful, Window, div, prelude::*, px};
 
 const MPV_SOURCE: &str = "https://github.com/mpv-player/mpv";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const CATEGORIES: [Category; 9] = [Category::General, Category::Appearance, Category::Playback, Category::Audio, Category::Services, Category::Downloads, Category::Connections, Category::Advanced, Category::About];
+const CATEGORIES: [Category; 10] = [
+    Category::General,
+    Category::Appearance,
+    Category::Playback,
+    Category::Audio,
+    Category::Services,
+    Category::WatchTogether,
+    Category::Downloads,
+    Category::Connections,
+    Category::Advanced,
+    Category::About,
+];
 const DENSITY: [&str; DENSITY_MAX as usize] = ["Smallest", "Small", "Medium", "Large", "Largest"];
 
 pub fn nudge(value: u32, step: i8, by: u32, lo: u32, hi: u32, default: u32) -> u32 {
@@ -52,6 +63,7 @@ impl Plaivo {
             Category::Audio => self.languages_summary(),
             Category::Downloads => self.download_summary(),
             Category::Services => self.services.summary(),
+            Category::WatchTogether => self.watch_summary(),
             Category::Libraries | Category::Shaders | Category::AudioLanguage | Category::SubtitleLanguage => String::new(),
             Category::Connections => {
                 let count = |n: usize| if n == 1 { "1 server".to_owned() } else { format!("{n} servers") };
@@ -201,7 +213,7 @@ impl Plaivo {
             )
     }
 
-    pub fn render_settings_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub fn render_settings_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let category = self.settings_page;
         let body = match category {
             None => div().flex().flex_col().gap(px(8.)).children(CATEGORIES.map(|c| {
@@ -250,6 +262,7 @@ impl Plaivo {
             Some(Category::SubtitleLanguage) => self.render_language_list(true, cx),
             Some(Category::Downloads) => self.render_download_settings(cx),
             Some(Category::Services) => self.render_services(cx),
+            Some(Category::WatchTogether) => self.render_watch_settings(window, cx),
             Some(Category::Advanced) => self.render_advanced_settings(cx),
             Some(Category::Connections) => self.render_connections(cx),
             Some(Category::About) => section("Plaivo")
@@ -290,6 +303,7 @@ impl Category {
             Category::SubtitleLanguage => "Subtitle language",
             Category::Downloads => "Downloads",
             Category::Services => "Services",
+            Category::WatchTogether => "Watch Together",
             Category::Connections => "Connections",
             Category::Advanced => "Advanced",
             Category::About => "About",
@@ -304,6 +318,7 @@ impl Category {
             Category::Audio | Category::AudioLanguage | Category::SubtitleLanguage => Icon::Subtitles,
             Category::Downloads => Icon::Download,
             Category::Services => Icon::Check,
+            Category::WatchTogether => Icon::Group,
             Category::Connections => Icon::Link,
             Category::Advanced => Icon::Build,
             Category::About => Icon::Info,

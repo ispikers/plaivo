@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const RECENT_SEARCHES: usize = 8;
+const RECENT_ROOMS: usize = 5;
 pub const COUNTDOWN_MAX: u32 = 30;
 pub const DENSITY_MAX: u32 = 5;
 pub const SUBTITLE_COLORS: [(&str, &str); 4] = [("FFFFFF", "White"), ("FFFF00", "Yellow"), ("00FFFF", "Cyan"), ("00FF00", "Green")];
@@ -38,6 +39,9 @@ pub struct Settings {
     pub subtitle_position: u32,
     pub download_dir: String,
     pub auto_remove_watched: bool,
+    pub watch_name: String,
+    pub watch_relay: String,
+    pub watch_rooms: Vec<String>,
 }
 
 impl Default for Settings {
@@ -70,6 +74,9 @@ impl Default for Settings {
             subtitle_position: 100,
             download_dir: String::new(),
             auto_remove_watched: false,
+            watch_name: String::new(),
+            watch_relay: String::new(),
+            watch_rooms: Vec::new(),
         }
     }
 }
@@ -159,6 +166,12 @@ impl Settings {
         self.recent_searches.retain(|s| !s.eq_ignore_ascii_case(q));
         self.recent_searches.insert(0, q.to_owned());
         self.recent_searches.truncate(RECENT_SEARCHES);
+    }
+
+    pub fn remember_room(&mut self, code: &str) {
+        self.watch_rooms.retain(|c| c != code);
+        self.watch_rooms.insert(0, code.to_owned());
+        self.watch_rooms.truncate(RECENT_ROOMS);
     }
 
     pub fn skip_mode(&self, marker: &str) -> SkipMode {
@@ -286,8 +299,18 @@ mod tests {
         assert_eq!((s.skip_intro, s.skip_credits), (SkipMode::Auto, SkipMode::Button));
         assert_eq!((s.subtitle_mode, s.subtitle_size, s.subtitle_color.as_str(), s.subtitle_position), (SubtitleMode::ForeignAudio, 100, "FFFFFF", 100));
         assert!(s.download_dir.is_empty() && !s.auto_remove_watched);
+        assert!(s.watch_name.is_empty() && s.watch_relay.is_empty() && s.watch_rooms.is_empty());
         let s: Settings = serde_json::from_str(r#"{"audio_language":"jpn","subtitle_mode":"always"}"#).unwrap();
         assert_eq!(s.languages(), LanguagePrefs { audio: "jpn".into(), subtitles: String::new(), mode: SubtitleMode::Always });
+    }
+
+    #[test]
+    fn recent_rooms_move_to_front_and_cap() {
+        let mut s = Settings::default();
+        for c in ["AAAAAA", "BBBBBB", "AAAAAA", "CCCCCC", "DDDDDD", "EEEEEE", "FFFFFF"] {
+            s.remember_room(c);
+        }
+        assert_eq!(s.watch_rooms, ["FFFFFF", "EEEEEE", "DDDDDD", "CCCCCC", "AAAAAA"]);
     }
 
     #[test]

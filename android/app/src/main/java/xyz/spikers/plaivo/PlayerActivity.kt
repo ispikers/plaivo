@@ -5,6 +5,7 @@ package xyz.spikers.plaivo
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import android.os.Bundle
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -13,6 +14,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -27,6 +29,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.tv.material3.MaterialTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
@@ -38,6 +41,8 @@ import uniffi.plaivo_ffi.Settings
 import uniffi.plaivo_ffi.SkipMode
 import uniffi.plaivo_ffi.SubtitleMode
 import uniffi.plaivo_ffi.TrackInfo
+import uniffi.plaivo_ffi.WatchCommand
+import uniffi.plaivo_ffi.WatchFeed
 import uniffi.plaivo_ffi.pickTracks
 
 enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
@@ -49,6 +54,9 @@ enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
 }
 
 private const val UP_NEXT_LEAD_MS = 30_000L
+private const val WATCH_FEED_MS = 500L
+private const val WATCH_SEEK_MS = 2000L
+private val reports = Dispatchers.IO.limitedParallelism(1)
 
 val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
@@ -85,6 +93,10 @@ class PlayerActivity : ComponentActivity() {
     private var fellBack = false
     private var manualTracks = false
     private var autoTracks = false
+    private var firstFrame = false
+    private var watchAttached = false
+    private var watchFedAt = 0L
+    private var watchSeek: Pair<Long, Long>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,8 +105,17 @@ class PlayerActivity : ComponentActivity() {
         quality = prefs.quality.toInt()
         scale = Scale.entries[prefs.scale.ordinal]
         exo = ExoPlayer.Builder(this).build()
+        Watch.player = this
         exo.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) = report(if (isPlaying) "playing" else "paused")
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                report(if (isPlaying) "playing" else "paused")
+                feedWatch(force = true)
+            }
+
+            override fun onRenderedFirstFrame() {
+                firstFrame = true
+                feedWatch(force = true)
+            }
 
             override fun onTracksChanged(tracks: Tracks) {
                 tracksVersion++
@@ -108,7 +129,8 @@ class PlayerActivity : ComponentActivity() {
             }
 
             override fun onPlaybackStateChanged(state: Int) {
-                if (state != Player.STATE_ENDED || advancing) return
+                feedWatch(force = true)
+                if (state != Player.STATE_ENDED || advancing || watching()) return
                 val next = neighbor(1)?.takeIf { prefs.autoplayNext && !upNextCancelled }
                 if (next != null) playNext() else finish()
             }
@@ -179,9 +201,11 @@ class PlayerActivity : ComponentActivity() {
             upNextCancelled = false
             upNextAnchor = null
             autoSkipped.clear()
+            firstFrame = false
             exo.setMediaItem(mediaItem(p), startAt ?: p.startMs.toLong())
             exo.prepare()
             exo.playWhenReady = true
+            Watch.loaded(p.server, p.key, p.durationMs.toLong())
             val show = p.showKey
             if (show == null) {
                 queueShow = null
@@ -223,7 +247,7 @@ class PlayerActivity : ComponentActivity() {
 
     fun upNextIn(positionMs: Long, durationMs: Long): Double? {
         val p = playback ?: return null
-        if (upNextCancelled || advancing || durationMs <= 0) return null
+        if (watching() || upNextCancelled || advancing || durationMs <= 0) return null
         val credits = p.markers.firstOrNull { it.kind == "credits" }?.startMs
         if (positionMs < minOf(credits?.toLong() ?: durationMs, durationMs - UP_NEXT_LEAD_MS)) {
             upNextAnchor = null
@@ -236,23 +260,75 @@ class PlayerActivity : ComponentActivity() {
     }
 
     fun autoSkip(positionMs: Long): String? {
-        val markers = playback?.markers ?: return null
+        val markers = playback?.markers?.takeIf { !watching() } ?: return null
         val i = markers.indexOfFirst { it.mode == SkipMode.AUTO && positionMs >= it.startMs.toLong() && positionMs < it.endMs.toLong() - 1000 }
         if (i < 0 || !autoSkipped.add(i)) return null
         exo.seekTo(markers[i].endMs.toLong())
         return markers[i].label.replaceFirst("Skip", "Skipped")
     }
 
-    fun togglePause() {
-        exo.playWhenReady = !exo.playWhenReady
+    fun togglePause() = setPlaying(!exo.playWhenReady)
+
+    fun setPlaying(on: Boolean) {
+        if (!watching()) exo.playWhenReady = on
+        else if (on) core.watchPlay()
+        else core.watchPause()
     }
 
     fun seekBy(ms: Long) {
         val duration = exo.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
-        exo.seekTo((exo.currentPosition + ms).coerceIn(0, duration))
+        val from = watchSeek?.takeIf { (_, at) -> SystemClock.elapsedRealtime() - at < WATCH_SEEK_MS }?.first ?: exo.currentPosition
+        seekTo((from + ms).coerceIn(0, duration))
     }
 
-    fun seekTo(ms: Long) = exo.seekTo(ms)
+    fun seekTo(ms: Long) {
+        if (!watching()) return exo.seekTo(ms)
+        watchSeek = ms to SystemClock.elapsedRealtime()
+        core.watchSeek(ms)
+    }
+
+    fun watching() = watchEpoch() != null
+
+    private fun watchEpoch(): Long? {
+        val p = playback ?: return null
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return null
+        return Watch.epochFor(p.server, p.key)
+    }
+
+    fun watch(b: Watch.Bound) {
+        val p = playback
+        if (p?.server == b.server && p.key == b.key) Watch.loaded(p.server, p.key, p.durationMs.toLong()) else play(b.server, b.key)
+    }
+
+    fun feedWatch(force: Boolean = false) {
+        val epoch = watchEpoch()
+        if (epoch == null) {
+            if (watchAttached) core.watchDetach()
+            watchAttached = false
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - watchFedAt < WATCH_FEED_MS) return
+        watchFedAt = now
+        watchAttached = true
+        val state = exo.playbackState
+        val loading = !firstFrame || state == Player.STATE_IDLE
+        core.watchFeed(epoch, WatchFeed(exo.currentPosition.coerceAtLeast(0), exo.duration.takeIf { it > 0 }, !exo.playWhenReady, !loading && state == Player.STATE_BUFFERING, loading))
+    }
+
+    fun follow(c: WatchCommand) {
+        if (!watchAttached) return
+        when (c) {
+            is WatchCommand.Pause -> exo.playWhenReady = false
+            is WatchCommand.Play -> exo.playWhenReady = true
+            is WatchCommand.Seek -> exo.seekTo(c.positionMs)
+            is WatchCommand.SetRate -> {
+                exo.setPlaybackSpeed(c.rate.toFloat())
+                if (c.rate.toFloat() in SPEEDS) speed = c.rate.toFloat()
+            }
+        }
+        feedWatch(force = true)
+    }
 
     fun cycleScale(): Scale {
         scale = scale.next()
@@ -261,6 +337,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     fun changeSpeed(s: Float) {
+        if (watching()) return core.watchSetRate(s.toDouble())
         speed = s
         exo.setPlaybackSpeed(s)
     }
@@ -339,10 +416,12 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        feedWatch()
         exo.pause()
     }
 
     override fun onDestroy() {
+        if (Watch.player === this) Watch.player = null
         report("stopped")
         playback?.let { stopTranscode(it) }
         exo.release()
@@ -352,7 +431,7 @@ class PlayerActivity : ComponentActivity() {
     private fun report(state: String) {
         val p = playback ?: return
         val time = exo.currentPosition.coerceAtLeast(0).toULong()
-        background.launch { core.report(p.server, p.key, state, time, p.durationMs, p.transcodeSession) }
+        background.launch(reports) { core.report(p.server, p.key, state, time, p.durationMs, p.transcodeSession) }
     }
 
     private fun mediaItem(p: Playback): MediaItem {

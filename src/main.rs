@@ -9,6 +9,7 @@ mod player;
 mod shaders;
 mod ui;
 mod video_host;
+mod watch;
 
 use plaivo_core::{downloads, plex, prefs, settings, store};
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size};

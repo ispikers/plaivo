@@ -225,6 +225,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                     Screen.Home -> HomeScreen(home, serversLoaded, refresh, focusHome, { focusHome = false }, play) { screen = Screen.Downloads }
                     Screen.Search -> SearchScreen(play)
                     Screen.Downloads -> DownloadsScreen(play)
+                    Screen.WatchTogether -> WatchTogetherScreen(settings)
                     Screen.Settings -> SettingsScreen(
                         servers,
                         home,

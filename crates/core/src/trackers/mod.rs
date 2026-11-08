@@ -319,15 +319,6 @@ impl Queue {
         }
     }
 
-    fn drain(&mut self, mut run: impl FnMut(&Write) -> Outcome) {
-        while let Some(w) = self.items.first() {
-            if run(w) == Outcome::Retry {
-                break;
-            }
-            self.items.remove(0);
-            store::write_json(&self.path, &self.items);
-        }
-    }
 }
 
 struct Shared {
@@ -340,6 +331,7 @@ struct Inner {
     dir: PathBuf,
     configured: [bool; 3],
     shared: Mutex<Shared>,
+    queue: Mutex<Queue>,
     tx: Sender<Job>,
 }
 
@@ -350,9 +342,8 @@ impl Trackers {
     pub fn start() -> Self {
         let config = store::config_dir();
         let (trackers, rx) = Self::detached(config.clone(), Service::ALL.map(Service::configured));
-        let queue = Queue::load(config.join(QUEUE_FILE));
         let (weak, cache) = (Arc::downgrade(&trackers.0), store::cache_dir());
-        let spawned = std::thread::Builder::new().name("trackers".into()).spawn(move || worker(weak, rx, queue, anime::Mappings::new(cache)));
+        let spawned = std::thread::Builder::new().name("trackers".into()).spawn(move || worker(weak, rx, anime::Mappings::new(cache)));
         if let Err(e) = spawned {
             log::error!("could not start tracker worker: {e}");
         }
@@ -364,7 +355,8 @@ impl Trackers {
         let accounts = store::read_json(&config.join(ACCOUNTS_FILE)).unwrap_or_default();
         let (tx, rx) = channel();
         let shared = Mutex::new(Shared { accounts, session: None, threshold: 90.0 });
-        (Self(Arc::new(Inner { dir: config, configured, shared, tx })), rx)
+        let queue = Mutex::new(Queue::load(config.join(QUEUE_FILE)));
+        (Self(Arc::new(Inner { dir: config, configured, shared, queue, tx })), rx)
     }
 
     pub fn status(&self, service: Service) -> Status {
@@ -472,6 +464,9 @@ impl Trackers {
             out.extend(jobs(actions, media, |svc| s.accounts.active(svc, configured), realtime));
         }
         for job in out {
+            if let Job::Write(w) = &job {
+                self.0.queue().push(w.clone());
+            }
             let _ = self.0.tx.send(job);
         }
     }
@@ -480,6 +475,19 @@ impl Trackers {
 impl Inner {
     fn lock(&self) -> MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn queue(&self) -> MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn drain(&self, mappings: &mut anime::Mappings) {
+        while let Some(w) = self.queue().items.first().cloned() {
+            if self.write(&w, mappings) == Outcome::Retry {
+                break;
+            }
+            self.queue().remove(&w);
+        }
     }
 
     fn update(&self, f: impl FnOnce(&mut Accounts)) {
@@ -588,24 +596,24 @@ impl Inner {
     }
 }
 
-fn worker(inner: Weak<Inner>, rx: Receiver<Job>, mut queue: Queue, mut mappings: anime::Mappings) {
+fn worker(inner: Weak<Inner>, rx: Receiver<Job>, mut mappings: anime::Mappings) {
     while let Ok(job) = rx.recv() {
         let Some(inner) = inner.upgrade() else { break };
         match job {
             Job::Scrobble(action, media, pct) => {
                 inner.scrobble(action, &media, pct);
             }
-            Job::Write(w) => {
-                queue.push(w.clone());
+            Job::Write(w) if inner.queue().items.contains(&w) => {
                 let outcome = inner.write(&w, &mut mappings);
                 if outcome != Outcome::Retry {
-                    queue.remove(&w);
+                    inner.queue().remove(&w);
                 }
                 if outcome == Outcome::Done {
-                    queue.drain(|w| inner.write(w, &mut mappings));
+                    inner.drain(&mut mappings);
                 }
             }
-            Job::Retry => queue.drain(|w| inner.write(w, &mut mappings)),
+            Job::Retry => inner.drain(&mut mappings),
+            Job::Write(_) => {}
         }
     }
 }
@@ -688,15 +696,10 @@ mod tests {
         assert_eq!(q2.items.len(), QUEUE_MAX);
         assert_eq!(q2.items[0].pct, 5.0);
         let mut q = q2;
-        let mut seen = 0;
-        q.drain(|_| {
-            seen += 1;
-            if seen < 3 { Outcome::Done } else { Outcome::Retry }
-        });
-        assert_eq!(seen, 3);
-        assert_eq!(Queue::load(path.clone()).items.len(), QUEUE_MAX - 2);
-        q.drain(|_| Outcome::Drop);
-        assert!(Queue::load(path).items.is_empty());
+        let first = q.items[0].clone();
+        q.remove(&first);
+        assert_eq!(Queue::load(path.clone()).items.len(), QUEUE_MAX - 1);
+        assert_eq!(Queue::load(path).items[0].pct, 6.0);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -799,6 +802,7 @@ mod tests {
         let a = episode();
         let b = Media { episode: Some(4), ..episode() };
         let w = |service, media: &Media, pct| Job::Write(Write { service, media: media.clone(), pct });
+        let persisted = || Queue::load(dir.join(QUEUE_FILE)).items.into_iter().map(|w| (w.service, w.pct)).collect::<Vec<_>>();
 
         t.on_progress(&a, PlayState::Playing, 10, 100);
         assert!(drain().is_empty());
@@ -814,6 +818,7 @@ mod tests {
         assert_eq!(drain(), vec![w(Service::Mal, &b, 95.0)]);
         t.on_progress(&b, PlayState::Stopped, 96, 100);
         assert_eq!(drain(), vec![w(Service::Trakt, &b, 96.0)]);
+        assert_eq!(persisted(), [(Service::Mal, 95.0), (Service::Trakt, 96.0)]);
 
         t.set_trakt_progress(false);
         t.set_scrobble(Service::Mal, false);
