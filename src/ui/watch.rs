@@ -114,7 +114,10 @@ impl Plaivo {
                             .child(pill("watch-copy", "Copy code", Some(Icon::Copy), false).on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
                             .child(pill("watch-leave", "Leave", Some(Icon::Logout), false).on_click(cx.listener(|this, _, _, cx| this.watch_leave(cx)))),
                     )
-                    .child(row("watch-playing", Some(Icon::Movie), playing.unwrap_or_else(|| "Nothing playing yet".into()), if s.media.is_some() { mine } else { "" }))
+                    .child(
+                        row("watch-playing", Some(Icon::Movie), playing.unwrap_or_else(|| "Nothing playing yet".into()), if s.media.is_some() { mine } else { "" })
+                            .when(self.watch.can_open(), |r| r.child(pill("watch-open", "Open party", Some(Icon::Play), true).on_click(cx.listener(|this, _, _, cx| this.watch_open(cx))))),
+                    )
                     .when(host && s.media.is_none(), |d| d.child(note("Open a movie or episode and choose Watch together to start."))),
             )
             .child(section(format!("Participants · {}", room.participants.len())).children(participants))

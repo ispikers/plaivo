@@ -110,6 +110,10 @@ impl Watch {
         matches!(self.state.connection, Connection::Connected | Connection::Reconnecting)
     }
 
+    pub fn can_open(&self) -> bool {
+        self.file.is_some()
+    }
+
     pub fn busy(&self) -> bool {
         self.starting || self.in_room() || self.state.connection == Connection::Connecting
     }
@@ -493,6 +497,15 @@ impl Plaivo {
     fn playing_file(&self) -> Option<(&str, &str)> {
         let server = self.player.server.as_ref().filter(|_| self.playing())?;
         Some((server.id.as_str(), self.player.key.as_str()))
+    }
+
+    pub fn watch_open(&mut self, cx: &mut Context<Self>) {
+        let Some((server, key)) = self.watch.file.clone() else { return };
+        if self.playing_file() == Some((server.as_str(), key.as_str())) {
+            self.expand_player(cx);
+        } else {
+            self.play(server, key, cx);
+        }
     }
 
     pub fn watch_holds(&self) -> bool {

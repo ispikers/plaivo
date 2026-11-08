@@ -185,7 +185,10 @@ fun WatchTogetherScreen() {
                 if (media == null) {
                     Note(if (s.host) "Hold OK on any poster and choose Watch together." else "Waiting for the host to pick something.")
                 } else {
-                    SettingsRow(Glyph.PlayCircle, media, s.status.ifEmpty { if (Watch.item != null) "Open the player" else "" }, onClick = Watch::open)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        SettingsRow(Glyph.PlayCircle, media, s.status, Modifier.weight(1f), onClick = Watch::open)
+                        if (Watch.item != null) ActionButton("Open party", Watch::open)
+                    }
                     if (s.host) SettingsRow(Glyph.Stop, "Stop sharing", "Clears what the room is watching", onClick = core::watchClearMedia)
                 }
                 SectionTitle("People")
