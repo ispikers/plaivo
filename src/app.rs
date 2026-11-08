@@ -41,6 +41,8 @@ pub enum Page {
     Player,
 }
 
+pub type SidebarGroup = (SharedString, Vec<(String, String, SharedString, bool)>);
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum Nav {
     Home,
@@ -808,7 +810,7 @@ impl Plaivo {
         }
     }
 
-    pub fn sections_in_order(&self) -> Vec<(SharedString, Vec<(String, String, SharedString, bool)>)> {
+    pub fn sections_in_order(&self) -> Vec<SidebarGroup> {
         let home = self.home_server().map(|s| s.id).unwrap_or_default();
         let mut order: Vec<&Server> = self.servers.iter().collect();
         order.sort_by_key(|s| s.id != home);
