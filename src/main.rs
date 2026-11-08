@@ -34,6 +34,7 @@ fn main() {
             titlebar: Some(TitlebarOptions { title: Some("Plaivo".into()), ..Default::default() }),
             window_background: WindowBackgroundAppearance::Transparent,
             window_min_size: Some(size(px(720.), px(480.))),
+            draw_above_child_windows: true,
             ..Default::default()
         };
         let window = cx.open_window(options, |window, cx| cx.new(|cx| app::Plaivo::new(window, cx, account, settings, client, queue, rx))).expect("open window");
