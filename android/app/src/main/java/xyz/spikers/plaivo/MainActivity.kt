@@ -156,9 +156,8 @@ private fun QrCode(modules: Int, dark: List<Boolean>, modifier: Modifier) {
 
 @Composable
 private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onSignedOut: () -> Unit) {
-    val prefs = App.instance.prefs
-    var pinned by remember { mutableStateOf(!prefs.getBoolean(PREF_SIDEBAR_COMPACT, true)) }
-    var homeId by remember { mutableStateOf(prefs.getString(PREF_HOME_SERVER, null)) }
+    var settings by remember(refresh) { mutableStateOf(core.settings()) }
+    val pinned = !settings.sidebarCompact
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
     var servers by remember { mutableStateOf(core.servers()) }
     var serversLoaded by remember { mutableStateOf(false) }
@@ -172,7 +171,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onSignedOut: () -> Un
         serversLoaded = true
         libraries = io { core.libraries(false) }
     }
-    val home = servers.firstOrNull { it.id == homeId } ?: servers.firstOrNull()
+    val home = servers.firstOrNull { it.id == settings.homeServer } ?: servers.firstOrNull()
     BackHandler(enabled = !inSidebar || screen != Screen.Home) {
         if (!inSidebar) runCatching { sidebarFocus.requestFocus() } else screen = Screen.Home
     }
@@ -182,14 +181,17 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onSignedOut: () -> Un
             when (val s = screen) {
                 Screen.Home -> HomeScreen(home, serversLoaded, refresh, focusHome, { focusHome = false }, play)
                 Screen.Search -> SearchScreen(play)
-                Screen.Settings -> SettingsScreen(servers, home?.id, onHome = {
-                    homeId = it
-                    prefs.edit().putString(PREF_HOME_SERVER, it).apply()
-                }, onSignOut = {
-                    core.signOut()
-                    prefs.edit().remove(PREF_HOME_SERVER).apply()
-                    onSignedOut()
-                })
+                Screen.Settings -> SettingsScreen(
+                    servers,
+                    home,
+                    settings.quality.toInt(),
+                    onHome = { id -> settings = editSettings { it.copy(homeServer = id) } },
+                    onQuality = { kbps -> settings = editSettings { it.copy(quality = kbps.toUInt()) } },
+                    onSignOut = {
+                        core.signOut()
+                        onSignedOut()
+                    },
+                )
                 is Screen.Browse -> LibraryScreen(s.library, play)
             }
         }
@@ -198,10 +200,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onSignedOut: () -> Un
             screen = screen,
             libraries = libraries.sortedBy { it.server != home?.id },
             focus = sidebarFocus,
-            onTogglePin = {
-                pinned = !pinned
-                prefs.edit().putBoolean(PREF_SIDEBAR_COMPACT, !pinned).apply()
-            },
+            onTogglePin = { settings = editSettings { it.copy(sidebarCompact = !it.sidebarCompact) } },
             onNavigate = { screen = it },
             onFocusChanged = { inSidebar = it },
         )

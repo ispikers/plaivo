@@ -59,8 +59,8 @@ impl Settings {
         store::read_json(&path()).unwrap_or_default()
     }
 
-    pub fn save(&self) {
-        store::write_json(&path(), self);
+    pub fn save(&self) -> bool {
+        store::write_json(&path(), self)
     }
 
     pub fn remember_search(&mut self, q: &str) {
@@ -71,6 +71,21 @@ impl Settings {
         self.recent_searches.retain(|s| !s.eq_ignore_ascii_case(q));
         self.recent_searches.insert(0, q.to_owned());
         self.recent_searches.truncate(RECENT_SEARCHES);
+    }
+
+    pub fn migrate_android(&mut self, sidebar_compact: Option<bool>, home_server: Option<String>, quality: Option<i32>, scale: Option<&str>) {
+        if let Some(v) = sidebar_compact {
+            self.sidebar_compact = v;
+        }
+        if let Some(v) = home_server.filter(|s| !s.is_empty()) {
+            self.home_server = v;
+        }
+        if let Some(v) = quality.and_then(|q| u32::try_from(q).ok()) {
+            self.quality = v;
+        }
+        if let Some(v) = scale.and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_ascii_lowercase())).ok()) {
+            self.scale = v;
+        }
     }
 }
 
@@ -97,5 +112,18 @@ mod tests {
         assert!(s.sidebar_compact && s.home_server.is_empty() && s.scale == Scale::Fit);
         let s: Settings = serde_json::from_str(r#"{"scale":"stretch"}"#).unwrap();
         assert_eq!(s.scale.next(), Scale::Fit);
+    }
+
+    #[test]
+    fn android_prefs_migrate_once_into_settings() {
+        let mut s = Settings { recent_searches: vec!["x".into()], ..Default::default() };
+        s.migrate_android(Some(true), Some("srv".into()), Some(8000), Some("Fill"));
+        assert!(s.sidebar_compact);
+        assert_eq!((s.home_server.as_str(), s.quality, s.scale), ("srv", 8000, Scale::Fill));
+        assert_eq!(s.recent_searches, ["x"]);
+
+        let mut s = Settings { home_server: "kept".into(), quality: 4000, ..Default::default() };
+        s.migrate_android(None, Some(String::new()), Some(-1), Some("Zoom"));
+        assert_eq!((s.home_server.as_str(), s.quality, s.scale, s.sidebar_compact), ("kept", 4000, Scale::Fit, false));
     }
 }

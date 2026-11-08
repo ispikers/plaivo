@@ -1,9 +1,10 @@
-use crate::app::{Card, Plaivo, Shape};
+use crate::app::{Card, Choice, Plaivo, Shape};
 use crate::ui::theme::{self, Icon};
 use gpui::{
-    AnyElement, App, BoxShadow, Bounds, Context, ElementId, FontWeight, Hsla, ObjectFit, Pixels, SharedString, Stateful, Div, Svg, Window, canvas, div, img, point, prelude::*, px,
-    svg,
+    AnyElement, App, BoxShadow, Bounds, ClickEvent, Context, ElementId, FontWeight, Hsla, ObjectFit, Pixels, SharedString, Stateful, Div, Svg, Window, canvas, div, img, point, prelude::*,
+    px, svg,
 };
+use std::rc::Rc;
 
 pub fn icon(i: Icon, size: f32, color: impl Into<Hsla>) -> Svg {
     svg().path(i.path()).size(px(size)).flex_none().text_color(color)
@@ -76,6 +77,54 @@ pub fn round_button(id: impl Into<ElementId>, i: Icon, size: f32, icon_size: f32
         .child(icon(i, icon_size, fg))
 }
 
+pub fn section(title: impl Into<SharedString>) -> Div {
+    div().flex().flex_col().gap(px(8.)).child(div().pb(px(4.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::muted()).child(title.into()))
+}
+
+pub fn row(id: impl Into<ElementId>, i: Option<Icon>, title: impl Into<SharedString>, detail: impl Into<SharedString>) -> Stateful<Div> {
+    let detail = detail.into();
+    div()
+        .id(id.into())
+        .w_full()
+        .min_h(px(64.))
+        .px(px(20.))
+        .py(px(10.))
+        .rounded(px(12.))
+        .bg(theme::surface())
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .when_some(i, |d, i| d.child(icon(i, 24., theme::muted())))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).truncate().child(title.into()))
+                .when(!detail.is_empty(), |d| d.child(div().text_size(px(12.)).text_color(theme::muted()).truncate().child(detail))),
+        )
+}
+
+pub fn nav_row(id: impl Into<ElementId>, i: Icon, title: impl Into<SharedString>, detail: impl Into<SharedString>) -> Stateful<Div> {
+    row(id, Some(i), title, detail).cursor_pointer().hover(|s| s.bg(theme::tint(0.12))).child(icon(Icon::ChevronRight, 22., theme::muted()))
+}
+
+pub fn stepper(id: &'static str, value: impl Into<SharedString>, on: impl Fn(&i8, &mut Window, &mut App) + 'static) -> Div {
+    let on = Rc::new(on);
+    let click = |step: i8| {
+        let on = on.clone();
+        move |_: &ClickEvent, window: &mut Window, cx: &mut App| on(&step, window, cx)
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .child(round_button((id, 0usize), Icon::Remove, 32., 18., theme::black(0.), theme::tint(0.08), theme::text()).on_click(click(-1)))
+        .child(div().id((id, 1usize)).min_w(px(72.)).flex().justify_center().text_size(px(14.)).cursor_pointer().tooltip(tip("Reset")).child(value.into()).on_click(click(0)))
+        .child(round_button((id, 2usize), Icon::Add, 32., 18., theme::black(0.), theme::tint(0.08), theme::text()).on_click(click(1)))
+}
+
 pub struct Tip(pub SharedString);
 
 impl Render for Tip {
@@ -100,6 +149,25 @@ pub fn fmt_time(t: f64) -> String {
 }
 
 impl Plaivo {
+    pub fn choice_list(&self, prefix: &'static str, i: Option<Icon>, choices: Vec<Choice>, pick: impl Fn(&mut Self, &str, &mut Context<Self>) + Copy + 'static, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        choices
+            .into_iter()
+            .enumerate()
+            .map(|(n, c)| {
+                let id = c.id;
+                row((prefix, n), i, c.label, c.sub)
+                    .cursor_pointer()
+                    .when(c.selected, |d| d.bg(theme::tint(0.10)).child(icon(Icon::Check, 20., theme::text())))
+                    .hover(|s| s.bg(theme::tint(0.12)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        pick(this, &id, cx);
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     pub fn media_card(&mut self, id: impl Into<ElementId>, card: &Card, width: f32, wide: bool, cx: &mut Context<Self>) -> AnyElement {
         let art_w = width - 6.;
         let art_h = if wide { art_w * 9. / 16. } else { art_w * 1.5 };

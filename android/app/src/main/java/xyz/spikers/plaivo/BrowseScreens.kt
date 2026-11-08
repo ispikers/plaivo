@@ -13,13 +13,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -36,21 +34,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.tv.material3.Border
-import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.Section
-import uniffi.plaivo_ffi.ServerInfo
 
 private const val PAGE = 120uL
 private const val SEARCH_DEBOUNCE_MS = 500L
@@ -72,7 +65,7 @@ private fun PosterGrid(cards: List<MediaCard>, play: (MediaCard) -> Unit, header
 }
 
 @Composable
-private fun Heading(text: String) {
+fun Heading(text: String) {
     Text(text, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.text)
 }
 
@@ -157,68 +150,4 @@ fun SearchScreen(play: (MediaCard) -> Unit) {
             if (status.isNotEmpty()) Text(status, fontSize = 13.sp, color = Palette.muted)
         }
     })
-}
-
-@Composable
-fun SettingsScreen(servers: List<ServerInfo>, homeId: String?, onHome: (String) -> Unit, onSignOut: () -> Unit) {
-    val context = LocalContext.current
-    val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = Dims.edge, vertical = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        item { Heading("Settings") }
-        item { SectionTitle("Home server") }
-        item { Text("Home shows Continue Watching and recommendations from this server. Libraries from every server stay in the sidebar.", fontSize = 13.sp, color = Palette.muted) }
-        items(servers.size) { i ->
-            val s = servers[i]
-            val selected = s.id == homeId
-            SettingsRow(Glyph.Server, s.name, if (s.owned) "Owned" else "Shared with you", selected = selected, onClick = { onHome(s.id) }) {
-                if (selected) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
-            }
-        }
-        if (servers.isEmpty()) item { Text("No servers found.", fontSize = 13.sp, color = Palette.muted) }
-        item { SectionTitle("Account") }
-        item { SettingsRow(Glyph.Person, "Plex account", "Signed in · select to sign out", onClick = onSignOut) { GlyphIcon(Glyph.Logout, 20.dp, Palette.muted) } }
-        item { SectionTitle("About") }
-        item { SettingsRow(Glyph.PlayCircle, "Plaivo", "Version $version") }
-    }
-}
-
-@Composable
-private fun SectionTitle(text: String) {
-    Text(text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, modifier = Modifier.padding(top = 18.dp))
-}
-
-@Composable
-private fun SettingsRow(glyph: Glyph, title: String, detail: String, selected: Boolean = false, onClick: (() -> Unit)? = null, trailing: @Composable () -> Unit = {}) {
-    val content: @Composable () -> Unit = {
-        Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            GlyphIcon(glyph, 22.dp, Palette.muted)
-            Column(Modifier.weight(1f)) {
-                Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, maxLines = 1)
-                Text(detail, fontSize = 12.sp, color = Palette.muted, maxLines = 1)
-            }
-            trailing()
-        }
-    }
-    val shape = RoundedCornerShape(12.dp)
-    if (onClick == null) {
-        Box(Modifier.widthIn(max = 560.dp).fillMaxWidth().background(Palette.surface, shape)) { content() }
-    } else {
-        Surface(
-            onClick = onClick,
-            modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(),
-            shape = ClickableSurfaceDefaults.shape(shape),
-            colors = ClickableSurfaceDefaults.colors(
-                containerColor = if (selected) Palette.tint(0.10f) else Palette.surface,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.12f),
-                focusedContentColor = Palette.text,
-            ),
-            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-            border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = shape)),
-        ) { content() }
-    }
 }

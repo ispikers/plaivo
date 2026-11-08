@@ -6,11 +6,10 @@ mod images;
 mod logging;
 mod mpv;
 mod player;
-mod settings;
 mod ui;
 mod video_host;
 
-use plaivo_core::{plex, store};
+use plaivo_core::{plex, settings, store};
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size};
 use std::sync::Arc;
 

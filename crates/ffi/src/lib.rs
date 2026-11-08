@@ -1,4 +1,5 @@
 use plaivo_core::plex::{Client, Ctx, Item, QUALITIES, Quality, Server, Source, fmt_bitrate, resolve_playable};
+use plaivo_core::settings::{Scale, Settings};
 use plaivo_core::{Account, first, join, store};
 use qrcodegen::{QrCode, QrCodeEcc};
 use std::sync::{Arc, Mutex};
@@ -31,6 +32,23 @@ impl From<&str> for PlaivoError {
 }
 
 type R<T> = Result<T, PlaivoError>;
+
+#[uniffi::remote(Enum)]
+pub enum Scale {
+    Fit,
+    Fill,
+    Stretch,
+}
+
+#[uniffi::remote(Record)]
+pub struct Settings {
+    pub sidebar_compact: bool,
+    pub home_server: String,
+    pub recent_searches: Vec<String>,
+    pub quality: u32,
+    pub scale: Scale,
+    pub audio_device: String,
+}
 
 #[derive(uniffi::Record)]
 pub struct SignIn {
@@ -133,6 +151,7 @@ pub struct Playback {
 pub struct Plaivo {
     client: Client,
     account: Mutex<Account>,
+    settings: Mutex<Settings>,
 }
 
 fn card(srv: &Server, it: &Item, wide: bool) -> Card {
@@ -174,7 +193,7 @@ impl Plaivo {
         logcat::init();
         store::set_dirs(config_dir.into(), cache_dir.into());
         let account = Account::load();
-        Arc::new(Self { client: Client::new(account.client_id.clone()), account: Mutex::new(account) })
+        Arc::new(Self { client: Client::new(account.client_id.clone()), account: Mutex::new(account), settings: Mutex::new(Settings::load()) })
     }
 
     pub fn signed_in(&self) -> bool {
@@ -203,6 +222,25 @@ impl Plaivo {
         account.token = None;
         account.servers.clear();
         account.save();
+        let mut settings = self.settings.lock().unwrap();
+        settings.home_server.clear();
+        settings.recent_searches.clear();
+        settings.save();
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.settings.lock().unwrap().clone()
+    }
+
+    pub fn set_settings(&self, settings: Settings) {
+        settings.save();
+        *self.settings.lock().unwrap() = settings;
+    }
+
+    pub fn migrate_android_prefs(&self, sidebar_compact: Option<bool>, home_server: Option<String>, quality: Option<i32>, scale: Option<String>) -> bool {
+        let mut settings = self.settings.lock().unwrap();
+        settings.migrate_android(sidebar_compact, home_server, quality, scale.as_deref());
+        settings.save()
     }
 
     pub fn servers(&self) -> Vec<ServerInfo> {

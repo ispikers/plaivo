@@ -1,4 +1,4 @@
-use crate::app::{Nav, Page, Plaivo, Status};
+use crate::app::{Choice, Nav, Page, Plaivo, Status};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, shadow};
 use gpui::{AnyElement, Context, ElementId, FontWeight, Hsla, KeyDownEvent, SharedString, Window, div, prelude::*, px, rgb};
@@ -59,7 +59,7 @@ impl Render for Plaivo {
 impl Plaivo {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.page != Page::Player {
-            if ev.keystroke.key == "escape" && self.page == Page::Detail {
+            if ev.keystroke.key == "escape" && (self.page == Page::Detail || self.settings_page.is_some() && self.page == Page::Settings) {
                 self.back(cx);
             }
             return;
@@ -209,7 +209,7 @@ impl Plaivo {
                 item("fullscreen".into(), if fullscreen { Icon::FullscreenExit } else { Icon::Fullscreen }, if fullscreen { "Exit fullscreen" } else { "Fullscreen" }.into(), false)
                     .on_click(|_, window, _| window.toggle_fullscreen()),
             )
-            .child(item("settings".into(), Icon::Settings, "Settings".into(), self.page == Page::Settings).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings, true, cx))))
+            .child(item("settings".into(), Icon::Settings, "Settings".into(), self.page == Page::Settings).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(None), true, cx))))
     }
 
     fn render_splash(&self) -> AnyElement {
@@ -309,36 +309,12 @@ impl Plaivo {
 
     pub fn server_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let home = self.home_server().map(|s| s.id).unwrap_or_default();
-        self.servers
+        let choices = self
+            .servers
             .iter()
-            .map(|s| {
-                let selected = s.id == home;
-                let id = s.id.clone();
-                div()
-                    .id(SharedString::from(format!("srv-{}", s.id)))
-                    .h(px(64.))
-                    .px(px(16.))
-                    .rounded(px(12.))
-                    .flex()
-                    .items_center()
-                    .gap(px(14.))
-                    .cursor_pointer()
-                    .bg(if selected { theme::tint(0.10) } else { theme::surface().into() })
-                    .hover(|st| st.bg(theme::tint(0.12)))
-                    .child(icon(Icon::Server, 24., theme::muted()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(s.name.clone()))
-                            .child(div().text_size(px(12.)).text_color(theme::muted()).child(if s.owned { "Owned" } else { "Shared with you" })),
-                    )
-                    .when(selected, |d| d.child(icon(Icon::Check, 20., theme::text())))
-                    .on_click(cx.listener(move |this, _, _, cx| this.pick_home_server(&id, cx)))
-                    .into_any_element()
-            })
-            .collect()
+            .map(|s| Choice { id: s.id.clone().into(), label: s.name.clone().into(), sub: if s.owned { "Owned" } else { "Shared with you" }.into(), selected: s.id == home })
+            .collect();
+        self.choice_list("srv", Some(Icon::Server), choices, |this, id, cx| this.pick_home_server(id, cx), cx)
     }
 }
 

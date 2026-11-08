@@ -52,11 +52,12 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     })
 }
 
-pub fn write_json<T: Serialize>(path: &Path, value: &T) {
+pub fn write_json<T: Serialize>(path: &Path, value: &T) -> bool {
     let result = serde_json::to_vec_pretty(value).map_err(std::io::Error::other).and_then(|b| write_atomic(path, &b));
-    if let Err(e) = result {
+    if let Err(e) = &result {
         log::error!("could not write {}: {e}", path.display());
     }
+    result.is_ok()
 }
 
 fn fnv1a(key: &str) -> u64 {
@@ -107,7 +108,7 @@ mod tests {
     #[test]
     fn atomic_write_round_trips() {
         let p = std::env::temp_dir().join(format!("plaivo-store-test-{}", std::process::id())).join("x.json");
-        write_json(&p, &vec![1, 2, 3]);
+        assert!(write_json(&p, &vec![1, 2, 3]));
         assert_eq!(read_json::<Vec<i32>>(&p), Some(vec![1, 2, 3]));
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }

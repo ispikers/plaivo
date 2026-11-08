@@ -50,7 +50,15 @@ pub enum Nav {
     Library(String, String),
     Search,
     Detail(String, String, Option<String>),
-    Settings,
+    Settings(Option<Category>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Category {
+    General,
+    Playback,
+    Connections,
+    About,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -179,6 +187,7 @@ pub struct Plaivo {
     pub sections: Vec<SectionInfo>,
     pub page: Page,
     pub nav: Vec<Nav>,
+    pub settings_page: Option<Category>,
     pub toast: Option<SharedString>,
     toast_task: Option<Task<()>>,
     pub auth_waiting: bool,
@@ -375,6 +384,7 @@ impl Plaivo {
             sections: Vec::new(),
             page: Page::Auth,
             nav: Vec::new(),
+            settings_page: None,
             toast: None,
             toast_task: None,
             auth_waiting: false,
@@ -834,8 +844,9 @@ impl Plaivo {
             Nav::Home => self.page = Page::Home,
             Nav::Servers => self.page = Page::Servers,
             Nav::Search => self.page = Page::Search,
-            Nav::Settings => {
+            Nav::Settings(category) => {
                 self.page = Page::Settings;
+                self.settings_page = category;
                 self.load_mpv_build(cx);
             }
             Nav::Library(server, section) => {

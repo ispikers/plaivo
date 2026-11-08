@@ -1,5 +1,9 @@
+@file:OptIn(UnstableApi::class)
+
 package xyz.spikers.plaivo
 
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -28,6 +32,7 @@ import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.Playback
 import uniffi.plaivo_ffi.PlaivoException
+import uniffi.plaivo_ffi.Scale as CoreScale
 
 enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
     Fit("Letterbox", Glyph.ScaleFit, AspectRatioFrameLayout.RESIZE_MODE_FIT),
@@ -68,8 +73,9 @@ class PlayerActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val server = intent.getStringExtra("server") ?: return finish()
         val key = intent.getStringExtra("key") ?: return finish()
-        quality = App.instance.prefs.getInt(PREF_QUALITY, 0)
-        scale = runCatching { Scale.valueOf(App.instance.prefs.getString(PREF_SCALE, null) ?: "") }.getOrDefault(Scale.Fit)
+        val settings = core.settings()
+        quality = settings.quality.toInt()
+        scale = Scale.entries[settings.scale.ordinal]
         exo = ExoPlayer.Builder(this).build()
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) = report(if (isPlaying) "playing" else "paused")
@@ -150,7 +156,7 @@ class PlayerActivity : ComponentActivity() {
     fun changeQuality(kbps: Int) {
         if (kbps == quality) return
         quality = kbps
-        App.instance.prefs.edit().putInt(PREF_QUALITY, kbps).apply()
+        editSettings { it.copy(quality = kbps.toUInt()) }
         val p = playback ?: return
         play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = fellBack)
     }
@@ -178,7 +184,7 @@ class PlayerActivity : ComponentActivity() {
 
     fun cycleScale(): Scale {
         scale = scale.next()
-        App.instance.prefs.edit().putString(PREF_SCALE, scale.name).apply()
+        editSettings { it.copy(scale = CoreScale.entries[scale.ordinal]) }
         return scale
     }
 

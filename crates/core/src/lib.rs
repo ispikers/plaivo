@@ -1,4 +1,5 @@
 pub mod plex;
+pub mod settings;
 pub mod store;
 
 use plex::Server;

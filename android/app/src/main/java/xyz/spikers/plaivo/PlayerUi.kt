@@ -1,5 +1,9 @@
+@file:OptIn(UnstableApi::class)
+
 package xyz.spikers.plaivo
 
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import android.text.format.DateFormat
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility

@@ -4,7 +4,7 @@ use crate::player::{Panel, SPEEDS};
 use crate::plex::{self, QUALITIES};
 use crate::settings::Scale;
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{bounds_probe, fmt_time, icon, progress_bar, round_button, shadow, tip};
+use crate::ui::widgets::{bounds_probe, fmt_time, icon, progress_bar, round_button, shadow, stepper, tip};
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, SharedString, Transformation, Window, div, img,
     linear_color_stop, linear_gradient, percentage, prelude::*, px, rgb, svg,
@@ -514,11 +514,9 @@ impl Plaivo {
             }))
     }
 
-    fn quality_choices(&self) -> Vec<Choice> {
-        let m = &self.player.media;
-        let source = crate::app::join(&[m.bitrate.map(plex::fmt_bitrate).unwrap_or_default(), fmt_resolution(&m.video_resolution)]);
+    pub fn quality_choices(&self, original: SharedString) -> Vec<Choice> {
         let q = self.settings.quality;
-        let original = Choice { id: "0".into(), label: "Original".into(), sub: source.into(), selected: plex::Quality::find(q).is_none() };
+        let original = Choice { id: "0".into(), label: "Original".into(), sub: original, selected: plex::Quality::find(q).is_none() };
         std::iter::once(original)
             .chain(QUALITIES.iter().map(|x| Choice { id: x.kbps.to_string().into(), label: x.label.into(), sub: plex::fmt_bitrate(x.kbps as u64).into(), selected: x.kbps == q }))
             .collect()
@@ -545,7 +543,10 @@ impl Plaivo {
             })),
             _ => {
                 let choices = match panel {
-                    Panel::Quality => self.quality_choices(),
+                    Panel::Quality => {
+                        let m = &self.player.media;
+                        self.quality_choices(crate::app::join(&[m.bitrate.map(plex::fmt_bitrate).unwrap_or_default(), fmt_resolution(&m.video_resolution)]).into())
+                    }
                     Panel::Speed => SPEEDS.iter().map(|&s| Choice { id: s.to_string().into(), label: fmt_speed(s).into(), sub: "".into(), selected: s == self.player.speed }).collect(),
                     _ => self.player.devices.clone(),
                 };
@@ -614,40 +615,24 @@ impl Plaivo {
     }
 
     fn delay_stepper(&self, audio: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let (v, label, key) = if audio { (self.player.audio_delay, "Audio delay", "a") } else { (self.player.sub_delay, "Subtitle delay", "s") };
-        let step = |id: &'static str, i: Icon, ms: f64| {
-            round_button(SharedString::from(format!("{key}-{id}")), i, 32., 18., theme::black(0.), theme::tint(0.08), theme::text()).on_click(cx.listener(move |this, _, _, cx| {
-                this.nudge_delay(audio, ms);
-                cx.notify();
-            }))
-        };
+        let (v, label, id) = if audio { (self.player.audio_delay, "Audio delay", "audio-delay") } else { (self.player.sub_delay, "Subtitle delay", "sub-delay") };
         div()
             .h(px(52.))
             .flex_none()
             .px(px(12.))
             .flex()
             .items_center()
-            .gap(px(4.))
             .border_t_1()
             .border_color(theme::outline())
             .child(div().flex_1().pl(px(4.)).text_size(px(13.)).text_color(theme::muted()).child(label))
-            .child(step("minus", Icon::Remove, -50.))
-            .child(
-                div()
-                    .id(SharedString::from(format!("{key}-reset")))
-                    .min_w(px(72.))
-                    .flex()
-                    .justify_center()
-                    .text_size(px(14.))
-                    .cursor_pointer()
-                    .tooltip(tip("Reset"))
-                    .child(format!("{:+} ms", v as i64))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.nudge_delay(audio, 0.);
-                        cx.notify();
-                    })),
-            )
-            .child(step("plus", Icon::Add, 50.))
+            .child(stepper(
+                id,
+                format!("{:+} ms", v as i64),
+                cx.listener(move |this, step: &i8, _, cx| {
+                    this.nudge_delay(audio, *step as f64 * 50.);
+                    cx.notify();
+                }),
+            ))
     }
 
     fn track_column(&self, title: &'static str, kind: &'static str, tracks: &[Choice], cx: &mut Context<Self>) -> impl IntoElement {
