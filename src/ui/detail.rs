@@ -34,7 +34,18 @@ impl Plaivo {
             (d.eyebrow.clone(), d.title.clone(), d.chips.clone(), d.genres.clone(), d.summary.clone(), d.play_label.clone(), d.play_key.clone(), d.server.clone(), d.progress, d.art.clone(), d.is_show);
         let backdrop = self.image(&art, Shape::Backdrop);
         let bg = theme::bg();
-        let episodes: Vec<AnyElement> = self.episodes.clone().iter().enumerate().map(|(i, e)| self.episode_row(i, e, cx)).collect();
+        let episodes: Vec<AnyElement> = self
+            .episodes
+            .clone()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let download = self.episode_download_button(i, cx);
+                self.episode_row(i, e, download, cx)
+            })
+            .collect();
+        let download = self.detail_download_button(cx);
+        let season_download = self.season_download_chip(cx);
         let hero = div()
             .relative()
             .w_full()
@@ -68,6 +79,7 @@ impl Plaivo {
                                 let (s, k) = (server.to_string(), play_key.to_string());
                                 d.child(pill("play", play_label, Some(Icon::Play), true).h(px(48.)).on_click(cx.listener(move |this, _, _, cx| this.play(s.clone(), k.clone(), cx))))
                             })
+                            .children(download)
                             .when(progress > 0., |d| d.child(div().w(px(120.)).rounded(px(2.)).overflow_hidden().child(progress_bar(progress, 4., theme::outline())))),
                     ),
             );
@@ -83,7 +95,8 @@ impl Plaivo {
                     .child(div().flex().flex_wrap().gap(px(8.)).children(self.seasons.iter().enumerate().map(|(i, s)| {
                         let id = s.id.to_string();
                         chip(("season", i), s.label.clone(), s.selected).on_click(cx.listener(move |this, _, _, cx| this.select_season(id.clone(), cx)))
-                    })))
+                    }))
+                    .children(season_download))
                     .children(episodes)
             });
         div()
@@ -94,7 +107,7 @@ impl Plaivo {
             .into_any_element()
     }
 
-    fn episode_row(&mut self, i: usize, e: &Card, cx: &mut Context<Self>) -> AnyElement {
+    pub fn episode_row(&mut self, i: usize, e: &Card, trailing: Option<AnyElement>, cx: &mut Context<Self>) -> AnyElement {
         let image = self.image(&e.thumb, Shape::Wide);
         let (server, key) = (e.server.to_string(), e.key.to_string());
         div()
@@ -133,6 +146,7 @@ impl Plaivo {
                     .child(div().text_size(px(12.)).line_height(px(16.)).text_color(theme::muted()).line_clamp(3).child(e.summary.clone()))
                     .child(div().text_size(px(12.)).text_color(theme::muted()).child(e.meta.clone())),
             )
+            .children(trailing)
             .into_any_element()
     }
 }

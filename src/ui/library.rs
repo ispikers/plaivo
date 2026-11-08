@@ -30,7 +30,7 @@ impl Plaivo {
     }
 
     fn grid(&mut self, g: Grid, cw: f32, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
-        let w = card_width(cw, false);
+        let w = card_width(cw, false, self.settings.card_scale());
         let cols = ((cw - 16.) / w).round().max(1.) as usize;
         let count = self.grid_len(g);
         let rows = count.div_ceil(cols);

@@ -1,0 +1,5 @@
+OpenCL ICD Loader, https://github.com/KhronosGroup/OpenCL-ICD-Loader
+
+Copyright (c) 2016-2026 The Khronos Group Inc.
+
+Licensed under the Apache License, Version 2.0.

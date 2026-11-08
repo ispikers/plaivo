@@ -60,7 +60,7 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> bool {
     result.is_ok()
 }
 
-fn fnv1a(key: &str) -> u64 {
+pub(crate) fn fnv1a(key: &str) -> u64 {
     key.bytes().fold(0xcbf29ce484222325, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
 

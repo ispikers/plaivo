@@ -1,7 +1,11 @@
+pub mod add_server;
+mod audio_settings;
 mod detail;
+mod downloads;
 mod home;
 pub mod input;
 mod library;
+mod licenses;
 mod player;
 mod settings;
 mod shell;

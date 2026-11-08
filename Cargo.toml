@@ -20,10 +20,12 @@ log = "0.4.35"
 raw-window-handle = "0.6"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+flate2 = "1.1.11"
 ureq = { version = "3", default-features = false, features = ["native-tls-no-default", "json", "gzip"] }
 
 [build-dependencies]
 serde_json = "1.0.154"
+flate2 = "1.1.11"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_Globalization"] }

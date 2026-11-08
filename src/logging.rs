@@ -1,4 +1,5 @@
 use crate::store;
+use plaivo_core::redact;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -9,7 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_LOG_BYTES: u64 = 4 << 20;
 
 struct Logger {
-    level: LevelFilter,
     console: bool,
     file: Option<Mutex<File>>,
 }
@@ -27,36 +27,23 @@ fn open_log() -> Option<File> {
     OpenOptions::new().create(true).append(true).open(path).ok()
 }
 
-fn redact(line: &str) -> String {
-    const KEY: &str = "X-Plex-Token";
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    while let Some(i) = rest.find(KEY) {
-        let after = &rest[i + KEY.len()..];
-        let Some(sep) = after.chars().next().filter(|c| *c == '=' || *c == ':') else {
-            out.push_str(&rest[..i + KEY.len()]);
-            rest = after;
-            continue;
-        };
-        let value = after[1..].trim_start();
-        let skipped = after.len() - value.len();
-        let end = value.find(|c: char| c == '&' || c == '"' || c == '\'' || c.is_whitespace()).unwrap_or(value.len());
-        out.push_str(&rest[..i + KEY.len()]);
-        out.push(sep);
-        out.push_str("<redacted>");
-        rest = &after[skipped + end..];
-    }
-    out.push_str(rest);
-    out
-}
-
 fn parse_level(s: &str) -> Option<LevelFilter> {
     s.trim().parse().ok()
 }
 
-pub fn init() {
-    let level = std::env::var("PLAIVO_LOG").ok().and_then(|v| parse_level(&v)).unwrap_or(if cfg!(debug_assertions) { LevelFilter::Debug } else { LevelFilter::Info });
-    let logger = Logger { level, console: cfg!(debug_assertions), file: open_log().map(Mutex::new) };
+fn default_level(debug: bool) -> LevelFilter {
+    std::env::var("PLAIVO_LOG").ok().and_then(|v| parse_level(&v)).unwrap_or(if debug || cfg!(debug_assertions) { LevelFilter::Debug } else { LevelFilter::Info })
+}
+
+pub fn set_debug(debug: bool) {
+    let level = default_level(debug);
+    log::set_max_level(level);
+    log::info!("log level {level}");
+}
+
+pub fn init(debug: bool) {
+    let level = default_level(debug);
+    let logger = Logger { console: cfg!(debug_assertions), file: open_log().map(Mutex::new) };
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(level);
     }
@@ -72,7 +59,7 @@ fn clock() -> String {
 impl Log for Logger {
     fn enabled(&self, m: &Metadata) -> bool {
         let ours = m.target().starts_with("plaivo") || m.target() == "mpv";
-        m.level() <= if ours { self.level } else { self.level.min(LevelFilter::Warn) }
+        m.level() <= if ours { log::max_level() } else { log::max_level().min(LevelFilter::Warn) }
     }
 
     fn log(&self, r: &Record) {
@@ -109,13 +96,6 @@ impl Log for Logger {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tokens_never_reach_the_log() {
-        assert_eq!(redact("GET http://h/a?X-Plex-Token=abc123&b=1 ok"), "GET http://h/a?X-Plex-Token=<redacted>&b=1 ok");
-        assert_eq!(redact("hdr X-Plex-Token: s3cr3t done"), "hdr X-Plex-Token:<redacted> done");
-        assert_eq!(redact("no secrets here"), "no secrets here");
-    }
 
     #[test]
     fn levels_parse_case_insensitively() {

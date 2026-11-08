@@ -1,0 +1,5 @@
+SRT, https://github.com/Haivision/srt
+
+Copyright (c) 2018 Haivision Systems Inc.
+
+Licensed under the Mozilla Public License, version 2.0.

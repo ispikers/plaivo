@@ -4,7 +4,8 @@ use crate::player::{Panel, SPEEDS};
 use crate::plex::{self, QUALITIES};
 use crate::settings::Scale;
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{bounds_probe, fmt_time, icon, progress_bar, round_button, shadow, stepper, tip};
+use crate::ui::widgets::{bounds_probe, fmt_time, icon, pill, progress_bar, round_button, shadow, stepper, tip};
+use crate::shaders;
 use gpui::{
     Animation, AnimationExt, AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, SharedString, Transformation, Window, div, img,
     linear_color_stop, linear_gradient, percentage, prelude::*, px, rgb, svg,
@@ -19,8 +20,9 @@ fn control(id: impl Into<ElementId>, i: Icon, size: f32, label: impl Into<Shared
     round_button(id, i, 40., size, theme::black(0.), white().opacity(0.12), white()).tooltip(tip(label))
 }
 
-fn ten(id: &'static str, i: Icon, label: &'static str) -> gpui::Stateful<gpui::Div> {
-    control(id, i, 24., label).relative().child(div().absolute().top(px(16.)).left_0().right_0().flex().justify_center().text_size(px(7.)).font_weight(FontWeight::BOLD).child("10"))
+fn seek_button(id: &'static str, i: Icon, secs: u32, back: bool) -> gpui::Stateful<gpui::Div> {
+    let label = format!("{} {secs} seconds", if back { "Back" } else { "Forward" });
+    control(id, i, 24., label).relative().child(div().absolute().top(px(16.)).left_0().right_0().flex().justify_center().text_size(px(7.)).font_weight(FontWeight::BOLD).child(secs.to_string()))
 }
 
 fn fmt_speed(s: f64) -> String {
@@ -52,6 +54,7 @@ fn panel_title(p: Panel) -> &'static str {
         Panel::Quality => "Quality",
         Panel::Speed => "Playback Speed",
         Panel::Output => "Audio Output",
+        Panel::Shader => "Shader",
         Panel::Info => "File Info",
         Panel::Queue => "Queue",
     }
@@ -153,7 +156,8 @@ impl Plaivo {
                     .with_animation("buffering", Animation::new(Duration::from_secs(1)).repeat(), |s, d| s.with_transformation(Transformation::rotate(percentage(d)))),
             )
         });
-        let skip = self.active_skip().map(|s| {
+        let up_next = self.up_next();
+        let skip = self.active_skip().filter(|_| up_next.is_none()).map(|s| {
             div()
                 .id("skip")
                 .occlude()
@@ -268,6 +272,8 @@ impl Plaivo {
                 .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.end_volume_drag(cx)))
                 .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, cx| this.end_volume_drag(cx)))
         };
+        let up_next = up_next.map(|(card, left)| self.render_up_next(card, left, hide, cx));
+        let small = self.settings.seek_small;
         let paused = self.player.paused;
         let episodic = !self.player.queue.is_empty();
         let (prev, next) = (self.neighbor(-1), self.neighbor(1));
@@ -348,9 +354,9 @@ impl Plaivo {
                             .items_center()
                             .gap(px(4.))
                             .when(episodic, |d| d.child(skip_button("prev", Icon::SkipPrevious, -1, prev, cx)))
-                            .child(ten("back10", Icon::Replay, "Back 10 seconds").on_click(cx.listener(|this, _, _, _| this.seek_by(-10.))))
+                            .child(seek_button("back", Icon::Replay, small, true).on_click(cx.listener(move |this, _, _, _| this.seek_by(-(small as f64)))))
                             .child(control("pause", if paused { Icon::Play } else { Icon::Pause }, 30., if paused { "Play" } else { "Pause" }).on_click(cx.listener(|this, _, _, _| this.toggle_pause())))
-                            .child(ten("fwd10", Icon::Forward, "Forward 10 seconds").on_click(cx.listener(|this, _, _, _| this.seek_by(10.))))
+                            .child(seek_button("fwd", Icon::Forward, small, false).on_click(cx.listener(move |this, _, _, _| this.seek_by(small as f64))))
                             .when(episodic, |d| d.child(skip_button("next", Icon::SkipNext, 1, next, cx)))
                             .child(control("stop", Icon::Stop, 24., "Stop").on_click(cx.listener(|this, _, _, cx| this.stop_playback(cx))))
                             .when_some(ends, |d, e| d.child(div().ml(px(12.)).text_size(px(13.)).text_color(white().opacity(0.7)).child(e)))
@@ -410,8 +416,65 @@ impl Plaivo {
             .when(!hide, |d| d.child(controls))
             .children(hint)
             .children(skip)
+            .children(up_next)
             .children(panel)
             .into_any_element()
+    }
+
+    fn render_up_next(&mut self, card: crate::app::Card, left: f64, hide: bool, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let image = self.image(&card.thumb, Shape::Wide);
+        div()
+            .id("up-next")
+            .occlude()
+            .absolute()
+            .right(px(24.))
+            .bottom(px(if hide { 32. } else { 116. }))
+            .w(px(420.))
+            .p(px(12.))
+            .rounded(px(12.))
+            .bg(theme::surface())
+            .shadow(shadow(24., 0.5))
+            .flex()
+            .gap(px(12.))
+            .child(
+                div()
+                    .w(px(128.))
+                    .h(px(72.))
+                    .flex_none()
+                    .rounded(px(6.))
+                    .overflow_hidden()
+                    .bg(theme::bg())
+                    .when_some(image, |d, im| d.child(img(im).size_full().object_fit(ObjectFit::Cover))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_size(px(12.)).text_color(theme::muted()).child(format!("Up next in {}s", left.max(0.).ceil())))
+                            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).truncate().child(card.subtitle)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(pill("up-next-play", "Play now", Some(Icon::Play), true).h(px(36.)).on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.play_up_next(cx);
+                            })))
+                            .child(pill("up-next-cancel", "Cancel", None, false).h(px(36.)).on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.cancel_up_next();
+                                cx.notify();
+                            }))),
+                    ),
+            )
     }
 
     fn panel_shell(&self, id: &'static str, panel: Panel, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -508,10 +571,23 @@ impl Plaivo {
                     Panel::Quality => this.set_quality(id.parse().unwrap_or(0), cx),
                     Panel::Speed => this.set_speed(id.parse().unwrap_or(1.)),
                     Panel::Output => this.set_audio_device(&id),
+                    Panel::Shader => this.set_shader(&id, cx),
                     _ => {}
                 }
                 this.open_panel(Panel::Settings, cx);
             }))
+    }
+
+    fn shader_label(&self) -> String {
+        let name = shaders::name(&self.player.shader);
+        if self.player.shader == shaders::NVSCALER && self.player.shader_applied.is_empty() { format!("{name} · off for HDR") } else { name.into() }
+    }
+
+    pub fn shader_choices(&self, current: &str) -> Vec<Choice> {
+        std::iter::once(("", "Off"))
+            .chain(shaders::PRESETS.iter().map(|p| (p.id, p.name)))
+            .map(|(id, name)| Choice { id: id.into(), label: name.into(), sub: "".into(), selected: id == current })
+            .collect()
     }
 
     pub fn quality_choices(&self, original: SharedString) -> Vec<Choice> {
@@ -536,6 +612,7 @@ impl Plaivo {
                 body.child(self.setting_row(Icon::HighQuality, "Quality", quality, Panel::Quality, cx))
                     .child(self.setting_row(Icon::Speed, "Playback Speed", fmt_speed(self.player.speed), Panel::Speed, cx))
                     .child(self.setting_row(Icon::Speaker, "Audio Output", output, Panel::Output, cx))
+                    .child(self.setting_row(Icon::Sparkle, "Shader", self.shader_label(), Panel::Shader, cx))
                     .child(self.setting_row(Icon::Info, "File Info", String::new(), Panel::Info, cx))
             }
             Panel::Info => body.px(px(16.)).gap(px(10.)).py(px(14.)).children(self.player.info.iter().map(|(k, v)| {
@@ -548,6 +625,7 @@ impl Plaivo {
                         self.quality_choices(crate::app::join(&[m.bitrate.map(plex::fmt_bitrate).unwrap_or_default(), fmt_resolution(&m.video_resolution)]).into())
                     }
                     Panel::Speed => SPEEDS.iter().map(|&s| Choice { id: s.to_string().into(), label: fmt_speed(s).into(), sub: "".into(), selected: s == self.player.speed }).collect(),
+                    Panel::Shader => self.shader_choices(&self.player.shader),
                     _ => self.player.devices.clone(),
                 };
                 body.children(choices.iter().enumerate().map(|(i, c)| self.choice_row(panel, i, c, cx)))
@@ -735,9 +813,9 @@ impl Plaivo {
                             .flex()
                             .items_center()
                             .gap(px(4.))
-                            .child(mini_control("mini-back", Icon::Replay, 24.).on_click(cx.listener(|this, _, _, _| this.seek_by(-10.))))
+                            .child(mini_control("mini-back", Icon::Replay, 24.).on_click(cx.listener(|this, _, _, _| this.seek_by(-(this.settings.seek_small as f64)))))
                             .child(mini_control("mini-pause", if self.player.paused { Icon::Play } else { Icon::Pause }, 30.).on_click(cx.listener(|this, _, _, _| this.toggle_pause())))
-                            .child(mini_control("mini-fwd", Icon::Forward, 24.).on_click(cx.listener(|this, _, _, _| this.seek_by(10.))))
+                            .child(mini_control("mini-fwd", Icon::Forward, 24.).on_click(cx.listener(|this, _, _, _| this.seek_by(this.settings.seek_small as f64))))
                             .child(mini_control("mini-stop", Icon::Stop, 24.).on_click(cx.listener(|this, _, _, cx| this.stop_playback(cx)))),
                     )
                     .child(div().flex_1().flex().justify_end().child(mini_control("mini-expand", Icon::OpenFull, 22.).on_click(cx.listener(|this, _, _, cx| this.expand_player(cx))))),

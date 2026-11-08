@@ -6,22 +6,29 @@ use std::time::Duration;
 #[cfg(not(target_os = "android"))]
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
-use crate::{first, join, store};
+use crate::{first, jellyfin, join, store};
 
 pub type R<T> = Result<T, String>;
 
-const PRODUCT: &str = "Plaivo";
+pub(crate) const PRODUCT: &str = "Plaivo";
 const PLEX_TV: &str = "https://plex.tv/api/v2";
 pub const DISCOVER_ID: &str = "discover";
 const DISCOVER_URI: &str = "https://discover.provider.plex.tv";
 
 #[derive(Clone)]
 pub struct Client {
-    agent: ureq::Agent,
+    pub(crate) agent: ureq::Agent,
     pub client_id: Arc<str>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Backend {
+    #[default]
+    Plex,
+    Jellyfin,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Server {
     pub name: String,
     pub id: String,
@@ -29,6 +36,12 @@ pub struct Server {
     pub token: String,
     #[serde(default)]
     pub owned: bool,
+    #[serde(default)]
+    pub backend: Backend,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub user: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -143,7 +156,7 @@ pub struct Hub {
     pub metadata: Vec<Item>,
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Item {
     pub rating_key: String,
@@ -179,13 +192,15 @@ pub struct Item {
     pub on_deck: Option<Box<OnDeck>>,
     #[serde(rename = "Genre")]
     pub genre: Vec<Tag>,
+    #[serde(rename = "Guid")]
+    pub guids: Vec<Guid>,
     #[serde(rename = "Media")]
     pub media: Vec<Media>,
     #[serde(rename = "Marker")]
     pub marker: Vec<Marker>,
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Marker {
     #[serde(rename = "type")]
@@ -194,20 +209,26 @@ pub struct Marker {
     pub end_time_offset: u64,
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct OnDeck {
     #[serde(rename = "Metadata")]
     pub metadata: Option<Item>,
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct Tag {
     pub tag: String,
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Guid {
+    pub id: String,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Media {
     pub bitrate: Option<u64>,
@@ -217,11 +238,13 @@ pub struct Media {
     pub video_dynamic_range: String,
     pub audio_codec: String,
     pub audio_channels: Option<u32>,
+    #[serde(skip)]
+    pub source_id: String,
     #[serde(rename = "Part")]
     pub part: Vec<Part>,
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct Part {
     pub key: String,
@@ -230,7 +253,7 @@ pub struct Part {
     pub stream: Vec<Stream>,
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Stream {
     pub stream_type: u8,
@@ -238,6 +261,7 @@ pub struct Stream {
     pub codec: String,
     pub language_code: String,
     pub display_title: String,
+    pub forced: bool,
 }
 
 impl Hub {
@@ -324,11 +348,11 @@ pub fn resolve_playable(srv: &Server, cx: &Ctx, key: &str) -> R<Item> {
     Err("Nothing to play".into())
 }
 
-fn err(e: impl std::fmt::Display) -> String {
+pub(crate) fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-fn encode(s: &str) -> String {
+pub(crate) fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect()
@@ -352,9 +376,11 @@ impl Client {
     }
 
     fn get(&self, url: &str, token: Option<&str>) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        let mut r = self
-            .agent
-            .get(url)
+        self.headers(self.agent.get(url), token)
+    }
+
+    pub(crate) fn headers<B>(&self, r: ureq::RequestBuilder<B>, token: Option<&str>) -> ureq::RequestBuilder<B> {
+        let mut r = r
             .header("Accept", "application/json")
             .header("X-Plex-Product", PRODUCT)
             .header("X-Plex-Version", env!("CARGO_PKG_VERSION"))
@@ -385,7 +411,7 @@ impl Client {
     }
 
     pub fn discover(&self, account_token: &str) -> Server {
-        Server { name: "Plex".into(), id: DISCOVER_ID.into(), uri: DISCOVER_URI.into(), token: account_token.into(), owned: false }
+        Server { name: "Plex".into(), id: DISCOVER_ID.into(), uri: DISCOVER_URI.into(), token: account_token.into(), ..Default::default() }
     }
 
     pub fn discover_search(&self, q: &str, account_token: &str) -> R<Vec<Item>> {
@@ -455,6 +481,7 @@ impl Client {
                     uri: results[best].take().unwrap(),
                     token,
                     owned: res.owned,
+                    ..Default::default()
                 });
             }
         }
@@ -463,19 +490,33 @@ impl Client {
 }
 
 impl Server {
+    pub fn is_jellyfin(&self) -> bool {
+        self.backend == Backend::Jellyfin
+    }
+
     fn get<T: DeserializeOwned + Default>(&self, cx: &Ctx, path: &str) -> R<T> {
+        Ok(serde_json::from_slice::<Envelope<T>>(&self.fetch_cached(cx, path)?).map_err(err)?.media_container)
+    }
+
+    pub(crate) fn fetch_cached(&self, cx: &Ctx, path: &str) -> R<Vec<u8>> {
+        self.try_fetch_cached(cx, path).inspect_err(|e| log::warn!("{} GET {path} failed: {e}", self.name))
+    }
+
+    pub(crate) fn try_fetch_cached(&self, cx: &Ctx, path: &str) -> R<Vec<u8>> {
         let file = store::cache_path("meta", &format!("{}{path}", self.id));
-        let bytes = if cx.source == Source::Cache {
-            std::fs::read(&file).map_err(err)?
+        if cx.source == Source::Cache {
+            std::fs::read(&file).map_err(err)
         } else {
             let started = std::time::Instant::now();
-            let fresh = cx
-                .client
-                .get(&format!("{}{path}", self.uri), Some(&self.token))
+            let url = format!("{}{path}", self.uri);
+            let request = match self.backend {
+                Backend::Plex => cx.client.get(&url, Some(&self.token)),
+                Backend::Jellyfin => jellyfin::authed(cx.client.agent.get(&url), &cx.client, Some(&self.token)),
+            };
+            let fresh = request
                 .call()
                 .map_err(err)
-                .and_then(|mut r| r.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(err))
-                .inspect_err(|e| log::warn!("{} GET {path} failed: {e}", self.name))?;
+                .and_then(|mut r| r.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(err))?;
             let changed = cx.source == Source::Live || std::fs::read(&file).ok().as_deref() != Some(&fresh[..]);
             log::debug!("{} GET {path} {}KB in {}ms{}", self.name, fresh.len() / 1024, started.elapsed().as_millis(), if changed { "" } else { " (unchanged)" });
             if changed {
@@ -484,12 +525,14 @@ impl Server {
                     let _ = store::write_atomic(&file, &fresh);
                 }
             }
-            fresh
-        };
-        Ok(serde_json::from_slice::<Envelope<T>>(&bytes).map_err(err)?.media_container)
+            Ok(fresh)
+        }
     }
 
     pub fn hubs(&self, c: &Ctx) -> R<Vec<Hub>> {
+        if self.is_jellyfin() {
+            return jellyfin::hubs(self, c);
+        }
         let mut hubs = self.get::<Container>(c, "/hubs?count=20&includeLibraryPlaylists=0")?.hub;
         hubs.retain(|h| !h.metadata.is_empty() && !h.is_continue() && matches!(h.kind.as_str(), "movie" | "show" | "season" | "episode" | "mixed" | "clip"));
         if let Ok(cw) = self.get::<Container>(c, "/hubs/continueWatching?count=20")
@@ -501,12 +544,18 @@ impl Server {
     }
 
     pub fn sections(&self, c: &Ctx) -> R<Vec<Directory>> {
+        if self.is_jellyfin() {
+            return jellyfin::sections(self, c);
+        }
         let mut d = self.get::<Container>(c, "/library/sections")?.directory;
         d.retain(|d| matches!(d.kind.as_str(), "movie" | "show"));
         Ok(d)
     }
 
     pub fn section_items(&self, c: &Ctx, key: &str, start: usize, size: usize, sort: &str) -> R<(Vec<Item>, usize)> {
+        if self.is_jellyfin() {
+            return jellyfin::section_items(self, c, key, start, size, sort);
+        }
         let ct: Container = self.get(
             c,
             &format!("/library/sections/{key}/all?sort={sort}&excludeFields=summary&X-Plex-Container-Start={start}&X-Plex-Container-Size={size}"),
@@ -516,18 +565,30 @@ impl Server {
     }
 
     pub fn metadata(&self, c: &Ctx, key: &str) -> R<Item> {
-        self.get::<Container>(c, &format!("/library/metadata/{key}?includeOnDeck=1&includeMarkers=1"))?.metadata.into_iter().next().ok_or_else(|| "Item not found".into())
+        if self.is_jellyfin() {
+            return jellyfin::metadata(self, c, key);
+        }
+        self.get::<Container>(c, &format!("/library/metadata/{key}?includeOnDeck=1&includeMarkers=1&includeGuids=1"))?.metadata.into_iter().next().ok_or_else(|| "Item not found".into())
     }
 
     pub fn children(&self, c: &Ctx, key: &str) -> R<Vec<Item>> {
+        if self.is_jellyfin() {
+            return jellyfin::children(self, c, key);
+        }
         Ok(self.get::<Container>(c, &format!("/library/metadata/{key}/children?excludeAllLeaves=1"))?.metadata)
     }
 
     pub fn all_episodes(&self, c: &Ctx, show: &str) -> R<Vec<Item>> {
+        if self.is_jellyfin() {
+            return jellyfin::all_episodes(self, c, show);
+        }
         Ok(self.get::<Container>(c, &format!("/library/metadata/{show}/allLeaves"))?.metadata)
     }
 
     pub fn search(&self, c: &Ctx, q: &str) -> R<Vec<(Item, f64)>> {
+        if self.is_jellyfin() {
+            return jellyfin::search(self, c, q);
+        }
         let q = encode(q);
         let scored: Vec<(Item, f64)> = self
             .get::<Container>(c, &format!("/library/search?query={q}&limit=40&searchTypes=movies,tv&includeCollections=0"))
@@ -541,7 +602,10 @@ impl Server {
         Ok(items.enumerate().map(|(i, it)| (it, 1.0 - i as f64 * 0.01)).collect())
     }
 
-    pub fn timeline(&self, c: &Client, key: &str, state: &str, time_ms: u64, duration_ms: u64) {
+    pub fn timeline(&self, c: &Client, key: &str, state: &str, time_ms: u64, duration_ms: u64, transcode_session: Option<&str>) {
+        if self.is_jellyfin() {
+            return jellyfin::timeline(self, c, key, state, time_ms, transcode_session);
+        }
         let url = format!(
             "{}/:/timeline?ratingKey={key}&key=%2Flibrary%2Fmetadata%2F{key}&state={state}&time={time_ms}&duration={duration_ms}",
             self.uri
@@ -553,6 +617,9 @@ impl Server {
     }
 
     pub fn image_url(&self, path: &str, w: u32, h: u32) -> String {
+        if self.is_jellyfin() {
+            return jellyfin::image_url(self, path, w, h);
+        }
         format!(
             "{}/photo/:/transcode?width={w}&height={h}&minSize=1&upscale=1&format=jpeg&url={}&X-Plex-Token={}",
             self.uri,
@@ -562,10 +629,16 @@ impl Server {
     }
 
     pub fn media_url(&self, key: &str) -> String {
+        if self.is_jellyfin() {
+            return jellyfin::media_url(self, key);
+        }
         format!("{}{key}?X-Plex-Token={}", self.uri, self.token)
     }
 
-    pub fn transcode_url(&self, c: &Client, key: &str, q: &Quality, session: &str) -> String {
+    pub fn transcode_url(&self, c: &Client, key: &str, media: &Media, q: &Quality, session: &str) -> String {
+        if self.is_jellyfin() {
+            return jellyfin::transcode_url(self, c, key, &media.source_id, q, session);
+        }
         let extra = format!(
             "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value={}&replace=true)+add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac%2Cac3%2Ceac3%2Cmp3)",
             q.kbps
@@ -601,6 +674,9 @@ impl Server {
     }
 
     pub fn stop_transcode(&self, c: &Client, session: &str) {
+        if self.is_jellyfin() {
+            return jellyfin::stop_transcode(self, c, session);
+        }
         let url = format!("{}/video/:/transcode/universal/stop?session={}", self.uri, encode(session));
         if let Err(e) = c.get(&url, Some(&self.token)).call() {
             log::debug!("{} stop transcode {session}: {e}", self.name);
@@ -648,13 +724,14 @@ mod tests {
 
     #[test]
     fn parses_metadata_container() {
-        let json = r#"{"MediaContainer":{"size":1,"totalSize":40,"Metadata":[{"ratingKey":"7","type":"episode","title":"Pilot","parentIndex":1,"index":2,"duration":1000,"viewOffset":250,"Media":[{"Part":[{"key":"/library/parts/1/file.mkv","Stream":[{"streamType":3,"key":"/library/streams/9","codec":"srt","languageCode":"eng","displayTitle":"English"}]}]}]}]}}"#;
+        let json = r#"{"MediaContainer":{"size":1,"totalSize":40,"Metadata":[{"ratingKey":"7","type":"episode","title":"Pilot","parentIndex":1,"index":2,"duration":1000,"viewOffset":250,"Media":[{"Part":[{"key":"/library/parts/1/file.mkv","Stream":[{"streamType":3,"key":"/library/streams/9","codec":"srt","languageCode":"eng","displayTitle":"English","forced":true}]}]}]}]}}"#;
         let ct: Envelope<Container> = serde_json::from_str(json).unwrap();
         let it = &ct.media_container.metadata[0];
         assert_eq!(ct.media_container.total_size, Some(40));
         assert_eq!(it.episode_label(), "S1 · E2");
         assert_eq!(it.progress(), 0.25);
         assert_eq!(it.media[0].part[0].stream[0].key, "/library/streams/9");
+        assert!(it.media[0].part[0].stream[0].forced);
     }
 
     #[test]
@@ -690,7 +767,7 @@ mod tests {
         assert!(Quality::find(4000).unwrap().covers(&Media { bitrate: Some(3100), height: Some(720), ..Default::default() }));
         assert!(!Quality::find(4000).unwrap().covers(&it.media[0]));
         assert_eq!((fmt_bitrate(3100), fmt_bitrate(20000), fmt_bitrate(720)), ("3.1 Mbps".into(), "20 Mbps".into(), "720 kbps".into()));
-        let url = Server { name: "s".into(), id: "i".into(), uri: "http://h".into(), token: "t".into(), owned: true }.transcode_url(&Client::new("c".into()), "7", &QUALITIES[0], "s1");
+        let url = Server { name: "s".into(), id: "i".into(), uri: "http://h".into(), token: "t".into(), owned: true, ..Default::default() }.transcode_url(&Client::new("c".into()), "7", &Media::default(), &QUALITIES[0], "s1");
         assert!(url.starts_with("http://h/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F7&"));
         assert!(url.contains("scopeName%3D%2A") && url.contains("aac%252Cac3"));
     }

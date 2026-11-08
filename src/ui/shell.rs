@@ -27,12 +27,14 @@ impl Render for Plaivo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.scale = window.scale_factor();
         self.viewport_w = (f32::from(window.viewport_size().width) * self.scale) as u32;
-        let chrome = !matches!(self.page, Page::Splash | Page::Auth | Page::Player);
+        let standalone = self.add_server_standalone();
+        let chrome = !matches!(self.page, Page::Splash | Page::Auth | Page::Player) && !standalone;
         let mini = chrome && self.player.mini && self.playing();
         let content = match self.page {
             Page::Splash => self.render_splash(),
             Page::Auth => self.render_auth(cx),
             Page::Player => self.render_player(window, cx),
+            Page::AddServer if standalone => self.render_add_server(window, cx),
             _ => self.render_chrome(mini, window, cx),
         };
         let background: Option<Hsla> = match self.page {
@@ -59,7 +61,13 @@ impl Render for Plaivo {
 impl Plaivo {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.page != Page::Player {
-            if ev.keystroke.key == "escape" && (self.page == Page::Detail || self.settings_page.is_some() && self.page == Page::Settings) {
+            let sub_page = match self.page {
+                Page::Detail | Page::Licenses => true,
+                Page::Settings => self.settings_page.is_some(),
+                Page::Downloads => self.offline_view.is_some(),
+                _ => false,
+            };
+            if ev.keystroke.key == "escape" && sub_page {
                 self.back(cx);
             }
             return;
@@ -67,8 +75,10 @@ impl Plaivo {
         self.wake_controls(cx);
         match ev.keystroke.key.as_str() {
             "space" | "k" => self.toggle_pause(),
-            "left" => self.seek_by(-10.),
-            "right" => self.seek_by(10.),
+            "left" | "right" => {
+                let step = if ev.keystroke.modifiers.shift { self.settings.seek_large } else { self.settings.seek_small } as f64;
+                self.seek_by(if ev.keystroke.key == "left" { -step } else { step });
+            }
             "up" | "down" => {
                 self.set_volume(self.player.volume + if ev.keystroke.key == "up" { 5. } else { -5. });
                 self.hint_volume(cx);
@@ -107,6 +117,9 @@ impl Plaivo {
             Page::Search => self.render_search(window, cx),
             Page::Detail => self.render_detail(window, cx),
             Page::Settings => self.render_settings_page(cx),
+            Page::Licenses => self.render_licenses(cx),
+            Page::AddServer => self.render_add_server(window, cx),
+            Page::Downloads => self.render_downloads(window, cx),
             _ => div().into_any_element(),
         };
         let sidebar = self.render_sidebar(window, cx);
@@ -154,7 +167,7 @@ impl Plaivo {
                         .child(label),
                 )
         };
-        let groups = self.sections_in_order();
+        let groups = self.sections_in_order(false);
         let multi = groups.len() > 1;
         let active = self.library.as_ref().filter(|_| self.page == Page::Library).map(|l| (l.key.server.clone(), l.key.section.clone()));
         let mut libs = div().id("libs").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(2.));
@@ -196,6 +209,7 @@ impl Plaivo {
                 let focus = this.search.read(cx).focus.clone();
                 window.focus(&focus, cx);
             })))
+            .child(item("downloads".into(), Icon::Download, "Downloads".into(), self.page == Page::Downloads).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Downloads(None), true, cx))))
             .child(
                 div()
                     .h(px(36.))
@@ -205,11 +219,12 @@ impl Plaivo {
                     .child(div().absolute().bottom(px(12.)).left(px(12.)).w(px(24.)).h(px(1.)).opacity(1. - label_alpha).bg(theme::outline())),
             )
             .child(libs)
+            .child(item("add-library".into(), Icon::Add, "Add Library".into(), self.page == Page::AddServer).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::AddServer, true, cx))))
             .child(
                 item("fullscreen".into(), if fullscreen { Icon::FullscreenExit } else { Icon::Fullscreen }, if fullscreen { "Exit fullscreen" } else { "Fullscreen" }.into(), false)
                     .on_click(|_, window, _| window.toggle_fullscreen()),
             )
-            .child(item("settings".into(), Icon::Settings, "Settings".into(), self.page == Page::Settings).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(None), true, cx))))
+            .child(item("settings".into(), Icon::Settings, "Settings".into(), matches!(self.page, Page::Settings | Page::Licenses)).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(None), true, cx))))
     }
 
     fn render_splash(&self) -> AnyElement {
@@ -257,7 +272,13 @@ impl Plaivo {
                         .child(pill("cancel", "Cancel", None, false).on_click(cx.listener(|this, _, _, cx| this.cancel_sign_in(cx)))),
                 )
         } else {
-            div().flex().flex_col().child(pill("signin", "Sign in with Plex", None, true).h(px(52.)).on_click(cx.listener(|this, _, _, cx| this.sign_in(cx))))
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(pill("signin", "Sign in with Plex", None, true).h(px(52.)).on_click(cx.listener(|this, _, _, cx| this.sign_in(cx))))
+                .child(pill("add-jellyfin", "Add a Jellyfin server", Some(Icon::Server), false).h(px(52.)).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::AddServer, true, cx))))
+                .when(!self.servers.is_empty(), |d| d.child(pill("auth-back", "Back", None, false).h(px(52.)).on_click(cx.listener(|this, _, _, cx| this.cancel_sign_in(cx)))))
         };
         div()
             .size_full()
@@ -312,7 +333,10 @@ impl Plaivo {
         let choices = self
             .servers
             .iter()
-            .map(|s| Choice { id: s.id.clone().into(), label: s.name.clone().into(), sub: if s.owned { "Owned" } else { "Shared with you" }.into(), selected: s.id == home })
+            .map(|s| {
+                let sub = if s.is_jellyfin() { "Jellyfin" } else if s.owned { "Owned" } else { "Shared with you" };
+                Choice { id: s.id.clone().into(), label: s.name.clone().into(), sub: sub.into(), selected: s.id == home }
+            })
             .collect();
         self.choice_list("srv", Some(Icon::Server), choices, |this, id, cx| this.pick_home_server(id, cx), cx)
     }

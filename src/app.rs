@@ -1,14 +1,18 @@
+use crate::downloads::{Downloads, Entry, State};
 use crate::images::{self, Lru};
 use crate::player::Player;
 use crate::plex::{self, Client, Ctx, DISCOVER_ID, Item, R, Server, Source};
-use crate::settings::Settings;
+use crate::settings::{Settings, library_key};
 use crate::store;
+use crate::ui::add_server::AddServer;
 use crate::ui::input::{InputEvent, TextInput};
 use futures::StreamExt;
+use futures::channel::mpsc::UnboundedSender;
 use gpui::{AppContext, Bounds, Context, Entity, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString, Task, UniformListScrollHandle, Window};
 pub use plaivo_core::{Account, first, join};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -38,6 +42,9 @@ pub enum Page {
     Search,
     Detail,
     Settings,
+    Licenses,
+    AddServer,
+    Downloads,
     Player,
 }
 
@@ -51,13 +58,24 @@ pub enum Nav {
     Search,
     Detail(String, String, Option<String>),
     Settings(Option<Category>),
+    Licenses(Option<usize>),
+    AddServer,
+    Downloads(Option<(String, String)>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
     General,
+    Libraries,
+    Appearance,
     Playback,
+    Shaders,
+    Audio,
+    AudioLanguage,
+    SubtitleLanguage,
+    Downloads,
     Connections,
+    Advanced,
     About,
 }
 
@@ -136,9 +154,11 @@ pub struct DetailView {
     pub progress: f32,
     pub art: Option<Thumb>,
     pub is_show: bool,
+    pub item: Item,
 }
 
 pub struct SectionInfo {
+    pub id: String,
     pub server: String,
     pub key: String,
     pub title: String,
@@ -188,6 +208,9 @@ pub struct Plaivo {
     pub page: Page,
     pub nav: Vec<Nav>,
     pub settings_page: Option<Category>,
+    pub license: Option<usize>,
+    pub add_server: AddServer,
+    pub licenses_scroll: UniformListScrollHandle,
     pub toast: Option<SharedString>,
     toast_task: Option<Task<()>>,
     pub auth_waiting: bool,
@@ -214,11 +237,17 @@ pub struct Plaivo {
     search_task: Option<Task<()>>,
     pub grid_scroll: UniformListScrollHandle,
     pub detail: Option<DetailView>,
-    detail_id: (String, String),
+    pub detail_id: (String, String),
     pub seasons: Vec<Choice>,
-    season_items: Vec<Item>,
-    season: Option<String>,
+    pub season_items: Vec<Item>,
+    pub season: Option<String>,
     pub episodes: Vec<Card>,
+    pub episode_items: Vec<Item>,
+    pub downloads: Arc<Downloads>,
+    downloads_tx: UnboundedSender<()>,
+    pub download_entries: Vec<Entry>,
+    pub offline: Vec<(String, Item)>,
+    pub offline_view: Option<(String, String)>,
     pub detail_scroll: ScrollHandle,
     pub home_scroll: ScrollHandle,
     queue: Arc<images::Queue>,
@@ -240,7 +269,24 @@ pub fn open_url(url: &str) {
     }
 }
 
-fn thumb(server: &str, path: &str) -> Option<Thumb> {
+pub fn download_root(dir: &str) -> PathBuf {
+    if !dir.is_empty() {
+        return dir.into();
+    }
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Plaivo"));
+    #[cfg(not(windows))]
+    let base: Option<PathBuf> = None;
+    base.unwrap_or_else(store::config_dir).join("downloads")
+}
+
+fn open_downloads(root: PathBuf, client: Client, tx: UnboundedSender<()>) -> Arc<Downloads> {
+    Arc::new(Downloads::new(root, client, move || {
+        let _ = tx.unbounded_send(());
+    }))
+}
+
+pub fn thumb(server: &str, path: &str) -> Option<Thumb> {
     (!path.is_empty()).then(|| Thumb { server: server.to_owned(), path: path.to_owned() })
 }
 
@@ -260,6 +306,17 @@ pub fn card_for(it: &Item, wide: bool, server: &str) -> Card {
         thumb: thumb(server, art),
         ..Default::default()
     }
+}
+
+pub fn episode_card(e: &Item, server: &str) -> Card {
+    let mut card = card_for(e, true, server);
+    if e.kind == "episode" {
+        card.title = format!("{}. {}", e.index.unwrap_or(0), e.title).into();
+        card.thumb = thumb(server, &e.thumb);
+    }
+    card.summary = e.summary.clone().into();
+    card.meta = join(&[e.duration.map(plex::fmt_duration).unwrap_or_default(), e.originally_available_at.clone()]).into();
+    card
 }
 
 fn hero_card(it: &Item, server: &str) -> Card {
@@ -354,7 +411,7 @@ fn image_key(t: &Thumb, (w, h): (u32, u32)) -> String {
 type ImageRx = futures::channel::mpsc::UnboundedReceiver<(String, Option<Arc<RenderImage>>)>;
 
 impl Plaivo {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, account: Account, client: Client, queue: Arc<images::Queue>, images_rx: ImageRx) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, account: Account, settings: Settings, client: Client, queue: Arc<images::Queue>, images_rx: ImageRx) -> Self {
         let raw = window.window_handle().expect("window handle").as_raw();
         let search = cx.new(|cx| TextInput::new("Search movies and shows", cx));
         cx.subscribe(&search, |this: &mut Self, _, ev: &InputEvent, cx| match ev {
@@ -371,6 +428,18 @@ impl Plaivo {
             }
         })
         .detach();
+        let add_server = AddServer::new(cx);
+        let (downloads_tx, mut downloads_rx) = futures::channel::mpsc::unbounded();
+        let downloads = open_downloads(download_root(&settings.download_dir), client.clone(), downloads_tx.clone());
+        cx.spawn(async move |this, cx| {
+            while downloads_rx.next().await.is_some() {
+                while downloads_rx.try_recv().is_ok() {}
+                if this.update(cx, |this, cx| this.downloads_changed(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let mut s = Self {
             focus: cx.focus_handle(),
             view: ViewState::default(),
@@ -378,13 +447,16 @@ impl Plaivo {
             scale: window.scale_factor(),
             viewport_w: (f32::from(window.viewport_size().width) * window.scale_factor()) as u32,
             account,
-            settings: Settings::load(),
+            settings,
             client,
             servers: Vec::new(),
             sections: Vec::new(),
             page: Page::Auth,
             nav: Vec::new(),
             settings_page: None,
+            license: None,
+            add_server,
+            licenses_scroll: UniformListScrollHandle::new(),
             toast: None,
             toast_task: None,
             auth_waiting: false,
@@ -416,6 +488,12 @@ impl Plaivo {
             season_items: Vec::new(),
             season: None,
             episodes: Vec::new(),
+            episode_items: Vec::new(),
+            download_entries: downloads.snapshot(),
+            downloads,
+            downloads_tx,
+            offline: Vec::new(),
+            offline_view: None,
             detail_scroll: ScrollHandle::new(),
             home_scroll: ScrollHandle::new(),
             queue,
@@ -438,11 +516,12 @@ impl Plaivo {
         })
         .detach();
         window.focus(&s.focus, cx);
-        if s.account.token.is_some() {
+        if s.settings.auto_remove_watched {
+            s.with_downloads(cx, |d| d.set_auto_remove_watched(true));
+        }
+        if s.account.has_servers() {
             s.begin_splash(cx);
-            if !s.account.servers.is_empty() {
-                s.set_servers(s.account.servers.clone(), cx);
-            }
+            s.set_servers(cx);
             s.discover(cx);
         }
         s
@@ -459,6 +538,63 @@ impl Plaivo {
             .ok();
         })
         .detach();
+    }
+
+    pub fn with_downloads(&self, cx: &mut Context<Self>, f: impl FnOnce(&Downloads) + Send + 'static) {
+        let d = self.downloads.clone();
+        cx.background_executor().spawn(async move { f(&d) }).detach();
+    }
+
+    pub fn set_download_dir(&mut self, dir: String, cx: &mut Context<Self>) {
+        let root = download_root(&dir);
+        if root == self.downloads.root() {
+            return;
+        }
+        self.settings.download_dir = dir.clone();
+        self.settings.save();
+        let (client, tx) = (self.client.clone(), self.downloads_tx.clone());
+        Self::bg(cx, move || open_downloads(root, client, tx), move |this, d, cx| {
+            let old = if this.settings.download_dir == dir { std::mem::replace(&mut this.downloads, d) } else { d };
+            std::thread::spawn(move || drop(old));
+            if this.settings.download_dir != dir {
+                return;
+            }
+            let (servers, auto) = (this.servers.clone(), this.settings.auto_remove_watched);
+            this.with_downloads(cx, move |d| {
+                d.set_servers(&servers);
+                if auto {
+                    d.set_auto_remove_watched(true);
+                }
+            });
+            this.offline_view = None;
+            this.downloads_changed(cx);
+        });
+    }
+
+    pub fn downloads_changed(&mut self, cx: &mut Context<Self>) {
+        let entries = self.downloads.snapshot();
+        let detail_before = (self.page == Page::Detail).then(|| self.detail_download_states());
+        let changed = entries != self.download_entries;
+        if changed {
+            self.download_entries = entries;
+        }
+        let done = self.download_entries.iter().filter(|e| e.state == State::Done).map(|e| (e.server.as_str(), e.key.as_str()));
+        let library_changed = !done.eq(self.offline.iter().map(|(s, it)| (s.as_str(), it.rating_key.as_str())));
+        if library_changed {
+            self.offline = self.downloads.library();
+        }
+        let visible = match self.page {
+            Page::Downloads => changed || library_changed,
+            Page::Detail => detail_before != Some(self.detail_download_states()),
+            _ => false,
+        };
+        if visible {
+            cx.notify();
+        }
+    }
+
+    pub fn has_downloads(&self) -> bool {
+        self.download_entries.iter().any(|e| e.state == State::Done)
     }
 
     // Stale-while-revalidate: apply the disk-cached response at once, then the network one only if it differs.
@@ -520,12 +656,12 @@ impl Plaivo {
     }
 
     pub fn size_for(&self, shape: Shape) -> (u32, u32) {
-        shape_size(shape, self.scale, self.viewport_w)
+        shape_size(shape, self.scale * self.settings.card_scale(), self.viewport_w)
     }
 
     fn image_url(&self, server: &str, path: &str, (w, h): (u32, u32)) -> Option<String> {
         if path.starts_with("http") {
-            return Some(match self.home_server() {
+            return Some(match self.servers.iter().find(|s| !s.is_jellyfin()) {
                 Some(home) => home.image_url(path, w, h),
                 None => path.replace("/t/p/original/", "/t/p/w780/"),
             });
@@ -543,9 +679,13 @@ impl Plaivo {
         if self.requested.contains(&key) || self.failed.contains(&key) {
             return None;
         }
-        let url = self.image_url(&t.server, &t.path, size)?;
+        let local = (shape != Shape::Backdrop).then(|| self.downloads.image(&t.server, &t.path)).flatten();
+        let url = match &local {
+            Some(file) => file.to_string_lossy().into_owned(),
+            None => self.image_url(&t.server, &t.path, size)?,
+        };
         self.requested.insert(key.clone());
-        if let Some(dropped) = self.queue.push(images::Job { key, url }) {
+        if let Some(dropped) = self.queue.push(images::Job { key, url, local: local.is_some() }) {
             self.requested.remove(&dropped.key);
         }
         None
@@ -555,6 +695,15 @@ impl Plaivo {
         for img in self.lru.set_budget(if full_player { PLAYER_IMAGE_BUDGET } else { IMAGE_BUDGET }) {
             cx.drop_image(img, None);
         }
+    }
+
+    pub fn clear_image_cache(&mut self, cx: &mut Context<Self>) {
+        for img in self.lru.drain() {
+            cx.drop_image(img, None);
+        }
+        self.failed.clear();
+        std::thread::spawn(store::clear_cache);
+        self.toast("Image cache cleared", cx);
     }
 
     fn on_image(&mut self, key: String, img: Option<Arc<RenderImage>>, cx: &mut Context<Self>) {
@@ -593,7 +742,8 @@ impl Plaivo {
 
     fn check_splash(&mut self, cx: &mut Context<Self>) {
         let Some(sp) = &self.splash else { return };
-        if !(sp.home_ok || sp.probes_done) || !self.home_ready {
+        let home_ok = sp.home_ok || sp.probes_done || self.home_server().is_some_and(|h| h.is_jellyfin());
+        if !home_ok || !self.home_ready {
             return;
         }
         let hero_ready = self.hero.first().is_none_or(|c| self.image_settled(&c.thumb, Shape::Backdrop));
@@ -617,6 +767,8 @@ impl Plaivo {
         if self.servers.is_empty() {
             self.nav = vec![Nav::Servers];
             self.navigate(Nav::Servers, false, cx);
+        } else if (self.home_error.is_some() || self.servers_error.is_some()) && self.has_downloads() {
+            self.navigate(Nav::Downloads(None), true, cx);
         } else {
             self.navigate(Nav::Home, false, cx);
         }
@@ -666,6 +818,11 @@ impl Plaivo {
     pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
         self.pin_gen.fetch_add(1, Ordering::SeqCst);
         self.auth_waiting = false;
+        if !self.servers.is_empty()
+            && let Some(nav) = self.nav.last().cloned()
+        {
+            self.navigate(nav, false, cx);
+        }
         cx.notify();
     }
 
@@ -675,6 +832,7 @@ impl Plaivo {
         self.account.token = None;
         self.account.servers.clear();
         self.account.save();
+        crate::prefs::forget();
         self.settings.home_server.clear();
         self.settings.recent_searches.clear();
         self.settings.save();
@@ -693,12 +851,59 @@ impl Plaivo {
             cx.drop_image(img, None);
         }
         std::thread::spawn(store::clear_cache);
-        self.page = Page::Auth;
+        self.servers_changed(cx);
+        if self.page != Page::Auth {
+            self.nav = vec![Nav::Home];
+            self.navigate(Nav::Home, false, cx);
+        }
+    }
+
+    pub fn servers_changed(&mut self, cx: &mut Context<Self>) {
+        self.set_servers(cx);
+        let mut known: HashSet<String> = self.servers.iter().map(|s| s.id.clone()).collect();
+        if self.account.token.is_some() {
+            known.insert(DISCOVER_ID.to_owned());
+        }
+        if self.player.server.as_ref().is_some_and(|s| !known.contains(&s.id)) {
+            self.stop_playback(cx);
+        }
+        let stale_page = match self.page {
+            Page::Library => self.library.as_ref().is_none_or(|l| !known.contains(&l.key.server)),
+            Page::Detail => !known.contains(&self.detail_id.0),
+            _ => false,
+        };
+        self.nav.retain(|n| match n {
+            Nav::Library(server, _) | Nav::Detail(server, _, _) => known.contains(server),
+            _ => true,
+        });
+        self.library_cache.retain(|l| known.contains(&l.key.server));
+        if self.library.as_ref().is_some_and(|l| !known.contains(&l.key.server)) {
+            self.library = None;
+        }
+        if !known.contains(&self.detail_id.0) {
+            self.detail = None;
+            self.detail_id = Default::default();
+        }
+        if self.servers.is_empty() && self.account.token.is_none() {
+            self.nav.clear();
+            self.page = Page::Auth;
+        } else if stale_page {
+            if self.nav.is_empty() {
+                self.nav.push(Nav::Home);
+            }
+            let nav = self.nav.last().cloned().unwrap_or(Nav::Home);
+            self.navigate(nav, false, cx);
+        }
         cx.notify();
     }
 
     fn discover(&mut self, cx: &mut Context<Self>) {
-        let Some(token) = self.account.token.clone() else { return };
+        let Some(token) = self.account.token.clone() else {
+            if let Some(sp) = &mut self.splash {
+                sp.probes_done = true;
+            }
+            return;
+        };
         self.servers_loading = true;
         let c = self.client.clone();
         Self::bg(cx, move || c.servers(&token).map(|r| (r, token)), |this, r, cx| match r {
@@ -763,22 +968,25 @@ impl Plaivo {
                 self.finish_splash(cx);
             } else {
                 log::warn!("server discovery failed, keeping cached connections: {e}");
+                self.servers_error = Some(e.into());
                 self.check_splash(cx);
             }
             return;
         }
         self.servers_error = None;
-        if list != self.servers {
-            self.account.servers = list.clone();
+        if list != self.account.servers {
+            self.account.servers = list;
             self.account.save();
-            self.set_servers(list, cx);
+            self.set_servers(cx);
         }
         self.check_splash(cx);
     }
 
-    fn set_servers(&mut self, list: Vec<Server>, cx: &mut Context<Self>) {
+    pub fn set_servers(&mut self, cx: &mut Context<Self>) {
         let previous_home = self.home_server();
-        self.servers = list;
+        self.servers = self.account.all_servers();
+        let list = self.servers.clone();
+        self.with_downloads(cx, move |d| d.set_servers(&list));
         if self.server(&self.settings.home_server).is_none()
             && let Some(first) = self.servers.first()
         {
@@ -787,7 +995,11 @@ impl Plaivo {
         }
         self.sections.retain(|sec| self.servers.iter().any(|s| s.id == sec.server));
         self.load_sections(cx);
-        if previous_home != self.home_server() || !self.home_ready {
+        let home = self.home_server();
+        if previous_home.as_ref().map(|s| &s.id) != home.as_ref().map(|s| &s.id) {
+            self.home_ready = false;
+        }
+        if previous_home != home || !self.home_ready {
             self.load_home(cx);
         }
     }
@@ -813,21 +1025,23 @@ impl Plaivo {
             self.load(cx, move |c| srv.sections(c), move |this, r, _| match r {
                 Ok(dirs) => {
                     this.sections.retain(|x| x.server != id);
-                    this.sections.extend(dirs.into_iter().map(|d| SectionInfo { server: id.clone(), key: d.key, title: d.title, kind: d.kind }));
+                    this.sections.extend(dirs.into_iter().map(|d| SectionInfo { id: library_key(&id, &d.key), server: id.clone(), key: d.key, title: d.title, kind: d.kind }));
                 }
                 Err(e) => log::warn!("sections for {id}: {e}"),
             });
         }
     }
 
-    pub fn sections_in_order(&self) -> Vec<SidebarGroup> {
+    pub fn sections_in_order(&self, hidden: bool) -> Vec<SidebarGroup> {
         let home = self.home_server().map(|s| s.id).unwrap_or_default();
         let mut order: Vec<&Server> = self.servers.iter().collect();
         order.sort_by_key(|s| s.id != home);
         order
             .into_iter()
             .map(|srv| {
-                let rows = self.sections.iter().filter(|x| x.server == srv.id).map(|x| (x.server.clone(), x.key.clone(), SharedString::from(x.title.clone()), x.kind == "movie")).collect::<Vec<_>>();
+                let mut rows: Vec<&SectionInfo> = self.sections.iter().filter(|x| x.server == srv.id && (hidden || !self.settings.library_hidden(&x.id))).collect();
+                rows.sort_by_key(|x| self.settings.library_rank(&x.id));
+                let rows = rows.into_iter().map(|x| (x.server.clone(), x.key.clone(), SharedString::from(x.title.clone()), x.kind == "movie")).collect::<Vec<_>>();
                 (SharedString::from(srv.name.clone()), rows)
             })
             .filter(|(_, rows)| !rows.is_empty())
@@ -840,6 +1054,7 @@ impl Plaivo {
             self.nav.push(nav.clone());
         }
         self.sort_open = false;
+        self.add_server.leave(cx);
         match nav {
             Nav::Home => self.page = Page::Home,
             Nav::Servers => self.page = Page::Servers,
@@ -848,6 +1063,18 @@ impl Plaivo {
                 self.page = Page::Settings;
                 self.settings_page = category;
                 self.load_mpv_build(cx);
+            }
+            Nav::Licenses(license) => {
+                self.page = Page::Licenses;
+                self.license = license;
+            }
+            Nav::AddServer => {
+                self.page = Page::AddServer;
+                self.add_server.reset(cx);
+            }
+            Nav::Downloads(view) => {
+                self.page = Page::Downloads;
+                self.offline_view = view;
             }
             Nav::Library(server, section) => {
                 self.page = Page::Library;
@@ -877,6 +1104,9 @@ impl Plaivo {
         }
         if card.resume {
             return self.play(card.server.to_string(), card.key.to_string(), cx);
+        }
+        if self.page == Page::Downloads {
+            return self.navigate(Nav::Downloads(Some((card.server.to_string(), card.key.to_string()))), true, cx);
         }
         let q = self.search.read(cx).text().trim().to_owned();
         if self.page == Page::Search && !q.is_empty() {
@@ -1089,7 +1319,7 @@ impl Plaivo {
             move || {
                 let discover = {
                     let (c, q) = (c.clone(), q.clone());
-                    std::thread::spawn(move || c.discover_search(&q, &token))
+                    std::thread::spawn(move || if token.is_empty() { Ok(Vec::new()) } else { c.discover_search(&q, &token) })
                 };
                 let local: Vec<_> = servers
                     .into_iter()
@@ -1136,6 +1366,7 @@ impl Plaivo {
             self.seasons.clear();
             self.season_items.clear();
             self.episodes.clear();
+            self.episode_items.clear();
             self.season = None;
             self.detail_scroll = ScrollHandle::new();
         }
@@ -1205,6 +1436,7 @@ impl Plaivo {
             progress,
             art: thumb(server, first(&[&it.art, &it.grandparent_art])),
             is_show: it.kind == "show",
+            item: it.clone(),
         });
         if it.kind == "show" {
             let valid = |k: &String| seasons.iter().any(|x| &x.rating_key == k);
@@ -1237,17 +1469,8 @@ impl Plaivo {
             }
             match r {
                 Ok(eps) => {
-                    this.episodes = eps
-                        .iter()
-                        .map(|e| {
-                            let mut card = card_for(e, true, &server);
-                            card.title = format!("{}. {}", e.index.unwrap_or(0), e.title).into();
-                            card.summary = e.summary.clone().into();
-                            card.meta = join(&[e.duration.map(plex::fmt_duration).unwrap_or_default(), e.originally_available_at.clone()]).into();
-                            card.thumb = thumb(&server, &e.thumb);
-                            card
-                        })
-                        .collect();
+                    this.episodes = eps.iter().map(|e| episode_card(e, &server)).collect();
+                    this.episode_items = eps;
                 }
                 Err(e) => this.toast(format!("Could not load episodes: {e}"), cx),
             }

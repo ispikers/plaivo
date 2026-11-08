@@ -3729,6 +3729,7 @@ name = "plaivo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "futures",
  "gpui",
  "gpui_platform",
@@ -3753,6 +3754,7 @@ name = "plaivo-core"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "libc",
  "log",
  "serde",
  "serde_json",
@@ -3764,6 +3766,7 @@ dependencies = [
 name = "plaivo-ffi"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "log",
  "plaivo-core",
  "qrcodegen",

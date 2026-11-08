@@ -106,6 +106,11 @@ pub fn row(id: impl Into<ElementId>, i: Option<Icon>, title: impl Into<SharedStr
         )
 }
 
+pub fn toggle(on: bool) -> Div {
+    let (track, knob) = if on { (Hsla::from(theme::accent()), Hsla::from(theme::on_accent())) } else { (theme::tint(0.2), Hsla::from(theme::text())) };
+    div().w(px(40.)).h(px(24.)).flex_none().p(px(3.)).rounded_full().flex().when(on, |d| d.justify_end()).bg(track).child(div().size(px(18.)).rounded_full().bg(knob))
+}
+
 pub fn nav_row(id: impl Into<ElementId>, i: Icon, title: impl Into<SharedString>, detail: impl Into<SharedString>) -> Stateful<Div> {
     row(id, Some(i), title, detail).cursor_pointer().hover(|s| s.bg(theme::tint(0.12))).child(icon(Icon::ChevronRight, 22., theme::muted()))
 }

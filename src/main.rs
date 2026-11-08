@@ -6,17 +6,19 @@ mod images;
 mod logging;
 mod mpv;
 mod player;
+mod shaders;
 mod ui;
 mod video_host;
 
-use plaivo_core::{plex, settings, store};
+use plaivo_core::{downloads, plex, prefs, settings, store};
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size};
 use std::sync::Arc;
 
 const DISK_CACHE_BYTES: u64 = 768 << 20;
 
 fn main() {
-    logging::init();
+    let settings = settings::Settings::load();
+    logging::init(settings.debug_logging);
     let account = plaivo_core::Account::load();
     let client = plex::Client::new(account.client_id.clone());
     let queue = Arc::new(images::Queue::default());
@@ -35,7 +37,7 @@ fn main() {
             window_min_size: Some(size(px(720.), px(480.))),
             ..Default::default()
         };
-        let window = cx.open_window(options, |window, cx| cx.new(|cx| app::Plaivo::new(window, cx, account, client, queue, rx))).expect("open window");
+        let window = cx.open_window(options, |window, cx| cx.new(|cx| app::Plaivo::new(window, cx, account, settings, client, queue, rx))).expect("open window");
         if let Some(target) = std::env::args().nth(1) {
             window
                 .update(cx, |app, _, cx| {

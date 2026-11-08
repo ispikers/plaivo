@@ -16,9 +16,9 @@ pub fn content_width(this: &Plaivo, window: &Window) -> f32 {
     f32::from(window.viewport_size().width) - sidebar
 }
 
-pub fn card_width(content_w: f32, wide: bool) -> f32 {
+pub fn card_width(content_w: f32, wide: bool, scale: f32) -> f32 {
     let cw = content_w - 16.;
-    let extent = if content_w >= 1100. { 210. } else { 160. };
+    let extent = (if content_w >= 1100. { 210. } else { 160. }) * scale;
     let extent = if wide { extent * 1.8 } else { extent };
     cw / (cw / extent).ceil().max(1.)
 }
@@ -39,7 +39,10 @@ impl Plaivo {
                         .flex()
                         .gap(px(12.))
                         .child(pill("retry", "Retry", Some(Icon::Refresh), true).on_click(cx.listener(|this, _, _, cx| this.load_home(cx))))
-                        .child(pill("change", "Change server", None, false).on_click(cx.listener(|this, _, _, cx| this.navigate(crate::app::Nav::Servers, true, cx)))),
+                        .child(pill("change", "Change server", None, false).on_click(cx.listener(|this, _, _, cx| this.navigate(crate::app::Nav::Servers, true, cx))))
+                        .when(self.has_downloads(), |d| {
+                            d.child(pill("offline", "Downloads", Some(Icon::Download), false).on_click(cx.listener(|this, _, _, cx| this.navigate(crate::app::Nav::Downloads(None), true, cx))))
+                        }),
                 )
                 .into_any_element();
         }
@@ -182,7 +185,7 @@ impl Plaivo {
 
     fn render_hub_skeleton(&self, i: usize, cw: f32) -> AnyElement {
         let wide = i == 0;
-        let w = card_width(cw, wide);
+        let w = card_width(cw, wide, self.settings.card_scale());
         let art_h = if wide { (w - 6.) * 9. / 16. } else { (w - 6.) * 1.5 };
         div()
             .flex()
@@ -200,7 +203,7 @@ impl Plaivo {
             let h = &self.hubs[i];
             (h.title.clone(), h.resume, h.wide, h.items.clone(), h.scroll.clone())
         };
-        let w = card_width(cw, wide);
+        let w = card_width(cw, wide, self.settings.card_scale());
         let cards: Vec<AnyElement> = items.iter().enumerate().map(|(j, c)| self.media_card(SharedString::from(format!("hub-{i}-{j}")), c, w, wide, cx)).collect();
         let hovered = self.view.hub_hover == Some(i);
         if let Some((from, to, t0)) = self.hubs[i].slide {
@@ -275,7 +278,7 @@ mod tests {
     fn cards_fill_the_row_exactly() {
         for cw in [800., 1300., 1700.] {
             for wide in [false, true] {
-                let w = card_width(cw, wide);
+                let w = card_width(cw, wide, if wide { 1. } else { 1.3 });
                 let n = ((cw - 16.) / w).round();
                 assert!(((cw - 16.) - n * w).abs() < 0.01, "{cw} {wide}");
             }

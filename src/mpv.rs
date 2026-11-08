@@ -159,8 +159,6 @@ impl Mpv {
             unsafe { (api.terminate_destroy)(h) };
             return Err(format!("mpv_initialize: {}", error_string(api, rc)));
         }
-        let level = if log::log_enabled!(target: "mpv", log::Level::Debug) { "v" } else if log::log_enabled!(target: "mpv", log::Level::Info) { "info" } else { "warn" };
-        unsafe { (api.request_log_messages)(h, cstr(level).as_ptr()) };
         for (i, (name, fmt)) in OBSERVED.iter().enumerate() {
             unsafe { (api.observe_property)(h, i as u64, cstr(name).as_ptr(), *fmt) };
         }
@@ -169,7 +167,14 @@ impl Mpv {
             .name("mpv-events".into())
             .spawn(move || event_loop(ev, on_event))
             .map_err(|e| e.to_string())?;
-        Ok(Self(ctx))
+        let mpv = Self(ctx);
+        mpv.sync_log_level();
+        Ok(mpv)
+    }
+
+    pub fn sync_log_level(&self) {
+        let level = if log::log_enabled!(target: "mpv", log::Level::Debug) { "v" } else if log::log_enabled!(target: "mpv", log::Level::Info) { "info" } else { "warn" };
+        unsafe { (self.0.api.request_log_messages)(self.0.h, cstr(level).as_ptr()) };
     }
 
     pub fn command(&self, args: &[&str]) {

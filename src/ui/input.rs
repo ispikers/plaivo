@@ -46,6 +46,7 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    masked: bool,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -62,7 +63,13 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            masked: false,
         }
+    }
+
+    pub fn masked(mut self) -> Self {
+        self.masked = true;
+        self
     }
 
     pub fn text(&self) -> &str {
@@ -164,13 +171,13 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(self.content[self.selected_range.clone()].to_string()));
         }
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(self.content[self.selected_range.clone()].to_string()));
             self.replace_text_in_range(None, "", window, cx)
         }
@@ -196,7 +203,8 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        let i = line.closest_index_for_x(position.x - bounds.left());
+        (0..=i).rev().find(|&i| self.content.is_char_boundary(i)).unwrap_or(0)
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -351,7 +359,14 @@ impl Element for TextElement {
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
         let style = window.text_style();
-        let (display_text, text_color) = if content.is_empty() { (input.placeholder.clone(), theme::muted()) } else { (content, style.color) };
+        let (display_text, text_color) = if content.is_empty() {
+            (input.placeholder.clone(), theme::muted())
+        } else if input.masked {
+            // One ASCII mask byte per content byte keeps every layout index identical to a content index.
+            ("*".repeat(content.len()).into(), style.color)
+        } else {
+            (content, style.color)
+        };
         let run = TextRun { len: display_text.len(), font: style.font(), color: text_color, background_color: None, underline: None, strikethrough: None };
         let runs = match input.marked_range.as_ref() {
             Some(marked) => vec![

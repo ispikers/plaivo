@@ -10,6 +10,7 @@ const WORKERS: usize = 6;
 pub struct Job {
     pub key: String,
     pub url: String,
+    pub local: bool,
 }
 
 #[derive(Default)]
@@ -39,10 +40,14 @@ impl Queue {
     }
 }
 
-fn load(c: &Client, key: &str, url: &str) -> Option<Arc<RenderImage>> {
-    let file = store::cache_path("img", key);
+fn load(c: &Client, key: &str, url: &str, local: bool) -> Option<Arc<RenderImage>> {
+    let file = if local { url.into() } else { store::cache_path("img", key) };
     let bytes = match std::fs::read(&file) {
         Ok(b) => b,
+        Err(e) if local => {
+            log::warn!("image {key}: {e}");
+            return None;
+        }
         Err(_) => {
             let b = c.fetch(url).inspect_err(|e| log::warn!("image {key}: {e}")).ok()?;
             let _ = store::write_atomic(&file, &b);
@@ -62,7 +67,7 @@ pub fn spawn_workers(q: Arc<Queue>, c: Client, done: impl Fn(String, Option<Arc<
         std::thread::spawn(move || {
             loop {
                 let job = q.pop();
-                let img = load(&c, &job.key, &job.url);
+                let img = load(&c, &job.key, &job.url, job.local);
                 done(job.key, img);
             }
         });
@@ -153,7 +158,7 @@ mod tests {
     #[test]
     fn queue_drops_oldest_when_full() {
         let q = Queue::default();
-        let job = |i: usize| Job { key: i.to_string(), url: String::new() };
+        let job = |i: usize| Job { key: i.to_string(), url: String::new(), local: false };
         let dropped: Vec<_> = (0..QUEUE_CAP + 2).filter_map(|i| q.push(job(i))).map(|j| j.key).collect();
         assert_eq!(dropped, ["0", "1"]);
         assert_eq!(q.pop().key, "2");

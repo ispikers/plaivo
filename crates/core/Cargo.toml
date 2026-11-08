@@ -16,3 +16,6 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 [target.'cfg(target_os = "android")'.dependencies]
 ureq = { version = "3", default-features = false, features = ["rustls", "json", "gzip"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
