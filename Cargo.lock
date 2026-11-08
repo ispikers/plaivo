@@ -3752,6 +3752,7 @@ dependencies = [
 name = "plaivo-core"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "log",
  "serde",
  "serde_json",
@@ -3766,6 +3767,7 @@ dependencies = [
  "log",
  "plaivo-core",
  "qrcodegen",
+ "serde_json",
  "uniffi",
 ]
 
