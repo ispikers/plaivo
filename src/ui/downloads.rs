@@ -1,7 +1,8 @@
-use crate::app::{Card, Nav, Plaivo, card_for, episode_card, join};
+use crate::app::{Card, Nav, Plaivo, card_for, download_root, episode_card, join};
 use crate::downloads::{Entry, State};
 use crate::plex::{DISCOVER_ID, Item};
-use crate::ui::home::{card_width, content_width};
+use crate::ui::home::content_width;
+use crate::ui::library::Grid;
 use crate::ui::settings::{note, toggle_row};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{chip, icon, pill, progress_bar, round_button, row, section, tip};
@@ -205,7 +206,7 @@ impl Plaivo {
     }
 
     pub fn download_summary(&self) -> String {
-        format!("{} · Remove watched {}", self.downloads.root().display(), if self.settings.auto_remove_watched { "on" } else { "off" })
+        format!("{} · Remove watched {}", download_root(&self.settings.download_dir).display(), if self.settings.auto_remove_watched { "on" } else { "off" })
     }
 
     pub fn render_download_settings(&mut self, cx: &mut Context<Self>) -> Div {
@@ -218,7 +219,7 @@ impl Plaivo {
                 section("Location")
                     .child(note("New downloads go to this folder. Downloads already in another folder stay there, and show up again if you switch back to it."))
                     .child(
-                        row("download-dir", Some(Icon::Folder), "Download folder", self.downloads.root().display().to_string())
+                        row("download-dir", Some(Icon::Folder), "Download folder", download_root(&self.settings.download_dir).display().to_string())
                             .when(custom, |d| d.child(pill("download-dir-default", "Default", None, false).on_click(cx.listener(|this, _, _, cx| this.set_download_dir(String::new(), cx)))))
                             .child(pill("download-dir-change", "Change", None, false).on_click(cx.listener(|this, _, _, cx| this.pick_download_dir(cx)))),
                     ),
@@ -252,6 +253,7 @@ impl Plaivo {
         let status = match e.state {
             State::Downloading if e.total > 0 => format!("{} of {}", fmt_size(e.bytes), fmt_size(e.total)),
             State::Downloading => "Starting…".into(),
+            State::Queued if !self.servers.iter().any(|s| s.id == e.server) => "Server unavailable".into(),
             State::Queued => "Queued".into(),
             State::Paused => "Paused".into(),
             State::Failed => join(&["Failed".into(), e.error.clone()]),
@@ -307,9 +309,9 @@ impl Plaivo {
         let active = queue.iter().any(|e| matches!(e.state, State::Queued | State::Downloading));
         let stopped = queue.iter().any(|e| matches!(e.state, State::Paused | State::Failed));
         let rows: Vec<AnyElement> = queue.iter().enumerate().map(|(i, e)| self.queue_row(i, e, cx)).collect();
-        let cards = offline_cards(&self.offline);
-        let w = card_width(content_width(self, window), false, self.settings.card_scale());
-        let grid: Vec<AnyElement> = cards.iter().enumerate().map(|(i, c)| self.media_card(SharedString::from(format!("offline-{i}")), c, w, false, cx)).collect();
+        let empty = self.offline_cards.is_empty();
+        let scroll = self.offline_scroll.clone();
+        let grid = (!empty).then(|| self.grid(Grid::Offline, content_width(self, window), scroll, cx));
         let header = div()
             .px(px(16.))
             .flex()
@@ -319,30 +321,19 @@ impl Plaivo {
             .when(active, |d| d.child(pill("pause-all", "Pause all", Some(Icon::Pause), false).on_click(cx.listener(|this, _, _, cx| this.with_downloads(cx, |d| d.pause_all())))))
             .when(stopped, |d| d.child(pill("resume-all", "Resume all", Some(Icon::Play), false).on_click(cx.listener(|this, _, _, cx| this.with_downloads(cx, |d| d.resume_all())))));
         div()
-            .id("downloads")
             .size_full()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .pt(px(24.))
-                    .pb(px(32.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(28.))
-                    .child(header)
-                    .when(!rows.is_empty(), |d| d.child(section("Queue").px(px(16.)).children(rows)))
-                    .when(!grid.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(8.))
-                                .child(div().px(px(16.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::muted()).child("Downloaded"))
-                                .child(div().px(px(8.)).flex().flex_wrap().children(grid)),
-                        )
-                    })
-                    .when(queue.is_empty() && cards.is_empty(), |d| d.child(div().px(px(16.)).child(note("Nothing downloaded yet. Download a movie, show, season or episode from its page to watch it offline.")))),
-            )
+            .pt(px(24.))
+            .flex()
+            .flex_col()
+            .gap(px(20.))
+            .child(header)
+            .when(!rows.is_empty(), |d| {
+                d.child(div().id("download-queue").flex_none().max_h(gpui::relative(0.4)).overflow_y_scroll().px(px(16.)).child(section("Queue").children(rows)))
+            })
+            .when_some(grid, |d, grid| {
+                d.child(div().flex_none().px(px(16.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::muted()).child("Downloaded")).child(grid)
+            })
+            .when(queue.is_empty() && empty, |d| d.child(div().px(px(16.)).child(note("Nothing downloaded yet. Download a movie, show, season or episode from its page to watch it offline."))))
             .into_any_element()
     }
 

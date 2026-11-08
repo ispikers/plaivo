@@ -11,6 +11,7 @@ pub struct Job {
     pub key: String,
     pub url: String,
     pub local: bool,
+    pub size: (u32, u32),
 }
 
 #[derive(Default)]
@@ -40,7 +41,12 @@ impl Queue {
     }
 }
 
-fn load(c: &Client, key: &str, url: &str, local: bool) -> Option<Arc<RenderImage>> {
+fn fit(img: image::DynamicImage, (w, h): (u32, u32)) -> image::DynamicImage {
+    if img.width() > w && img.height() > h { img.resize_to_fill(w, h, image::imageops::FilterType::Triangle) } else { img }
+}
+
+fn load(c: &Client, Job { key, url, local, size }: &Job) -> Option<Arc<RenderImage>> {
+    let local = *local;
     let file = if local { url.into() } else { store::cache_path("img", key) };
     let bytes = match std::fs::read(&file) {
         Ok(b) => b,
@@ -54,7 +60,8 @@ fn load(c: &Client, key: &str, url: &str, local: bool) -> Option<Arc<RenderImage
             b
         }
     };
-    let mut rgba = image::load_from_memory(&bytes).inspect_err(|e| log::warn!("image {key}: decode failed: {e}")).ok()?.into_rgba8();
+    let img = image::load_from_memory(&bytes).inspect_err(|e| log::warn!("image {key}: decode failed: {e}")).ok()?;
+    let mut rgba = if local { fit(img, *size) } else { img }.into_rgba8();
     for px in rgba.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
@@ -67,7 +74,7 @@ pub fn spawn_workers(q: Arc<Queue>, c: Client, done: impl Fn(String, Option<Arc<
         std::thread::spawn(move || {
             loop {
                 let job = q.pop();
-                let img = load(&c, &job.key, &job.url, job.local);
+                let img = load(&c, &job);
                 done(job.key, img);
             }
         });
@@ -156,9 +163,18 @@ mod tests {
     }
 
     #[test]
+    fn local_art_shrinks_to_cover_the_drawn_size() {
+        let big = image::DynamicImage::new_rgba8(960, 1440);
+        let fitted = fit(big, (250, 375));
+        assert_eq!((fitted.width(), fitted.height()), (250, 375));
+        let wide = fit(image::DynamicImage::new_rgba8(960, 540), (400, 600));
+        assert_eq!((wide.width(), wide.height()), (960, 540));
+    }
+
+    #[test]
     fn queue_drops_oldest_when_full() {
         let q = Queue::default();
-        let job = |i: usize| Job { key: i.to_string(), url: String::new(), local: false };
+        let job = |i: usize| Job { key: i.to_string(), url: String::new(), local: false, size: (0, 0) };
         let dropped: Vec<_> = (0..QUEUE_CAP + 2).filter_map(|i| q.push(job(i))).map(|j| j.key).collect();
         assert_eq!(dropped, ["0", "1"]);
         assert_eq!(q.pop().key, "2");

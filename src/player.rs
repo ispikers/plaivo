@@ -5,7 +5,9 @@ use crate::settings::{Scale, SkipMode};
 use crate::ui::theme::{self, Icon};
 use crate::video_host::{self, Region};
 use crate::downloads::Local;
+use crate::ui::services::play_state;
 use crate::{mpv, shaders, store};
+use plaivo_core::trackers::{self, PlayState};
 use futures::StreamExt;
 use gpui::{Context, ScrollHandle, SharedString, Task};
 use serde::Deserialize;
@@ -90,6 +92,7 @@ pub struct Player {
     local: bool,
     pub paused: bool,
     last_report: Option<Instant>,
+    pub tracker: Option<trackers::Media>,
     external_subs: Vec<([String; 3], bool)>,
     pub title: SharedString,
     pub title_link: Option<Nav>,
@@ -213,8 +216,9 @@ impl Plaivo {
         Self::bg(
             cx,
             move || {
-                if let Some(file) = downloads.local(&srv.id, &key)
-                    && let Some(it) = downloads.item(&srv.id, &key)
+                if let Some(d) = &downloads
+                    && let Some(file) = d.local(&srv.id, &key)
+                    && let Some(it) = d.item(&srv.id, &key)
                 {
                     return (srv, Ok(it), local, Some(file));
                 }
@@ -264,6 +268,7 @@ impl Plaivo {
         self.player.server = Some(srv);
         self.launch(&url, &it.rating_key, &title, &subtitle, it.duration.unwrap_or(0) as f64 / 1000.0, resume.then_some(offset), subs, cx)?;
         self.player.local = local.is_some();
+        self.resolve_tracker_media(&it, cx);
         let id = &self.player.server.as_ref().unwrap().id;
         let link = |key: &str, season: Option<&str>| (!key.is_empty()).then(|| Nav::Detail(id.clone(), key.to_owned(), season.map(str::to_owned)));
         let (title_link, crumbs): (_, Vec<Crumb>) = match it.kind.as_str() {
@@ -585,6 +590,7 @@ impl Plaivo {
         p.shader = self.settings.shader.clone();
         p.local = false;
         p.last_report = None;
+        p.tracker = None;
         p.external_subs = subs;
         p.title = title.to_owned().into();
         p.title_link = None;
@@ -692,13 +698,16 @@ impl Plaivo {
         let c = self.client.clone();
         let p = &mut self.player;
         p.last_report = Some(Instant::now());
-        let offline = (p.local && state == "stopped").then(|| self.downloads.clone());
+        let offline = self.downloads.clone().filter(|_| p.local);
         let (key, state, t, d, session) = (p.key.clone(), state.to_owned(), (p.time * 1000.0) as u64, (p.duration * 1000.0) as u64, p.transcode.clone());
+        if let Some(m) = &p.tracker {
+            self.services.trackers.on_progress(m, play_state(&state), t, d);
+        }
         std::thread::spawn(move || {
-            if let Some(downloads) = offline {
-                downloads.record_progress(&srv.id, &key, &state, t, d);
+            let synced = srv.timeline(&c, &key, &state, t, d, session.as_deref());
+            if let Some(downloads) = offline.filter(|_| state == "stopped" || !synced) {
+                downloads.record_progress(&srv.id, &key, &state, t, d, synced);
             }
-            srv.timeline(&c, &key, &state, t, d, session.as_deref());
         });
     }
 
@@ -709,10 +718,13 @@ impl Plaivo {
             && let Some(srv) = &p.server
         {
             let (t, d) = ((p.time * 1000.0) as u64, (p.duration * 1000.0) as u64);
-            if p.local {
-                self.downloads.record_progress(&srv.id, &p.key, "stopped", t, d);
+            if let Some(m) = &p.tracker {
+                self.services.trackers.on_progress(m, PlayState::Stopped, t, d);
             }
-            srv.timeline(&self.client, &p.key, "stopped", t, d, p.transcode.as_deref());
+            let synced = srv.timeline(&self.client, &p.key, "stopped", t, d, p.transcode.as_deref());
+            if let Some(downloads) = self.downloads.as_ref().filter(|_| p.local) {
+                downloads.record_progress(&srv.id, &p.key, "stopped", t, d, synced);
+            }
         }
     }
 

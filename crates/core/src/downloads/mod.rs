@@ -371,14 +371,16 @@ impl Downloads {
         self.inner.lock().images.contains(&p).then_some(p)
     }
 
-    pub fn record_progress(&self, server: &str, key: &str, state: &str, time_ms: u64, duration_ms: u64) {
+    pub fn record_progress(&self, server: &str, key: &str, state: &str, time_ms: u64, duration_ms: u64, synced: bool) {
         let watched = progress::watched(time_ms, duration_ms);
         let stopped = state == "stopped";
         let snapshot = {
             let mut s = self.inner.lock();
-            progress::coalesce(&mut s.pending, Pending { server: server.into(), key: key.into(), time_ms, duration_ms, updated: unix_now(), watched });
-            self.inner.save_progress(&s);
-            s.replay_at.get_or_insert_with(|| Instant::now() + REPLAY_DELAY);
+            if !synced {
+                progress::coalesce(&mut s.pending, Pending { server: server.into(), key: key.into(), time_ms, duration_ms, updated: unix_now(), watched });
+                self.inner.save_progress(&s);
+                s.replay_at.get_or_insert_with(|| Instant::now() + REPLAY_DELAY);
+            }
             s.items.get_mut(&(server.to_owned(), key.to_owned())).filter(|_| stopped).map(|it| {
                 it.view_offset = (!watched).then_some(time_ms);
                 if watched {

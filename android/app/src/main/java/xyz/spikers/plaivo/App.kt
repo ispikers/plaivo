@@ -47,6 +47,18 @@ val core: Plaivo get() = App.instance.core
 
 val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-fun editSettings(change: (Settings) -> Settings): Settings = change(core.settings()).also { core.setSettings(it) }
+private val settingsWriter = Dispatchers.IO.limitedParallelism(1)
+private val settingsLock = Any()
+private var pendingSettings: Settings? = null
+
+fun editSettings(change: (Settings) -> Settings): Settings = synchronized(settingsLock) {
+    val next = change(pendingSettings ?: core.settings())
+    pendingSettings = next
+    background.launch(settingsWriter) {
+        core.setSettings(next)
+        synchronized(settingsLock) { if (pendingSettings === next) pendingSettings = null }
+    }
+    next
+}
 
 suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }

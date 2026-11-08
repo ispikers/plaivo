@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -49,7 +50,9 @@ import kotlinx.coroutines.sync.withLock
 import uniffi.plaivo_ffi.Section
 import uniffi.plaivo_ffi.ServerInfo
 import uniffi.plaivo_ffi.Settings
+import uniffi.plaivo_ffi.Service
 import uniffi.plaivo_ffi.SkipMode
+import uniffi.plaivo_ffi.Status
 import uniffi.plaivo_ffi.SubtitleMode
 import uniffi.plaivo_ffi.Language
 import uniffi.plaivo_ffi.LanguagePrefs
@@ -67,6 +70,7 @@ private enum class Category(val title: String, val glyph: Glyph, val parent: Cat
     AudioSubtitles("Audio & Subtitles", Glyph.Subtitles),
     AudioLanguage("Audio language", Glyph.Subtitles, AudioSubtitles),
     SubtitleLanguage("Subtitle language", Glyph.Subtitles, AudioSubtitles),
+    Services("Services", Glyph.Check),
     Downloads("Downloads", Glyph.Download),
     Connections("Connections", Glyph.Link),
     Advanced("Advanced", Glyph.Build),
@@ -97,6 +101,8 @@ private val Settings.languages get() = LanguagePrefs(audioLanguage, subtitleLang
 private fun offOr(value: UInt, text: String) = if (value == 0u) "Off" else text
 
 private fun onOff(on: Boolean) = if (on) "on" else "off"
+
+private val Status.label get() = if (!configured) "Not configured" else if (signedIn) "Signed in" else "Not signed in"
 
 @Composable
 fun SettingsScreen(
@@ -138,6 +144,18 @@ fun SettingsScreen(
         }
         return
     }
+    var trackerTick by remember { mutableIntStateOf(0) }
+    val trackers = remember(trackerTick) { Service.entries.associateWith { core.trackerStatus(it) } }
+    val traktProgress = remember(trackerTick) { core.traktProgress() }
+    var lastService by rememberSaveable { mutableStateOf(Service.TRAKT) }
+    var connecting by rememberSaveable { mutableStateOf<Service?>(null) }
+    connecting?.let {
+        TrackerSignInScreen(it) {
+            connecting = null
+            trackerTick++
+        }
+        return
+    }
     var licenses by rememberSaveable { mutableStateOf(false) }
     if (licenses) {
         LicensesScreen {
@@ -175,6 +193,7 @@ fun SettingsScreen(
                         Category.AudioSubtitles -> "Audio: ${languageName(settings.audioLanguage)} · Subtitles: ${settings.subtitleMode.label}"
                         Category.Appearance -> "Poster size: ${densityLabel(settings.density)}"
                         Category.Playback -> "Default quality: $qualityLabel · Autoplay ${onOff(settings.autoplayNext)}"
+                        Category.Services -> Service.entries.joinToString(" · ") { "${it.title}: ${trackers.getValue(it).label}" }
                         Category.Downloads -> "Auto-remove watched ${onOff(settings.autoRemoveWatched)}"
                         Category.Connections -> {
                             fun count(n: Int) = if (n == 1) "1 server" else "$n servers"
@@ -294,6 +313,36 @@ fun SettingsScreen(
                         SettingsRow(null, l.name, "", Modifier.takeFocus(l.code == focus), selected, {
                             editLanguages { if (subtitles) it.copy(subtitles = l.code) else it.copy(audio = l.code) }
                         }) { if (selected) GlyphIcon(Glyph.Check, 20.dp, Palette.text) }
+                    }
+                }
+                Category.Services -> {
+                    Note("Marks what you watch as watched on these services. Trakt also shows what you are watching now.")
+                    Service.entries.forEach { s ->
+                        val status = trackers.getValue(s)
+                        SectionTitle(s.title)
+                        if (!status.configured) {
+                            SettingsRow(Glyph.Person, s.title, "Not configured in this build", Modifier.takeFocus(s == lastService))
+                            return@forEach
+                        }
+                        SettingsRow(Glyph.Person, "Account", status.label, Modifier.takeFocus(s == lastService), onClick = {
+                            lastService = s
+                            if (status.signedIn) {
+                                core.trackerSignOut(s)
+                                trackerTick++
+                            } else {
+                                connecting = s
+                            }
+                        }) { Value(if (status.signedIn) "Disconnect" else "Connect") }
+                        SettingsRow(Glyph.Check, "Scrobble", "Send what you watch to ${s.title}", onClick = {
+                            core.setTrackerScrobble(s, !status.scrobble)
+                            trackerTick++
+                        }) { Switch(status.scrobble) }
+                        if (s == Service.TRAKT) {
+                            SettingsRow(Glyph.PlayCircle, "Scrobble progress", "Shows what you are watching now. Off sends a play only once you finish.", onClick = {
+                                core.setTraktProgress(!traktProgress)
+                                trackerTick++
+                            }) { Switch(traktProgress) }
+                        }
                     }
                 }
                 Category.Downloads -> {

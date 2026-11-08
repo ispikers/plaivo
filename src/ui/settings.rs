@@ -8,7 +8,7 @@ use gpui::{AnyElement, Context, Div, FontWeight, SharedString, Stateful, div, pr
 
 const MPV_SOURCE: &str = "https://github.com/mpv-player/mpv";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const CATEGORIES: [Category; 8] = [Category::General, Category::Appearance, Category::Playback, Category::Audio, Category::Downloads, Category::Connections, Category::Advanced, Category::About];
+const CATEGORIES: [Category; 9] = [Category::General, Category::Appearance, Category::Playback, Category::Audio, Category::Services, Category::Downloads, Category::Connections, Category::Advanced, Category::About];
 const DENSITY: [&str; DENSITY_MAX as usize] = ["Smallest", "Small", "Medium", "Large", "Largest"];
 
 pub fn nudge(value: u32, step: i8, by: u32, lo: u32, hi: u32, default: u32) -> u32 {
@@ -51,6 +51,7 @@ impl Plaivo {
             Category::Advanced => format!("Image cache · Debug logging {}", if self.settings.debug_logging { "on" } else { "off" }),
             Category::Audio => self.languages_summary(),
             Category::Downloads => self.download_summary(),
+            Category::Services => self.services.summary(),
             Category::Libraries | Category::Shaders | Category::AudioLanguage | Category::SubtitleLanguage => String::new(),
             Category::Connections => {
                 let count = |n: usize| if n == 1 { "1 server".to_owned() } else { format!("{n} servers") };
@@ -248,6 +249,7 @@ impl Plaivo {
             Some(Category::AudioLanguage) => self.render_language_list(false, cx),
             Some(Category::SubtitleLanguage) => self.render_language_list(true, cx),
             Some(Category::Downloads) => self.render_download_settings(cx),
+            Some(Category::Services) => self.render_services(cx),
             Some(Category::Advanced) => self.render_advanced_settings(cx),
             Some(Category::Connections) => self.render_connections(cx),
             Some(Category::About) => section("Plaivo")
@@ -287,6 +289,7 @@ impl Category {
             Category::AudioLanguage => "Audio language",
             Category::SubtitleLanguage => "Subtitle language",
             Category::Downloads => "Downloads",
+            Category::Services => "Services",
             Category::Connections => "Connections",
             Category::Advanced => "Advanced",
             Category::About => "About",
@@ -300,6 +303,7 @@ impl Category {
             Category::Playback | Category::Shaders => Icon::PlayCircle,
             Category::Audio | Category::AudioLanguage | Category::SubtitleLanguage => Icon::Subtitles,
             Category::Downloads => Icon::Download,
+            Category::Services => Icon::Check,
             Category::Connections => Icon::Link,
             Category::Advanced => Icon::Build,
             Category::About => Icon::Info,

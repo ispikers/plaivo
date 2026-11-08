@@ -5,10 +5,11 @@ use crate::ui::widgets::{chip, icon, shadow};
 use gpui::{AnyElement, Context, FontWeight, SharedString, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Grid {
+pub enum Grid {
     Library,
     Results,
     Suggestions,
+    Offline,
 }
 
 impl Plaivo {
@@ -17,6 +18,7 @@ impl Plaivo {
             Grid::Library => self.library.as_ref().map_or(0, |l| l.items.len()),
             Grid::Results => self.results.len(),
             Grid::Suggestions => self.suggestions.len(),
+            Grid::Offline => self.offline_cards.len(),
         }
     }
 
@@ -25,11 +27,12 @@ impl Plaivo {
             Grid::Library => self.library.as_ref().and_then(|l| l.items.get(i).cloned().flatten()),
             Grid::Results => self.results.get(i).cloned(),
             Grid::Suggestions => self.suggestions.get(i).cloned(),
+            Grid::Offline => self.offline_cards.get(i).cloned(),
         }
         .unwrap_or_default()
     }
 
-    fn grid(&mut self, g: Grid, cw: f32, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
+    pub fn grid(&mut self, g: Grid, cw: f32, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
         let w = card_width(cw, false, self.settings.card_scale());
         let cols = ((cw - 16.) / w).round().max(1.) as usize;
         let count = self.grid_len(g);
@@ -39,6 +42,7 @@ impl Plaivo {
             Grid::Library => "lib",
             Grid::Results => "res",
             Grid::Suggestions => "sug",
+            Grid::Offline => "offline",
         };
         uniform_list(
             tag,

@@ -170,7 +170,7 @@ private fun SignInScreen(onJellyfin: () -> Unit, onBack: (() -> Unit)?, onDone: 
 }
 
 @Composable
-private fun QrCode(modules: Int, dark: List<Boolean>, modifier: Modifier) {
+fun QrCode(modules: Int, dark: List<Boolean>, modifier: Modifier) {
     Canvas(modifier.background(Color.White, RoundedCornerShape(12.dp))) {
         val quiet = 4
         val cell = floor(size.minDimension / (modules + quiet * 2))

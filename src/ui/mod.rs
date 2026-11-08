@@ -1,12 +1,13 @@
 pub mod add_server;
 mod audio_settings;
 mod detail;
-mod downloads;
+pub mod downloads;
 mod home;
 pub mod input;
-mod library;
+pub mod library;
 mod licenses;
 mod player;
+pub mod services;
 mod settings;
 mod shell;
 pub mod theme;

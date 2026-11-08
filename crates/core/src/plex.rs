@@ -602,7 +602,7 @@ impl Server {
         Ok(items.enumerate().map(|(i, it)| (it, 1.0 - i as f64 * 0.01)).collect())
     }
 
-    pub fn timeline(&self, c: &Client, key: &str, state: &str, time_ms: u64, duration_ms: u64, transcode_session: Option<&str>) {
+    pub fn timeline(&self, c: &Client, key: &str, state: &str, time_ms: u64, duration_ms: u64, transcode_session: Option<&str>) -> bool {
         if self.is_jellyfin() {
             return jellyfin::timeline(self, c, key, state, time_ms, transcode_session);
         }
@@ -611,8 +611,14 @@ impl Server {
             self.uri
         );
         match c.get(&url, Some(&self.token)).call() {
-            Ok(_) => log::debug!("{} timeline {state} {key} at {}s", self.name, time_ms / 1000),
-            Err(e) => log::warn!("{} timeline {state} for {key} failed: {e}", self.name),
+            Ok(_) => {
+                log::debug!("{} timeline {state} {key} at {}s", self.name, time_ms / 1000);
+                true
+            }
+            Err(e) => {
+                log::warn!("{} timeline {state} for {key} failed: {e}", self.name);
+                false
+            }
         }
     }
 

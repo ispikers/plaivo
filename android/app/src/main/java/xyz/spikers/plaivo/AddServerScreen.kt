@@ -32,6 +32,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -197,10 +198,10 @@ private fun Field(
 }
 
 @Composable
-fun ActionButton(text: String, onClick: () -> Unit) {
+fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     Surface(
-        onClick = onClick,
-        modifier = Modifier.height(44.dp),
+        onClick = { if (enabled) onClick() },
+        modifier = modifier.height(44.dp).alpha(if (enabled) 1f else 0.4f),
         shape = ClickableSurfaceDefaults.shape(CircleShape),
         colors = ClickableSurfaceDefaults.colors(containerColor = Palette.surface, contentColor = Palette.text, focusedContainerColor = Palette.tint(0.12f), focusedContentColor = Palette.text),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),

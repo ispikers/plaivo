@@ -445,11 +445,17 @@ fn progress_body(key: &str, state: &str, time_ms: u64, transcode_session: Option
     })
 }
 
-pub fn timeline(srv: &Server, c: &Client, key: &str, state: &str, time_ms: u64, transcode_session: Option<&str>) {
+pub fn timeline(srv: &Server, c: &Client, key: &str, state: &str, time_ms: u64, transcode_session: Option<&str>) -> bool {
     let path = progress_path(key, state);
     match authed(c.agent.post(format!("{}{path}", srv.uri)), c, Some(&srv.token)).send_json(progress_body(key, state, time_ms, transcode_session)) {
-        Ok(_) => log::debug!("{} {path} {key} at {}s", srv.name, time_ms / 1000),
-        Err(e) => log::warn!("{} {path} for {key} failed: {e}", srv.name),
+        Ok(_) => {
+            log::debug!("{} {path} {key} at {}s", srv.name, time_ms / 1000);
+            true
+        }
+        Err(e) => {
+            log::warn!("{} {path} for {key} failed: {e}", srv.name);
+            false
+        }
     }
 }
 

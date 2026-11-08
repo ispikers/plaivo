@@ -2,8 +2,10 @@ use plaivo_core::downloads::{Downloads, State};
 use plaivo_core::plex::{Client, Ctx, Item, QUALITIES, Quality, Server, Source, fmt_bitrate, resolve_playable};
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{SUBTITLE_COLORS, Scale, Settings, SkipMode, library_key};
+use plaivo_core::trackers::{self, Ids, Media, PlayState, Poll, Service, Status, Trackers, ids_from_guids};
 use plaivo_core::{Account, first, jellyfin, join, store};
 use qrcodegen::{QrCode, QrCodeEcc};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -35,6 +37,8 @@ impl From<&str> for PlaivoError {
 }
 
 type R<T> = Result<T, PlaivoError>;
+
+type ItemKey = (String, String);
 
 #[uniffi::remote(Enum)]
 pub enum Scale {
@@ -121,6 +125,37 @@ pub struct SignIn {
     pub qr_size: u32,
     pub qr: Vec<bool>,
     pub expires_in_s: u64,
+}
+
+#[uniffi::remote(Enum)]
+pub enum Service {
+    Trakt,
+    Mal,
+    Anilist,
+}
+
+#[uniffi::remote(Record)]
+pub struct Status {
+    pub configured: bool,
+    pub signed_in: bool,
+    pub scrobble: bool,
+}
+
+#[derive(uniffi::Record)]
+pub struct TrackerSignIn {
+    pub url: String,
+    pub user_code: Option<String>,
+    pub qr_size: u32,
+    pub qr: Vec<bool>,
+    pub interval_secs: u64,
+    pub expires_in_secs: u64,
+}
+
+#[derive(uniffi::Enum)]
+pub enum TrackerPoll {
+    Pending { interval_secs: u64 },
+    Done,
+    Failed { reason: String },
 }
 
 #[derive(uniffi::Record)]
@@ -298,6 +333,10 @@ pub struct Plaivo {
     account: Mutex<Account>,
     settings: Mutex<Settings>,
     downloads: OnceLock<Downloads>,
+    trackers: Trackers,
+    tracker_sign_in: Mutex<Option<trackers::SignIn>>,
+    tracked: Mutex<HashMap<ItemKey, (Media, Option<String>)>>,
+    show_ids: Mutex<HashMap<ItemKey, Ids>>,
 }
 
 fn file_url(path: &Path) -> String {
@@ -353,7 +392,18 @@ impl Plaivo {
         let account = Account::load();
         let settings = Settings::load();
         apply_log_level(&settings);
-        Arc::new(Self { client: Client::new(account.client_id.clone()), account: Mutex::new(account), settings: Mutex::new(settings), downloads: OnceLock::new() })
+        let trackers = Trackers::start();
+        trackers.set_watched_threshold(90.0);
+        Arc::new(Self {
+            client: Client::new(account.client_id.clone()),
+            account: Mutex::new(account),
+            settings: Mutex::new(settings),
+            downloads: OnceLock::new(),
+            trackers,
+            tracker_sign_in: Mutex::new(None),
+            tracked: Mutex::new(HashMap::new()),
+            show_ids: Mutex::new(HashMap::new()),
+        })
     }
 
     pub fn signed_in(&self) -> bool {
@@ -362,11 +412,8 @@ impl Plaivo {
 
     pub fn start_sign_in(&self) -> R<SignIn> {
         let pin = self.client.create_pin(false)?;
-        let link = self.client.link_url(&pin.code);
-        let qr = QrCode::encode_text(&link, QrCodeEcc::Medium).map_err(|e| format!("QR code: {e:?}"))?;
-        let size = qr.size();
-        let modules = (0..size).flat_map(|y| (0..size).map(move |x| (x, y))).map(|(x, y)| qr.get_module(x, y)).collect();
-        Ok(SignIn { id: pin.id, code: pin.code, qr_size: size as u32, qr: modules, expires_in_s: pin.expires_in.unwrap_or(900) })
+        let (qr_size, qr) = qr(&self.client.link_url(&pin.code))?;
+        Ok(SignIn { id: pin.id, code: pin.code, qr_size, qr, expires_in_s: pin.expires_in.unwrap_or(900) })
     }
 
     pub fn finish_sign_in(&self, id: u64) -> R<bool> {
@@ -600,14 +647,56 @@ impl Plaivo {
     }
 
     pub fn report(&self, server_id: String, key: String, state: String, time_ms: u64, duration_ms: u64, transcode_session: Option<String>) {
+        let synced = self.server(&server_id).is_ok_and(|srv| srv.timeline(&self.client, &key, &state, time_ms, duration_ms, transcode_session.as_deref()));
         if state == "stopped"
             && let Some(d) = self.downloads.get()
             && d.local(&server_id, &key).is_some()
         {
-            d.record_progress(&server_id, &key, &state, time_ms, duration_ms);
+            d.record_progress(&server_id, &key, &state, time_ms, duration_ms, synced);
         }
-        if let Ok(srv) = self.server(&server_id) {
-            srv.timeline(&self.client, &key, &state, time_ms, duration_ms, transcode_session.as_deref());
+        if let Some(state) = play_state(&state) {
+            self.scrobble(&server_id, &key, state, time_ms, duration_ms);
+        }
+    }
+
+    pub fn tracker_status(&self, service: Service) -> Status {
+        self.trackers.status(service)
+    }
+
+    pub fn set_tracker_scrobble(&self, service: Service, on: bool) {
+        self.trackers.set_scrobble(service, on);
+    }
+
+    pub fn trakt_progress(&self) -> bool {
+        self.trackers.trakt_progress()
+    }
+
+    pub fn set_trakt_progress(&self, on: bool) {
+        self.trackers.set_trakt_progress(on);
+    }
+
+    pub fn tracker_sign_out(&self, service: Service) {
+        self.trackers.sign_out(service);
+    }
+
+    pub fn begin_tracker_sign_in(&self, service: Service) -> R<TrackerSignIn> {
+        let s = self.trackers.begin_sign_in(service)?;
+        let (qr_size, qr) = qr(&s.url)?;
+        let info = TrackerSignIn { url: s.url.clone(), user_code: s.user_code.clone(), qr_size, qr, interval_secs: s.interval_secs, expires_in_secs: s.expires_in_secs };
+        *self.tracker_sign_in.lock().unwrap() = Some(s);
+        Ok(info)
+    }
+
+    pub fn poll_tracker_sign_in(&self) -> TrackerPoll {
+        let Some(mut s) = self.tracker_sign_in.lock().unwrap().take() else { return TrackerPoll::Failed { reason: "cancelled".into() } };
+        match self.trackers.poll_sign_in(&mut s) {
+            Poll::Pending => {
+                let interval_secs = s.interval_secs;
+                self.tracker_sign_in.lock().unwrap().get_or_insert(s);
+                TrackerPoll::Pending { interval_secs }
+            }
+            Poll::Done => TrackerPoll::Done,
+            Poll::Failed(reason) => TrackerPoll::Failed { reason },
         }
     }
 
@@ -615,10 +704,12 @@ impl Plaivo {
         if self.downloads.get().is_some() {
             return;
         }
-        let d = Downloads::new(root.into(), self.client.clone(), move || listener.changed());
-        d.set_servers(&self.account.lock().unwrap().all_servers());
-        d.set_auto_remove_watched(self.settings.lock().unwrap().auto_remove_watched);
-        let _ = self.downloads.set(d);
+        if self.downloads.set(Downloads::new(root.into(), self.client.clone(), move || listener.changed())).is_err() {
+            return;
+        }
+        self.sync_download_servers();
+        let auto_remove = self.settings.lock().unwrap().auto_remove_watched;
+        self.with_downloads(|d| d.set_auto_remove_watched(auto_remove));
     }
 
     pub fn downloads(&self) -> Vec<Download> {
@@ -733,6 +824,34 @@ fn download_parent<'a>(scope: &DownloadScope, it: &'a Item) -> Option<&'a String
     }
 }
 
+fn qr(text: &str) -> R<(u32, Vec<bool>)> {
+    let qr = QrCode::encode_text(text, QrCodeEcc::Medium).map_err(|e| format!("QR code: {e:?}"))?;
+    let size = qr.size();
+    Ok((size as u32, (0..size).flat_map(|y| (0..size).map(move |x| (x, y))).map(|(x, y)| qr.get_module(x, y)).collect()))
+}
+
+fn play_state(state: &str) -> Option<PlayState> {
+    match state {
+        "playing" => Some(PlayState::Playing),
+        "paused" => Some(PlayState::Paused),
+        "stopped" => Some(PlayState::Stopped),
+        _ => None,
+    }
+}
+
+fn guid_ids(it: &Item) -> Ids {
+    ids_from_guids(it.guids.iter().map(|g| g.id.as_str()))
+}
+
+fn tracker_media(it: &Item) -> Option<Media> {
+    let index = |i: Option<i64>| i.and_then(|i| u32::try_from(i).ok());
+    match it.kind.as_str() {
+        "movie" => Some(Media { movie: true, ids: guid_ids(it), ..Default::default() }),
+        "episode" => Some(Media { ids: guid_ids(it), season: index(it.parent_index), episode: index(it.index), ..Default::default() }),
+        _ => None,
+    }
+}
+
 fn apply_log_level(settings: &Settings) {
     log::set_max_level(if settings.debug_logging { log::LevelFilter::Debug } else { log::LevelFilter::Info });
 }
@@ -745,6 +864,29 @@ impl Plaivo {
         account.save();
         drop(account);
         self.sync_download_servers();
+    }
+
+    fn scrobble(&self, server: &str, key: &str, state: PlayState, time_ms: u64, duration_ms: u64) {
+        if !Service::ALL.into_iter().map(|s| self.trackers.status(s)).any(|s| s.signed_in && s.scrobble) {
+            return;
+        }
+        let Some((mut media, show)) = self.tracked.lock().unwrap().get(&(server.to_owned(), key.to_owned())).cloned() else { return };
+        if let Some(show) = show {
+            let Some(ids) = self.show_ids(server, &show) else { return };
+            media.show_ids = ids;
+        }
+        self.trackers.on_progress(&media, state, time_ms, duration_ms);
+    }
+
+    fn show_ids(&self, server: &str, show: &str) -> Option<Ids> {
+        let id = (server.to_owned(), show.to_owned());
+        if let Some(ids) = self.show_ids.lock().unwrap().get(&id) {
+            return Some(ids.clone());
+        }
+        let it = self.downloads.get().and_then(|d| d.item(server, show)).or_else(|| self.server(server).ok()?.metadata(&Ctx::new(self.client.clone(), Source::Network), show).ok());
+        let ids = guid_ids(&it?);
+        self.show_ids.lock().unwrap().insert(id, ids.clone());
+        Some(ids)
     }
 
     fn sync_download_servers(&self) {
@@ -802,6 +944,10 @@ impl Plaivo {
             })
             .collect();
         drop(settings);
+        if let Some(m) = tracker_media(it) {
+            let show = (!m.movie && !it.grandparent_rating_key.is_empty()).then(|| it.grandparent_rating_key.clone());
+            self.tracked.lock().unwrap().insert((server.to_owned(), it.rating_key.clone()), (m, show));
+        }
         let media = it.media.first();
         let resolution = match media.map(|m| m.video_resolution.to_ascii_lowercase()).unwrap_or_default().as_str() {
             "" => String::new(),
@@ -909,6 +1055,28 @@ mod tests {
         assert_eq!(download_parent(&S::Show, &episode).map(String::as_str), Some("g"));
         assert_eq!(download_parent(&S::Season, &season), None);
         assert_eq!(download_parent(&S::Show, &season).map(String::as_str), Some("g"));
+    }
+
+    #[test]
+    fn tracker_media_maps_movies_and_episodes() {
+        use super::{Item, PlayState, play_state, tracker_media};
+        use plaivo_core::plex::Guid;
+        let guids = |ids: &[&str]| ids.iter().map(|id| Guid { id: (*id).into() }).collect();
+        let movie = Item { kind: "movie".into(), guids: guids(&["imdb://tt1", "tmdb://2", "local://x"]), ..Default::default() };
+        let m = tracker_media(&movie).unwrap();
+        assert!(m.movie && m.season.is_none() && m.order.is_none());
+        assert_eq!(m.ids.get("imdb").map(String::as_str), Some("tt1"));
+        assert_eq!(m.ids.get("tmdb").map(String::as_str), Some("2"));
+        assert!(!m.ids.contains_key("local"));
+        let episode = Item { kind: "episode".into(), parent_index: Some(2), index: Some(5), guids: guids(&["tvdb://9"]), ..Default::default() };
+        let e = tracker_media(&episode).unwrap();
+        assert_eq!((e.movie, e.season, e.episode, e.ids.get("tvdb").map(String::as_str)), (false, Some(2), Some(5), Some("9")));
+        assert_eq!(tracker_media(&Item { kind: "episode".into(), index: Some(-1), ..Default::default() }).unwrap().episode, None);
+        assert!(tracker_media(&Item { kind: "clip".into(), ..Default::default() }).is_none());
+        assert_eq!(play_state("playing"), Some(PlayState::Playing));
+        assert_eq!(play_state("paused"), Some(PlayState::Paused));
+        assert_eq!(play_state("stopped"), Some(PlayState::Stopped));
+        assert_eq!(play_state("buffering"), None);
     }
 
     #[test]

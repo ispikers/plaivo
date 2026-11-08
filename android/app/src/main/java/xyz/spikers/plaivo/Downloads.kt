@@ -23,19 +23,23 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -68,23 +72,23 @@ object DownloadQueue : DownloadListener {
         root = app.getExternalFilesDir("downloads") ?: app.filesDir.resolve("downloads")
         DownloadService.createChannel(app)
         background.launch {
+            core.startDownloads(root.absolutePath, this@DownloadQueue)
             for (unit in signal) {
                 val list = core.downloads()
                 entries.value = list
                 DownloadService.sync(app, list)
             }
         }
-        core.startDownloads(root.absolutePath, this)
     }
 }
 
 fun fmtSize(bytes: ULong): String = Formatter.formatShortFileSize(App.instance, bytes.toLong())
 
-private fun Download.detail(): String {
+private fun Download.detail(available: Boolean): String {
     val size = if (total > 0uL) "${fmtSize(bytes)} of ${fmtSize(total)}" else ""
     val status = when (state) {
         DownloadState.DOWNLOADING -> listOf(if (total > 0uL) "${bytes * 100uL / total}%" else "Starting", size).filter(String::isNotEmpty).joinToString(" · ")
-        DownloadState.QUEUED -> "Queued"
+        DownloadState.QUEUED -> if (available) "Queued" else "Server unavailable"
         DownloadState.PAUSED -> listOf("Paused", size).filter(String::isNotEmpty).joinToString(" · ")
         DownloadState.FAILED -> "Failed: $error"
         DownloadState.DONE -> "Downloaded"
@@ -99,6 +103,23 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
     val done = entries.filter { it.state == DownloadState.DONE }.map { "${it.server}/${it.key}/${it.watched}" }
     val library by produceState(emptyList<MediaCard>(), done) { value = io { core.offlineLibrary() } }
     val free = remember(done) { DownloadQueue.root.usableSpace.toULong() }
+    val servers = remember { core.servers().map { it.id }.toSet() }
+    val keys = queue.map { "q/${it.server}/${it.key}" } + library.map { "${it.server}/${it.key}" }
+    val latestKeys by rememberUpdatedState(keys)
+    val requesters = remember { mutableMapOf<String, FocusRequester>() }
+    val header = remember { FocusRequester() }
+    var focused by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    LaunchedEffect(keys) {
+        requesters.keys.retainAll(keys.toSet())
+        val (_, index) = focused?.takeIf { it.first !in keys } ?: return@LaunchedEffect
+        focused = null
+        val next = keys.getOrNull(index.coerceAtMost(keys.lastIndex))?.let { requesters[it] }
+        if (next == null || runCatching { next.requestFocus() }.isFailure) runCatching { header.requestFocus() }
+    }
+    fun Modifier.tracked(key: String, index: Int) = focusRequester(requesters.getOrPut(key) { FocusRequester() }).onFocusChanged {
+        if (it.hasFocus) focused = key to index
+        else if (focused?.first == key && key in latestKeys) focused = null
+    }
     LazyVerticalGrid(
         columns = GridCells.FixedSize(Dims.poster * LocalCardScale.current + 14.dp),
         modifier = Modifier.fillMaxSize(),
@@ -112,31 +133,33 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
                     val status = if (entries.isEmpty()) "Nothing downloaded yet. Hold OK on a poster to download it." else "${library.size} downloaded · ${queue.size} in queue"
                     Text("$status · ${fmtSize(free)} free", fontSize = 13.sp, color = Palette.muted)
                 }
-                if (queue.isNotEmpty()) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (queue.any { it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING }) ActionButton("Pause all") { background.launch { core.pauseAllDownloads() } }
-                        if (queue.any { it.state == DownloadState.PAUSED || it.state == DownloadState.FAILED }) ActionButton("Resume all") { background.launch { core.resumeAllDownloads() } }
-                    }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val running = queue.any { it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING }
+                    val stopped = queue.any { it.state == DownloadState.PAUSED || it.state == DownloadState.FAILED }
+                    ActionButton("Pause all", { background.launch { core.pauseAllDownloads() } }, Modifier.focusRequester(header), running)
+                    ActionButton("Resume all", { background.launch { core.resumeAllDownloads() } }, enabled = stopped)
                 }
             }
         }
-        items(queue, key = { "q/${it.server}/${it.key}" }, span = { GridItemSpan(maxLineSpan) }) { QueueRow(it) }
+        itemsIndexed(queue, key = { _, d -> "q/${d.server}/${d.key}" }, span = { _, _ -> GridItemSpan(maxLineSpan) }) { i, d ->
+            QueueRow(d, d.server in servers, Modifier.tracked("q/${d.server}/${d.key}", i))
+        }
         if (library.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Text("Downloaded", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted, modifier = Modifier.padding(start = 7.dp, top = 8.dp))
             }
         }
-        items(library, key = { "${it.server}/${it.key}" }) { card ->
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) { MediaTile(card, wide = false) { play(card) } }
+        itemsIndexed(library, key = { _, card -> "${card.server}/${card.key}" }) { i, card ->
+            Box(Modifier.fillMaxWidth().tracked("${card.server}/${card.key}", queue.size + i), contentAlignment = Alignment.TopCenter) { MediaTile(card, wide = false) { play(card) } }
         }
     }
 }
 
 @Composable
-private fun QueueRow(d: Download) {
+private fun QueueRow(d: Download, available: Boolean, modifier: Modifier) {
     val running = d.state == DownloadState.QUEUED || d.state == DownloadState.DOWNLOADING
-    Row(Modifier.padding(horizontal = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        SettingsRow(Glyph.Download, d.title, d.detail(), Modifier.weight(1f), onClick = {
+    Row(modifier.padding(horizontal = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        SettingsRow(Glyph.Download, d.title, d.detail(available), Modifier.weight(1f), onClick = {
             background.launch { if (running) core.pauseDownload(d.server, d.key) else core.resumeDownload(d.server, d.key) }
         }) {
             if (d.total > 0uL) {

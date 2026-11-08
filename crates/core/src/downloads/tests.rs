@@ -403,9 +403,9 @@ fn queue_and_offline_progress_persist() {
         d.enqueue(&unreachable, &movie);
         d.pause("srv1", "5");
         wait(&d, |s| s[0].state == State::Paused);
-        d.record_progress("srv1", "5", "playing", 10, 100);
-        d.record_progress("srv1", "5", "paused", 20, 100);
-        d.record_progress("srv1", "6", "stopped", 30, 100);
+        d.record_progress("srv1", "5", "playing", 10, 100, false);
+        d.record_progress("srv1", "5", "paused", 20, 100, false);
+        d.record_progress("srv1", "6", "stopped", 30, 100, false);
     }
     let d = engine(&root, plenty);
     let s = d.snapshot();
@@ -550,13 +550,13 @@ fn auto_remove_watched_and_replay_when_reachable() {
     d.enqueue(&srv, &ep("102"));
     wait(&d, |s| s.len() == 2 && s.iter().all(|e| e.state == State::Done));
     d.set_auto_remove_watched(true);
-    d.record_progress("srv1", "102", "stopped", 400, 1000);
+    d.record_progress("srv1", "102", "stopped", 400, 1000, false);
     assert_eq!(d.item("srv1", "102").unwrap().view_offset, Some(400));
     assert_eq!(store::read_json::<Item>(&root.join("srv1").join("102").join(ITEM)).unwrap().view_offset, Some(400));
-    d.record_progress("srv1", "101", "playing", 900, 1000);
+    d.record_progress("srv1", "101", "playing", 900, 1000, false);
     std::thread::sleep(PRUNE_DELAY + Duration::from_millis(300));
     assert_eq!(d.snapshot().len(), 2, "playing past the threshold is not a stop");
-    d.record_progress("srv1", "101", "stopped", 950, 1000);
+    d.record_progress("srv1", "101", "stopped", 950, 1000, false);
     assert_eq!(d.item("srv1", "101").unwrap().view_count, Some(1));
     let s = wait(&d, |s| s.len() == 1);
     assert_eq!(s[0].key, "102");
@@ -626,4 +626,16 @@ fn live_plex_range_read() {
 
     std::fs::remove_dir_all(&dir).unwrap();
     println!("scratch dir deleted: {}", !dir.exists());
+}
+
+#[test]
+fn synced_progress_updates_the_snapshot_without_a_replay() {
+    let (srv, _log) = fake_plex(Arc::new(bytes(1000)), false, false);
+    let root = temp("synced");
+    let d = engine(&root, plenty);
+    d.enqueue(&srv, &ep("101"));
+    wait(&d, |s| s.len() == 1 && s[0].state == State::Done);
+    d.record_progress("srv1", "101", "stopped", 400, 1000, true);
+    assert_eq!(d.item("srv1", "101").unwrap().view_offset, Some(400));
+    assert!(d.inner.lock().pending.is_empty());
 }
