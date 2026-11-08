@@ -13,6 +13,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -33,7 +38,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.tv.material3.Border
+import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.Surface
+import coil3.compose.AsyncImage
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -52,7 +65,7 @@ private const val SEARCH_DEBOUNCE_MS = 500L
 @Composable
 private fun PosterGrid(cards: List<MediaCard>, play: (MediaCard) -> Unit, header: @Composable () -> Unit, onNearEnd: () -> Unit = {}) {
     LazyVerticalGrid(
-        columns = GridCells.FixedSize(Dims.poster * LocalCardScale.current + 14.dp),
+        columns = GridCells.FixedSize(Dims.poster * LocalCardScale.current + LocalAppearance.current.gap),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = Dims.edge - 7.dp, end = Dims.edge - 7.dp, top = 28.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -94,13 +107,55 @@ fun LibraryScreen(library: Section, play: (MediaCard) -> Unit) {
         }
     }
     LaunchedEffect(library) { more() }
-    PosterGrid(cards, play, header = {
+    val header = @Composable {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Heading(library.title)
             val status = error ?: if (total < 0) "Loading…" else "$total items"
             Text(status, fontSize = 13.sp, color = Palette.muted)
         }
-    }, onNearEnd = ::more)
+    }
+    if (LocalAppearance.current.list) PosterList(cards, play, header, ::more) else PosterGrid(cards, play, header, ::more)
+}
+
+@Composable
+private fun PosterList(cards: List<MediaCard>, play: (MediaCard) -> Unit, header: @Composable () -> Unit, onNearEnd: () -> Unit) {
+    val look = LocalAppearance.current
+    val menu = LocalCardMenu.current
+    val shape = RoundedCornerShape(12.dp)
+    val scale = (look.listPoster.value - 70f) / 50f
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = Dims.edge, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item { Box(Modifier.padding(bottom = 10.dp)) { header() } }
+        itemsIndexed(cards, key = { _, c -> "${c.server}/${c.key}" }) { i, card ->
+            if (i >= cards.size - 30) LaunchedEffect(cards.size) { onNearEnd() }
+            Surface(
+                onClick = { play(card) },
+                onLongClick = menu?.let { { it(card) } },
+                modifier = Modifier.fillMaxWidth(),
+                shape = ClickableSurfaceDefaults.shape(shape),
+                colors = ClickableSurfaceDefaults.colors(containerColor = Palette.bg, contentColor = Palette.text, focusedContainerColor = Palette.tint(0.08f), focusedContentColor = Palette.text),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+                border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = shape)),
+            ) {
+                Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.width(look.listPoster).aspectRatio(2f / 3f).clip(RoundedCornerShape(8.dp)).background(Palette.surface)) {
+                        AsyncImage(model = card.image, contentDescription = card.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                        if (card.watched && look.watchedIndicators) {
+                            Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(20.dp).background(Palette.text, CircleShape), contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Check, 14.dp, Palette.bg) }
+                        }
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(card.title, fontSize = (13 + 3 * scale).sp, fontWeight = FontWeight.SemiBold, color = Palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(card.meta, fontSize = (10 + 3 * scale).sp, color = Palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(card.summary, fontSize = (10 + 3 * scale).sp, lineHeight = ((10 + 3 * scale) * 1.3f).sp, color = Palette.tint(0.5f), maxLines = look.summaryLines, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

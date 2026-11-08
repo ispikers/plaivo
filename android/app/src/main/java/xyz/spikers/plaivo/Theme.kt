@@ -1,9 +1,19 @@
 package xyz.spikers.plaivo
 
 import androidx.compose.animation.core.Easing
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.tv.material3.MaterialTheme
+import uniffi.plaivo_ffi.GridSpacing
+import uniffi.plaivo_ffi.Settings
+import uniffi.plaivo_ffi.Theme
+import uniffi.plaivo_ffi.ViewMode
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -15,16 +25,33 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.darkColorScheme
 import kotlin.math.pow
 
+data class Colors(val bg: Color, val surface: Color, val text: Color, val outline: Color)
+
+val DarkColors = Colors(Color(0xFF0E0F12), Color(0xFF15171C), Color(0xFFEDEDED), Color(0x1FFFFFFF))
+val OledColors = Colors(Color(0xFF000000), Color(0xFF0A0A0A), Color(0xFFEDEDED), Color(0x1FFFFFFF))
+val LightColors = Colors(Color(0xFFF7F7F8), Color(0xFFFFFFFF), Color(0xFF111111), Color(0x19000000))
+
+fun colorsFor(theme: Theme, systemDark: Boolean) = when (theme) {
+    Theme.LIGHT -> LightColors
+    Theme.DARK -> DarkColors
+    Theme.OLED -> OledColors
+    Theme.SYSTEM -> if (systemDark) DarkColors else LightColors
+}
+
 object Palette {
-    val bg = Color(0xFF0E0F12)
-    val surface = Color(0xFF15171C)
-    val text = Color(0xFFEDEDED)
-    val muted = text.copy(alpha = 0.6f)
-    val outline = Color(0x1FFFFFFF)
+    var theme by mutableStateOf(Theme.DARK)
+    var systemDark by mutableStateOf(true)
+    private val colors get() = colorsFor(theme, systemDark)
+    val bg get() = colors.bg
+    val surface get() = colors.surface
+    val text get() = colors.text
+    val muted get() = text.copy(alpha = 0.6f)
+    val outline get() = colors.outline
     fun tint(alpha: Float) = text.copy(alpha = alpha)
 }
 
-val plaivoColors = darkColorScheme(
+@Composable
+fun plaivoColors() = darkColorScheme(
     primary = Palette.text,
     onPrimary = Palette.bg,
     background = Palette.bg,
@@ -34,6 +61,29 @@ val plaivoColors = darkColorScheme(
     surfaceVariant = Palette.surface,
     onSurfaceVariant = Palette.muted,
     border = Palette.outline,
+)
+
+@Composable
+fun PlaivoTheme(content: @Composable () -> Unit) {
+    val dark = isSystemInDarkTheme()
+    SideEffect { Palette.systemDark = dark }
+    MaterialTheme(colorScheme = plaivoColors(), content = content)
+}
+
+data class Appearance(val gap: Dp = 14.dp, val watchedIndicators: Boolean = true, val list: Boolean = false, val listPoster: Dp = 95.dp, val summaryLines: Int = 3)
+
+val LocalAppearance = staticCompositionLocalOf { Appearance() }
+
+fun appearanceOf(s: Settings) = Appearance(
+    gap = when (s.gridSpacing) {
+        GridSpacing.TIGHT -> 4.dp
+        GridSpacing.NORMAL -> 14.dp
+        GridSpacing.SPACIOUS -> 24.dp
+    },
+    watchedIndicators = s.watchedIndicators,
+    list = s.viewMode == ViewMode.LIST,
+    listPoster = (70 + 50 * (s.density.toInt().coerceIn(1, 5) - 1) / 4f).dp,
+    summaryLines = intArrayOf(2, 2, 3, 4, 5)[s.density.toInt().coerceIn(1, 5) - 1],
 )
 
 object Dims {
@@ -91,7 +141,13 @@ enum class Glyph(private val path: String) {
     FastForward("M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"),
     ScaleFit("M17 4h3c1.1 0 2 .9 2 2v2h-2V6h-3V4zM4 8V6h3V4H4c-1.1 0-2 .9-2 2v2h2zm16 8v2h-3v2h3c1.1 0 2-.9 2-2v-2h-2zM7 18H4v-2H2v2c0 1.1.9 2 2 2h3v-2zM18 8H6v8h12V8z"),
     ScaleFill("M3 5v4h2V5h4V3H5c-1.1 0-2 .9-2 2zm2 10H3v4c0 1.1.9 2 2 2h4v-2H5v-4zm14 4h-4v2h4c1.1 0 2-.9 2-2v-4h-2v4zm0-16h-4v2h4v4h2V5c0-1.1-.9-2-2-2z"),
-    ScaleStretch("M10 9h4V6h3l-5-5-5 5h3v3zm-1 1H6V7l-5 5 5 5v-3h3v-4zm14 2l-5-5v3h-3v4h3v3l5-5zm-9 3h-4v3H7l5 5 5-5h-3v-3z");
+    ScaleStretch("M10 9h4V6h3l-5-5-5 5h3v3zm-1 1H6V7l-5 5 5 5v-3h3v-4zm14 2l-5-5v3h-3v4h3v3l5-5zm-9 3h-4v3H7l5 5 5-5h-3v-3z"),
+    Remove("M19 13H5v-2h14v2z"),
+    Star("M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"),
+    StarBorder("M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"),
+    BookmarkAdd("M21 7h-2v2h-2V7h-2V5h2V3h2v2h2v2zm-2 14-7-3-7 3V5c0-1.1.9-2 2-2h7a5.002 5.002 0 0 0 5 7.9V21z"),
+    Bookmark("M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"),
+    Layers("M11.99 18.54l-7.37-5.73L3 14.07l9 7 9-7-1.63-1.27-7.38 5.74zM12 16l7.36-5.73L21 9l-9-7-9 7 1.63 1.27L12 16z");
 
     val vector: ImageVector by lazy {
         ImageVector.Builder(defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)

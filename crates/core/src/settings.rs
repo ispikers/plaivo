@@ -1,4 +1,6 @@
-use crate::prefs::{LanguagePrefs, SubtitleMode};
+use crate::first;
+use crate::plex::{Hub, Item};
+use crate::prefs::{LanguagePrefs, LanguageRule, SubtitleMode};
 use crate::store;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -29,6 +31,15 @@ pub struct Settings {
     pub library_order: Vec<String>,
     pub hidden_libraries: Vec<String>,
     pub density: u32,
+    pub theme: Theme,
+    pub view_mode: ViewMode,
+    pub grid_spacing: GridSpacing,
+    pub episode_poster: EpisodePoster,
+    pub episode_numbers: bool,
+    pub season_posters: bool,
+    pub hide_spoilers: bool,
+    pub watched_indicators: bool,
+    pub language_rules: Vec<LanguageRule>,
     pub debug_logging: bool,
     pub audio_language: String,
     pub subtitle_language: String,
@@ -65,6 +76,15 @@ impl Default for Settings {
             library_order: Vec::new(),
             hidden_libraries: Vec::new(),
             density: 3,
+            theme: Theme::Dark,
+            view_mode: ViewMode::Grid,
+            grid_spacing: GridSpacing::Normal,
+            episode_poster: EpisodePoster::Thumbnail,
+            episode_numbers: true,
+            season_posters: false,
+            hide_spoilers: false,
+            watched_indicators: true,
+            language_rules: Vec::new(),
             debug_logging: false,
             audio_language: String::new(),
             subtitle_language: String::new(),
@@ -103,6 +123,128 @@ impl SkipMode {
         }
     }
 }
+
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    System,
+    Light,
+    #[default]
+    Dark,
+    Oled,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 4] = [Theme::System, Theme::Light, Theme::Dark, Theme::Oled];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::System => "System",
+            Theme::Light => "Light",
+            Theme::Dark => "Dark",
+            Theme::Oled => "OLED",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewMode {
+    #[default]
+    Grid,
+    List,
+}
+
+impl ViewMode {
+    pub const ALL: [ViewMode; 2] = [ViewMode::Grid, ViewMode::List];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ViewMode::Grid => "Grid",
+            ViewMode::List => "List",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum GridSpacing {
+    Tight,
+    #[default]
+    Normal,
+    Spacious,
+}
+
+impl GridSpacing {
+    pub const ALL: [GridSpacing; 3] = [GridSpacing::Tight, GridSpacing::Normal, GridSpacing::Spacious];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GridSpacing::Tight => "Tight",
+            GridSpacing::Normal => "Normal",
+            GridSpacing::Spacious => "Spacious",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum EpisodePoster {
+    Series,
+    Season,
+    #[default]
+    Thumbnail,
+}
+
+impl EpisodePoster {
+    pub const ALL: [EpisodePoster; 3] = [EpisodePoster::Series, EpisodePoster::Season, EpisodePoster::Thumbnail];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            EpisodePoster::Series => "Series poster",
+            EpisodePoster::Season => "Season poster",
+            EpisodePoster::Thumbnail => "Thumbnail",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardPrefs {
+    pub poster: EpisodePoster,
+    pub numbers: bool,
+    pub spoilers: bool,
+}
+
+impl Default for CardPrefs {
+    fn default() -> Self {
+        Self { poster: EpisodePoster::Thumbnail, numbers: true, spoilers: false }
+    }
+}
+
+impl CardPrefs {
+    pub fn wide_hub(&self, h: &Hub) -> bool {
+        h.wide() && !(h.kind == "episode" && self.poster != EpisodePoster::Thumbnail)
+    }
+
+    pub fn art<'a>(&self, it: &'a Item, wide: bool) -> &'a str {
+        if it.kind == "episode" && !wide && self.poster == EpisodePoster::Season { first(&[&it.parent_thumb, &it.grandparent_thumb, &it.thumb]) } else { it.card_art(wide) }
+    }
+
+    pub fn text(&self, it: &Item) -> (String, String) {
+        let (title, subtitle) = it.card_text();
+        if it.kind == "episode" && !self.numbers { (title, it.title.clone()) } else { (title, subtitle) }
+    }
+
+    pub fn spoiler(&self, it: &Item) -> bool {
+        self.spoilers && it.kind == "episode" && !it.watched()
+    }
+
+    pub fn blur(&self, it: &Item, art: &str) -> bool {
+        self.spoiler(it) && !art.is_empty() && art == it.thumb
+    }
+}
+
+pub const BLUR_PARAM: &str = "&blur=20";
 
 pub fn library_key(server: &str, section: &str) -> String {
     format!("{server}/{section}")
@@ -205,6 +347,18 @@ impl Settings {
         self.subtitle_mode = p.mode;
     }
 
+    pub fn card_prefs(&self) -> CardPrefs {
+        CardPrefs { poster: self.episode_poster, numbers: self.episode_numbers, spoilers: self.hide_spoilers }
+    }
+
+    pub fn card_pad(&self) -> f32 {
+        match self.grid_spacing {
+            GridSpacing::Tight => 0.,
+            GridSpacing::Normal => 3.,
+            GridSpacing::Spacious => 6.,
+        }
+    }
+
     pub fn card_scale(&self) -> f32 {
         1.0 + (self.density.clamp(1, DENSITY_MAX) as f32 - 3.0) * 0.15
     }
@@ -258,6 +412,23 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_prefs_shape_episode_cards() {
+        let ep = Item { kind: "episode".into(), title: "Pilot".into(), grandparent_title: "Show".into(), parent_index: Some(1), index: Some(2), thumb: "/ep".into(), parent_thumb: "/season".into(), grandparent_thumb: "/series".into(), ..Default::default() };
+        let hub = Hub { kind: "episode".into(), ..Default::default() };
+        let thumbs = CardPrefs::default();
+        assert!(thumbs.wide_hub(&hub));
+        assert_eq!((thumbs.art(&ep, true), thumbs.art(&ep, false)), ("/ep", "/series"));
+        assert_eq!(thumbs.text(&ep).1, "S1 · E2 · Pilot");
+        let season = CardPrefs { poster: EpisodePoster::Season, numbers: false, spoilers: true };
+        assert!(!season.wide_hub(&hub));
+        assert_eq!(season.art(&ep, false), "/season");
+        assert_eq!(season.text(&ep), ("Show".to_owned(), "Pilot".to_owned()));
+        assert!(season.blur(&ep, "/ep") && !season.blur(&ep, "/season"));
+        assert!(!season.spoiler(&Item { view_count: Some(1), ..ep.clone() }));
+        assert!(!thumbs.blur(&ep, "/ep"));
+    }
 
     #[test]
     fn recent_searches_dedupe_and_cap() {

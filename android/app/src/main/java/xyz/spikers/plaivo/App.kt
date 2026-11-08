@@ -17,6 +17,7 @@ class App : Application() {
         super.onCreate()
         instance = this
         migratePrefs()
+        Palette.theme = core.settings().theme
         DownloadQueue.start(this)
         Watch.start()
     }
@@ -55,6 +56,7 @@ private var pendingSettings: Settings? = null
 fun editSettings(change: (Settings) -> Settings): Settings = synchronized(settingsLock) {
     val next = change(pendingSettings ?: core.settings())
     pendingSettings = next
+    Palette.theme = next.theme
     background.launch(settingsWriter) {
         core.setSettings(next)
         synchronized(settingsLock) { if (pendingSettings === next) pendingSettings = null }

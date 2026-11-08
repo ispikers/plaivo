@@ -59,11 +59,11 @@ fun MediaTile(card: MediaCard, wide: Boolean, modifier: Modifier = Modifier, dim
                         Box(Modifier.fillMaxWidth(card.progress).height(4.dp).background(Palette.text, CircleShape))
                     }
                 }
-                if (card.watched) {
+                if (card.watched && LocalAppearance.current.watchedIndicators) {
                     Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(22.dp).shadow(4.dp, CircleShape).background(Palette.text, CircleShape), contentAlignment = Alignment.Center) {
                         GlyphIcon(Glyph.Check, 15.dp, Palette.bg)
                     }
-                } else if (card.unwatched > 0uL) {
+                } else if (!card.watched && card.unwatched > 0uL) {
                     Box(
                         Modifier.align(Alignment.TopEnd).padding(4.dp).height(22.dp).widthIn(min = 22.dp).shadow(4.dp, CircleShape).background(Palette.text, CircleShape).padding(horizontal = 6.dp),
                         contentAlignment = Alignment.Center,

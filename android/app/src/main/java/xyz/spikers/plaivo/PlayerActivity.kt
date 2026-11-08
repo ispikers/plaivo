@@ -44,6 +44,7 @@ import uniffi.plaivo_ffi.TrackInfo
 import uniffi.plaivo_ffi.WatchCommand
 import uniffi.plaivo_ffi.WatchFeed
 import uniffi.plaivo_ffi.pickTracks
+import uniffi.plaivo_ffi.LanguageRule
 
 enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
     Fit("Letterbox", Glyph.ScaleFit, AspectRatioFrameLayout.RESIZE_MODE_FIT),
@@ -91,6 +92,7 @@ class PlayerActivity : ComponentActivity() {
     val autoSkipped = mutableSetOf<Int>()
     private var queueShow: String? = null
     private var fellBack = false
+    private var version = 0
     private var manualTracks = false
     private var autoTracks = false
     private var firstFrame = false
@@ -102,6 +104,7 @@ class PlayerActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val server = intent.getStringExtra("server") ?: return finish()
         val key = intent.getStringExtra("key") ?: return finish()
+        version = intent.getIntExtra("version", 0)
         quality = prefs.quality.toInt()
         scale = Scale.entries[prefs.scale.ordinal]
         exo = ExoPlayer.Builder(this).build()
@@ -122,7 +125,7 @@ class PlayerActivity : ComponentActivity() {
                 val p = playback
                 if (autoTracks && p != null && !tracks.isEmpty) {
                     autoTracks = false
-                    autoSelectTracks(p.languages)
+                    autoSelectTracks(p.languages, p.languageRule)
                 }
                 val unsupported = listOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO).filter { tracks.containsType(it) && !tracks.isTypeSupported(it) }
                 if (unsupported.isNotEmpty()) fallBack(if (C.TRACK_TYPE_VIDEO in unsupported) "video" else "audio")
@@ -136,6 +139,7 @@ class PlayerActivity : ComponentActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                if (fellBack && playback?.transcodeSession == null) return
                 if (error.errorCode in 3000..5999 && fallBack(error.errorCodeName)) return
                 Toast.makeText(this@PlayerActivity, "Playback error: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
                 finish()
@@ -150,8 +154,8 @@ class PlayerActivity : ComponentActivity() {
                 tracksVersion++
             }
         })
-        setContent { MaterialTheme(colorScheme = plaivoColors) { PlayerScreen(this) } }
-        play(server, key)
+        setContent { PlaivoTheme { PlayerScreen(this) } }
+        play(server, key, if (intent.getBooleanExtra("fromStart", false)) 0L else null)
         lifecycleScope.launch {
             while (true) {
                 delay(10_000)
@@ -166,20 +170,23 @@ class PlayerActivity : ComponentActivity() {
         fellBack = true
         android.util.Log.i("Plaivo", "direct play failed ($reason), transcoding ${p.key}")
         Toast.makeText(this, "This device can't play the file directly. Transcoding…", Toast.LENGTH_SHORT).show()
-        play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = true)
+        val at = exo.currentPosition.coerceAtLeast(0)
+        exo.stop()
+        play(p.server, p.key, at, forceTranscode = true)
         return true
     }
 
     fun play(server: String, key: String, startAt: Long? = null, forceTranscode: Boolean = false) {
+        if (playback != null && playback?.key != key) version = 0
         lifecycleScope.launch {
             val p = try {
-                io { core.playback(server, key, quality.toUInt(), forceTranscode) }
+                io { core.playback(server, key, quality.toUInt(), forceTranscode, version.toUInt()) }
             } catch (e: PlaivoException) {
                 Watch.failed(server, key)
                 if (advancing) upNextCancelled = true
                 advancing = false
                 Toast.makeText(this@PlayerActivity, e.message, Toast.LENGTH_LONG).show()
-                if (playback == null) finish()
+                if (playback == null || forceTranscode) finish()
                 return@launch
             }
             val previous = playback
@@ -368,10 +375,10 @@ class PlayerActivity : ComponentActivity() {
         return TrackInfo(f.language ?: "", f.selectionFlags and C.SELECTION_FLAG_FORCED != 0, f.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0)
     }
 
-    private fun autoSelectTracks(languages: LanguagePrefs) {
+    private fun autoSelectTracks(languages: LanguagePrefs, rule: LanguageRule?) {
         val audio = tracks(C.TRACK_TYPE_AUDIO)
         val text = tracks(C.TRACK_TYPE_TEXT)
-        val pick = pickTracks(audio.map { it.info() }, text.map { it.info() }, languages)
+        val pick = pickTracks(audio.map { it.info() }, text.map { it.info() }, languages, rule)
         val params = exo.trackSelectionParameters.buildUpon()
         pick.audio?.let { audio[it.toInt()] }?.let { params.setOverrideForType(TrackSelectionOverride(it.group!!.mediaTrackGroup, it.index)) }
         val sub = pick.text?.let { text[it.toInt()] }

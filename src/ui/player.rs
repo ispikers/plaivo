@@ -8,12 +8,15 @@ use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{bounds_probe, fmt_time, icon, pill, progress_bar, round_button, shadow, stepper, tip};
 use crate::shaders;
 use gpui::{
-    Animation, AnimationExt, AnyElement, Context, ElementId, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, SharedString, Transformation, Window, div, img,
-    linear_color_stop, linear_gradient, percentage, prelude::*, px, rgb, svg, uniform_list,
+    AnyElement, Context, ElementId, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, SharedString, Window, canvas, div, linear_color_stop,
+    linear_gradient, point, prelude::*, px, rgb, uniform_list,
 };
-use std::time::Duration;
+use std::f32::consts::TAU;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const QUEUE_ROW: f32 = 75.;
+const SEEK_PREVIEW: Duration = Duration::from_millis(500);
+const SPIN_PERIOD_MS: u128 = 900;
 
 fn control(id: impl Into<ElementId>, i: Icon, size: f32, label: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
     round_button(id, i, 40., size, theme::black(0.), theme::white().opacity(0.12), theme::white()).tooltip(tip(label))
@@ -28,6 +31,32 @@ fn fmt_speed(s: f64) -> String {
     if s == 1.0 { "Normal".into() } else { format!("{s}×") }
 }
 
+fn spinner(size: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            const SEGMENTS: usize = 40;
+            let turn = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0., |d| (d.as_millis() % SPIN_PERIOD_MS) as f32 / SPIN_PERIOD_MS as f32);
+            let start = turn * TAU;
+            let center = bounds.center();
+            let r = size / 2. - 3.;
+            let points: Vec<_> = (0..=SEGMENTS)
+                .map(|i| {
+                    let a = start + i as f32 / SEGMENTS as f32 * TAU * 0.75;
+                    point(center.x + px(r * a.cos()), center.y + px(r * a.sin()))
+                })
+                .collect();
+            let mut path = PathBuilder::stroke(px(4.));
+            path.add_polygon(&points, false);
+            if let Ok(path) = path.build() {
+                window.paint_path(path, theme::white());
+            }
+            window.request_animation_frame();
+        },
+    )
+    .size(px(size))
+}
+
 fn scale_icon(s: Scale) -> Icon {
     match s {
         Scale::Fit => Icon::ScaleFit,
@@ -39,6 +68,7 @@ fn scale_icon(s: Scale) -> Icon {
 fn panel_title(p: Panel) -> &'static str {
     match p {
         Panel::Tracks => "Audio & Subtitles",
+        Panel::SubtitleSearch => "Search subtitles",
         Panel::Settings => "Playback Settings",
         Panel::Quality => "Quality",
         Panel::Speed => "Playback Speed",
@@ -82,6 +112,16 @@ impl Plaivo {
         row
     }
 
+    fn end_seek_drag(&mut self, x: f32, cx: &mut Context<Self>) {
+        self.view.seek_preview = None;
+        if self.view.seek_drag.take().is_some() {
+            let t = self.frac_in(x, self.view.timeline) as f64 * self.player.duration;
+            self.seek_to(t);
+            self.player.time = t;
+            cx.notify();
+        }
+    }
+
     fn end_volume_drag(&mut self, cx: &mut Context<Self>) {
         if std::mem::take(&mut self.view.volume_drag) {
             self.hint_volume(cx);
@@ -90,7 +130,8 @@ impl Plaivo {
 
     fn toggle_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
         let group = |p: Panel| match p {
-            Panel::Tracks | Panel::Queue => p,
+            Panel::Tracks | Panel::SubtitleSearch => Panel::Tracks,
+            Panel::Queue => p,
             _ => Panel::Settings,
         };
         let open = self.player.panel.is_some_and(|p| group(p) == group(panel));
@@ -115,7 +156,8 @@ impl Plaivo {
         }
         let p = &self.player;
         let (pos, dur) = (p.time, p.duration);
-        let frac = if dur > 0. { (pos / dur).clamp(0., 1.) as f32 } else { 0. };
+        let frac = self.view.seek_drag.unwrap_or(if dur > 0. { (pos / dur).clamp(0., 1.) as f32 } else { 0. });
+        let pos = if self.view.seek_drag.is_some() { frac as f64 * dur } else { pos };
         let cached = if dur > 0. { (p.cached / dur).clamp(0., 1.) as f32 } else { 0. };
         let hover = self.view.timeline_hover;
         let fullscreen = window.is_fullscreen();
@@ -136,13 +178,7 @@ impl Plaivo {
                 cx.notify();
             }));
         let spinner = self.player.buffering.then(|| {
-            div().absolute().size_full().flex().items_center().justify_center().child(
-                svg()
-                    .path(Icon::Refresh.path())
-                    .size(px(48.))
-                    .text_color(theme::white())
-                    .with_animation("buffering", Animation::new(Duration::from_secs(1)).repeat(), |s, d| s.with_transformation(Transformation::rotate(percentage(d)))),
-            )
+            div().absolute().size_full().flex().items_center().justify_center().child(spinner(44.))
         });
         let up_next = self.up_next();
         let skip = self.active_skip().filter(|_| up_next.is_none()).map(|s| {
@@ -183,7 +219,15 @@ impl Plaivo {
                 .cursor_pointer()
                 .child(bounds_probe(move |b, _, cx| e1.update(cx, |this, _| this.view.timeline = b)))
                 .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                    this.view.timeline_hover = Some(this.frac_in(f32::from(ev.position.x), this.view.timeline));
+                    let f = this.frac_in(f32::from(ev.position.x), this.view.timeline);
+                    this.view.timeline_hover = Some(f);
+                    if this.view.seek_drag.is_some() && ev.dragging() {
+                        this.view.seek_drag = Some(f);
+                        if this.view.seek_preview.is_none_or(|t| t.elapsed() >= SEEK_PREVIEW) {
+                            this.view.seek_preview = Some(Instant::now());
+                            this.preview_seek(f as f64 * this.player.duration);
+                        }
+                    }
                     cx.notify();
                 }))
                 .on_hover(cx.listener(|this, h: &bool, _, cx| {
@@ -193,12 +237,12 @@ impl Plaivo {
                     }
                 }))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                    let f = this.frac_in(f32::from(ev.position.x), this.view.timeline) as f64;
-                    this.seek_to(f * this.player.duration);
-                    this.player.time = f * this.player.duration;
+                    this.view.seek_drag = Some(this.frac_in(f32::from(ev.position.x), this.view.timeline));
                     cx.stop_propagation();
                     cx.notify();
                 }))
+                .on_mouse_up(MouseButton::Left, cx.listener(|this, ev: &MouseUpEvent, _, cx| this.end_seek_drag(f32::from(ev.position.x), cx)))
+                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, ev: &MouseUpEvent, _, cx| this.end_seek_drag(f32::from(ev.position.x), cx)))
                 .child(
                     div()
                         .absolute()
@@ -382,6 +426,7 @@ impl Plaivo {
             );
         let panel = match self.player.panel {
             Some(Panel::Tracks) => Some(self.render_tracks(window, cx).into_any_element()),
+            Some(Panel::SubtitleSearch) => Some(self.render_subtitle_search(window, cx).into_any_element()),
             Some(Panel::Queue) => Some(self.render_queue(window, cx).into_any_element()),
             Some(p) => Some(self.render_settings(p, window, cx).into_any_element()),
             None => None,
@@ -420,7 +465,7 @@ impl Plaivo {
     }
 
     fn render_up_next(&mut self, card: crate::app::Card, left: f64, hide: bool, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let image = self.image(&card.thumb, Shape::Wide);
+        let image = self.picture(&card.thumb, Shape::Wide);
         div()
             .id("up-next")
             .occlude()
@@ -442,7 +487,7 @@ impl Plaivo {
                     .rounded(px(6.))
                     .overflow_hidden()
                     .bg(theme::bg())
-                    .when_some(image, |d, im| d.child(img(im).size_full().object_fit(ObjectFit::Cover))),
+                    .when_some(image, |d, im| d.child(im.size_full().object_fit(ObjectFit::Cover))),
             )
             .child(
                 div()
@@ -475,7 +520,7 @@ impl Plaivo {
             )
     }
 
-    fn panel_shell(&self, id: &'static str, panel: Panel, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    pub(crate) fn panel_shell(&self, id: &'static str, panel: Panel, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let back = !matches!(panel, Panel::Settings | Panel::Tracks | Panel::Queue);
         let remaining = (panel == Panel::Queue).then(|| self.queue_index().map_or(self.player.queue.len(), |i| self.player.queue.len() - i - 1));
         let header = div()
@@ -489,7 +534,8 @@ impl Plaivo {
             .border_b_1()
             .border_color(theme::outline())
             .when(back, |d| {
-                d.child(round_button("panel-back", Icon::ChevronLeft, 36., 22., theme::black(0.), theme::tint(0.08), theme::text()).on_click(cx.listener(|this, _, _, cx| this.open_panel(Panel::Settings, cx))))
+                d.child(round_button("panel-back", Icon::ChevronLeft, 36., 22., theme::black(0.), theme::tint(0.08), theme::text())
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_panel(if panel == Panel::SubtitleSearch { Panel::Tracks } else { Panel::Settings }, cx))))
             })
             .when(!back, |d| {
                 d.child(icon(
@@ -650,7 +696,7 @@ impl Plaivo {
     }
 
     fn queue_entry(&mut self, i: usize, now: bool, c: Card, cx: &mut Context<Self>) -> AnyElement {
-        let image = self.image(&c.thumb, Shape::Wide);
+        let image = self.picture(&c.thumb, Shape::Wide);
         div()
             .id(("queue", i))
             .h(px(QUEUE_ROW))
@@ -669,7 +715,7 @@ impl Plaivo {
                     .rounded(px(6.))
                     .overflow_hidden()
                     .bg(theme::bg())
-                    .when_some(image, |d, im| d.child(img(im).size_full().rounded(px(6.)).object_fit(ObjectFit::Cover)))
+                    .when_some(image, |d, im| d.child(im.size_full().rounded(px(6.)).object_fit(ObjectFit::Cover)))
                     .when(now, |d| d.child(div().absolute().size_full().rounded(px(6.)).bg(theme::black(0.5)).flex().items_center().justify_center().child(icon(Icon::Play, 24., theme::white()))))
                     .when(c.watched && !now, |d| {
                         d.child(div().absolute().top(px(3.)).right(px(3.)).size(px(18.)).rounded_full().bg(theme::text()).flex().items_center().justify_center().child(icon(Icon::Check, 12., theme::bg())))
@@ -749,7 +795,25 @@ impl Plaivo {
                         this.select_track(kind, &id);
                         cx.notify();
                     }))
-            }));
+            }))
+            .when(kind == "sid" && self.can_search_subtitles(), |d| {
+                d.child(
+                    div()
+                        .id("sub-search-open")
+                        .min_h(px(36.))
+                        .px(px(12.))
+                        .py(px(6.))
+                        .rounded(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::tint(0.06)))
+                        .child(icon(Icon::Search, 18., theme::muted()))
+                        .child(div().text_size(px(14.)).child("Search subtitles…"))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_subtitle_search(cx))),
+                )
+            });
         div().flex_1().min_w_0().flex().flex_col().child(list).child(self.delay_stepper(kind == "aid", cx))
     }
 
@@ -780,6 +844,16 @@ impl Plaivo {
             .when(!self.player.video_ready, |d| d.bg(rgb(0x000000)))
             .on_click(cx.listener(|this, _, _, cx| this.expand_player(cx)));
         let mini_control = |id: &'static str, i: Icon, size: f32| round_button(id, i, 40., size, theme::black(0.), theme::tint(0.1), theme::text());
+        let episodic = !self.player.queue.is_empty();
+        let mini_skip = |id: &'static str, i: Icon, step: isize, target: Option<crate::app::Card>, cx: &mut Context<Self>| {
+            let label: SharedString = target.as_ref().map_or_else(|| if step < 0 { "No previous episode" } else { "No next episode" }.into(), |c| format!("{} · {}", if step < 0 { "Previous" } else { "Next" }, c.subtitle).into());
+            let b = mini_control(id, i, 24.).tooltip(tip(label));
+            match target {
+                Some(_) => b.on_click(cx.listener(move |this, _, _, cx| this.play_neighbor(step, cx))),
+                None => b.opacity(0.35).cursor_default(),
+            }
+        };
+        let (prev, next) = (self.neighbor(-1), self.neighbor(1));
         div()
             .relative()
             .h(px(bar))
@@ -811,9 +885,11 @@ impl Plaivo {
                             .flex()
                             .items_center()
                             .gap(px(4.))
+                            .when(episodic, |d| d.child(mini_skip("mini-prev", Icon::SkipPrevious, -1, prev, cx)))
                             .child(mini_control("mini-back", Icon::Replay, 24.).on_click(cx.listener(|this, _, _, _| this.seek_by(-(this.settings.seek_small as f64)))))
                             .child(mini_control("mini-pause", if self.player.paused { Icon::Play } else { Icon::Pause }, 30.).on_click(cx.listener(|this, _, _, _| this.toggle_pause())))
                             .child(mini_control("mini-fwd", Icon::Forward, 24.).on_click(cx.listener(|this, _, _, _| this.seek_by(this.settings.seek_small as f64))))
+                            .when(episodic, |d| d.child(mini_skip("mini-next", Icon::SkipNext, 1, next, cx)))
                             .child(mini_control("mini-stop", Icon::Stop, 24.).on_click(cx.listener(|this, _, _, cx| this.stop_playback(cx)))),
                     )
                     .child(div().flex_1().flex().justify_end().child(mini_control("mini-expand", Icon::OpenFull, 22.).on_click(cx.listener(|this, _, _, cx| this.expand_player(cx))))),

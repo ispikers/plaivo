@@ -2,6 +2,8 @@ package xyz.spikers.plaivo
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -31,6 +33,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -64,15 +73,25 @@ import uniffi.plaivo_ffi.subtitleModeLabel
 import uniffi.plaivo_ffi.languages
 import uniffi.plaivo_ffi.moveLibrary
 import uniffi.plaivo_ffi.validRelay
+import uniffi.plaivo_ffi.EpisodePoster
+import uniffi.plaivo_ffi.GridSpacing
+import uniffi.plaivo_ffi.Theme as CoreTheme
+import uniffi.plaivo_ffi.ViewMode
+import uniffi.plaivo_ffi.LanguageRule
 
 private enum class Category(val title: String, val glyph: Glyph, val parent: Category? = null) {
     General("General", Glyph.Settings),
     Libraries("Manage libraries", Glyph.Sort, General),
     Appearance("Appearance", Glyph.Palette),
+    Theme("Theme", Glyph.Palette, Appearance),
     Playback("Playback", Glyph.PlayCircle),
     AudioSubtitles("Audio & Subtitles", Glyph.Subtitles),
     AudioLanguage("Audio language", Glyph.Subtitles, AudioSubtitles),
     SubtitleLanguage("Subtitle language", Glyph.Subtitles, AudioSubtitles),
+    Override("Override", Glyph.Sort, AudioSubtitles),
+    OverrideLibraries("Libraries", Glyph.Sort, Override),
+    OverrideAudio("Audio languages", Glyph.Subtitles, Override),
+    OverrideSubtitles("Subtitle languages", Glyph.Subtitles, Override),
     Services("Services", Glyph.Check),
     WatchTogether("Watch Together", Glyph.Group),
     Downloads("Downloads", Glyph.Download),
@@ -97,6 +116,53 @@ private fun <T> List<T>.after(value: T) = this[(indexOf(value) + 1) % size]
 private fun densityLabel(density: UInt) = DENSITIES[density.toInt().coerceIn(1, DENSITIES.size) - 1]
 
 private val SkipMode.label get() = name.lowercase().replaceFirstChar { it.uppercase() }
+
+private fun ruleTargets(r: LanguageRule, libraries: List<Section>) =
+    r.libraries.map { id -> libraries.firstOrNull { it.id == id }?.title ?: "Missing library" }.joinToString()
+
+private fun ruleDetail(r: LanguageRule) = listOfNotNull(
+    r.audio.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Audio: ") { languageName(it) },
+    r.subtitles.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Subtitles: ") { languageName(it) },
+    r.subtitleMode.label,
+).joinToString(" · ")
+
+private val CoreTheme.label get() = if (this == CoreTheme.OLED) "OLED" else name.lowercase().replaceFirstChar { it.uppercase() }
+
+private val ViewMode.label get() = name.lowercase().replaceFirstChar { it.uppercase() }
+
+private val GridSpacing.label get() = name.lowercase().replaceFirstChar { it.uppercase() }
+
+private val EpisodePoster.label get() = when (this) {
+    EpisodePoster.SERIES -> "Series poster"
+    EpisodePoster.SEASON -> "Season poster"
+    EpisodePoster.THUMBNAIL -> "Thumbnail"
+}
+
+@Composable
+private fun Radio(on: Boolean) {
+    Box(Modifier.size(22.dp).border(2.dp, if (on) Palette.text else Palette.muted, CircleShape), contentAlignment = Alignment.Center) {
+        if (on) Box(Modifier.size(10.dp).background(Palette.text, CircleShape))
+    }
+}
+
+@Composable
+private fun ThemeSwatch(theme: CoreTheme) {
+    val shape = RoundedCornerShape(9.dp)
+    Canvas(Modifier.size(36.dp).clip(shape).border(1.dp, Palette.outline, shape)) {
+        val (w, h) = size.width to size.height
+        fun paint(c: Colors) {
+            drawRect(c.bg)
+            drawRoundRect(c.surface, Offset(0.16f * w, 0.44f * h), Size(0.68f * w, 0.40f * h), CornerRadius(0.08f * w))
+            drawRoundRect(c.outline, Offset(0.16f * w, 0.44f * h), Size(0.68f * w, 0.40f * h), CornerRadius(0.08f * w), style = Stroke(1.dp.toPx()))
+            drawRoundRect(c.text, Offset(0.26f * w, 0.54f * h), Size(0.40f * w, 0.07f * h), CornerRadius(0.04f * h))
+            drawRoundRect(c.text.copy(alpha = 0.6f), Offset(0.26f * w, 0.68f * h), Size(0.26f * w, 0.06f * h), CornerRadius(0.04f * h))
+            drawCircle(c.text, 0.11f * w, Offset(0.30f * w, 0.24f * h))
+        }
+        if (theme != CoreTheme.SYSTEM) return@Canvas paint(colorsFor(theme, true))
+        paint(LightColors)
+        clipPath(Path().apply { moveTo(w, 0f); lineTo(w, h); lineTo(0f, h); close() }) { paint(DarkColors) }
+    }
+}
 
 private val SubtitleMode.label get() = subtitleModeLabel(this)
 
@@ -126,6 +192,7 @@ fun SettingsScreen(
     val quality = settings.quality.toInt()
     val qualityLabel = qualities.firstOrNull { it.kbps.toInt() == quality }?.let { "${it.label} · ${it.bitrate}" } ?: "Original"
     var category by rememberSaveable { mutableStateOf<Category?>(null) }
+    var draft by remember { mutableStateOf<Pair<Int?, LanguageRule>?>(null) }
     var last by rememberSaveable { mutableStateOf(Category.General) }
     var navigated by remember { mutableStateOf(false) }
     var focused by remember { mutableStateOf(false) }
@@ -197,9 +264,10 @@ fun SettingsScreen(
                 null -> Category.entries.filter { it.parent == null }.forEach { c ->
                     val summary = when (c) {
                         Category.General -> home?.let { "Home server: ${it.name}" } ?: "No home server"
-                        Category.Libraries, Category.AudioLanguage, Category.SubtitleLanguage -> ""
+                        Category.Libraries, Category.AudioLanguage, Category.SubtitleLanguage, Category.Theme, Category.Override,
+                        Category.OverrideLibraries, Category.OverrideAudio, Category.OverrideSubtitles -> ""
                         Category.AudioSubtitles -> "Audio: ${languageName(settings.audioLanguage)} · Subtitles: ${settings.subtitleMode.label}"
-                        Category.Appearance -> "Poster size: ${densityLabel(settings.density)}"
+                        Category.Appearance -> "Theme: ${settings.theme.label} · Density: ${densityLabel(settings.density)}"
                         Category.Playback -> "Default quality: $qualityLabel · Autoplay ${onOff(settings.autoplayNext)}"
                         Category.Services -> Service.entries.joinToString(" · ") { "${it.title}: ${trackers.getValue(it).label}" }
                         Category.WatchTogether -> "Name: ${settings.watchName.ifBlank { Watch.deviceName() }} · Relay: ${if (settings.watchRelay.isBlank()) "Public" else "Custom"}"
@@ -252,10 +320,34 @@ fun SettingsScreen(
                     if (libraries.isEmpty()) SettingsRow(Glyph.Sort, "No libraries yet", "Libraries appear here once your servers load", Modifier.takeFocus(true))
                 }
                 Category.Appearance -> {
-                    SectionTitle("Library")
-                    SettingsRow(Glyph.Movie, "Poster size", "Size of posters on Home, in libraries and in search", Modifier.takeFocus(true), onClick = {
+                    SectionTitle("Display")
+                    SettingsRow(Glyph.Palette, "Theme", settings.theme.label, Modifier.takeFocus(true), onClick = { open(Category.Theme) }) { GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted) }
+                    SectionTitle("Library & cards")
+                    SettingsRow(Glyph.Sort, "View mode", "How libraries are shown", onClick = {
+                        onEdit { it.copy(viewMode = ViewMode.entries.after(it.viewMode)) }
+                    }) { Value(settings.viewMode.label) }
+                    SettingsRow(Glyph.Movie, "Library density", "Size of posters on Home, in libraries and in search", onClick = {
                         onEdit { it.copy(density = (1u..DENSITIES.size.toUInt()).toList().after(it.density)) }
                     }) { Value(densityLabel(settings.density)) }
+                    SettingsRow(Glyph.ScaleFit, "Grid spacing", "Space between posters", onClick = {
+                        onEdit { it.copy(gridSpacing = GridSpacing.entries.after(it.gridSpacing)) }
+                    }) { Value(settings.gridSpacing.label) }
+                    SettingsRow(Glyph.Tv, "Episode poster style", "Art used for episode cards", onClick = {
+                        onEdit { it.copy(episodePoster = EpisodePoster.entries.after(it.episodePoster)) }
+                    }) { Value(settings.episodePoster.label) }
+                    SettingsRow(null, "Show episode numbers on cards", "Show season and episode number on episode cards", onClick = {
+                        onEdit { it.copy(episodeNumbers = !it.episodeNumbers) }
+                    }) { Switch(settings.episodeNumbers) }
+                    SettingsRow(null, "Hide spoilers for unwatched episodes", "Blur thumbnails and hide descriptions of unwatched episodes", onClick = {
+                        onEdit { it.copy(hideSpoilers = !it.hideSpoilers) }
+                    }) { Switch(settings.hideSpoilers) }
+                    SettingsRow(null, "Show watched indicators", "Show a checkmark on watched movies, shows and episodes", onClick = {
+                        onEdit { it.copy(watchedIndicators = !it.watchedIndicators) }
+                    }) { Switch(settings.watchedIndicators) }
+                }
+                Category.Theme -> CoreTheme.entries.forEach { t ->
+                    val selected = t == settings.theme
+                    SettingsRow(null, t.label, "", Modifier.takeFocus(selected), selected, { onEdit { it.copy(theme = t) } }, leading = { ThemeSwatch(t) }) { Radio(selected) }
                 }
                 Category.Playback -> {
                     SectionTitle("Up next")
@@ -295,6 +387,18 @@ fun SettingsScreen(
                     SettingsRow(null, "Show subtitles", "Forced subtitles for foreign dialogue show in every mode", onClick = {
                         editLanguages { it.copy(mode = SubtitleMode.entries.after(it.mode)) }
                     }) { Value(settings.subtitleMode.label) }
+                    SectionTitle("Overrides")
+                    Note("Use different languages for some libraries, like Japanese audio for an anime library. Saved on this device. The first matching override wins.")
+                    settings.languageRules.forEachIndexed { i, r ->
+                        SettingsRow(Glyph.Sort, ruleTargets(r, libraries), ruleDetail(r), onClick = {
+                            draft = i to r
+                            open(Category.Override)
+                        }) { GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted) }
+                    }
+                    SettingsRow(Glyph.Add, "Add override", "Pick libraries and the languages to use", onClick = {
+                        draft = null to LanguageRule(emptyList(), emptyList(), emptyList(), SubtitleMode.ALWAYS)
+                        open(Category.Override)
+                    })
                     SectionTitle("Subtitle style")
                     Note("Applies to text subtitles. Styled ASS subtitles keep their own colours.")
                     SettingsRow(null, "Size", "Text size", onClick = { onEdit { it.copy(subtitleSize = SUBTITLE_SIZES.after(it.subtitleSize)) } }) { Value("${settings.subtitleSize}%") }
@@ -310,6 +414,45 @@ fun SettingsScreen(
                     SettingsRow(null, "Position", "Height above the bottom of the video", onClick = { onEdit { it.copy(subtitlePosition = SUBTITLE_POSITIONS.after(it.subtitlePosition)) } }) {
                         val lift = 100u - settings.subtitlePosition.coerceAtMost(100u)
                         Value(if (lift == 0u) "Bottom" else "$lift% up")
+                    }
+                }
+                Category.Override -> draft?.let { (index, r) ->
+                    val targeted = r.libraries.isNotEmpty()
+                    SettingsRow(null, "Libraries", r.libraries.mapNotNull { id -> libraries.firstOrNull { it.id == id }?.title }.joinToString().ifEmpty { "None" }, Modifier.takeFocus(true), onClick = { open(Category.OverrideLibraries) }) { GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted) }
+                    SettingsRow(null, "Audio languages", r.audio.joinToString { languageName(it) }.ifEmpty { "Account default" }, onClick = { open(Category.OverrideAudio) }) { GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted) }
+                    SettingsRow(null, "Subtitle languages", r.subtitles.joinToString { languageName(it) }.ifEmpty { "Account default" }, onClick = { open(Category.OverrideSubtitles) }) { GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted) }
+                    SettingsRow(null, "Show subtitles", "", onClick = { draft = index to r.copy(subtitleMode = SubtitleMode.entries.after(r.subtitleMode)) }) { Value(r.subtitleMode.label) }
+                    SettingsRow(Glyph.Check, "Save", if (targeted) "" else "Pick at least one library", Modifier.alpha(if (targeted) 1f else 0.4f), onClick = {
+                        if (targeted) {
+                            onEdit { s -> s.copy(languageRules = if (index == null) s.languageRules + r else s.languageRules.mapIndexed { i, old -> if (i == index) r else old }) }
+                            draft = null
+                            open(Category.AudioSubtitles)
+                        }
+                    })
+                    if (index != null) SettingsRow(Glyph.Close, "Delete override", "", onClick = {
+                        onEdit { s -> s.copy(languageRules = s.languageRules.filterIndexed { i, _ -> i != index }) }
+                        draft = null
+                        open(Category.AudioSubtitles)
+                    })
+                }
+                Category.OverrideLibraries -> draft?.let { (index, r) ->
+                    libraries.forEachIndexed { i, l ->
+                        val on = l.id in r.libraries
+                        SettingsRow(null, l.title, l.serverName, Modifier.takeFocus(i == 0), on, {
+                            draft = index to r.copy(libraries = if (on) r.libraries - l.id else r.libraries + l.id)
+                        }) { if (on) GlyphIcon(Glyph.Check, 20.dp, Palette.text) }
+                    }
+                }
+                Category.OverrideAudio, Category.OverrideSubtitles -> draft?.let { (index, r) ->
+                    val subtitles = category == Category.OverrideSubtitles
+                    val order = if (subtitles) r.subtitles else r.audio
+                    Note("Pick languages in order. The first one the video has is used.")
+                    languages().forEachIndexed { i, l ->
+                        val at = order.indexOf(l.code)
+                        SettingsRow(null, l.name, "", Modifier.takeFocus(i == 0), at >= 0, {
+                            val next = if (at >= 0) order - l.code else order + l.code
+                            draft = index to if (subtitles) r.copy(subtitles = next) else r.copy(audio = next)
+                        }) { if (at >= 0) Value("${at + 1}") }
                     }
                 }
                 Category.AudioLanguage, Category.SubtitleLanguage -> {
@@ -483,7 +626,7 @@ fun Note(text: String) {
 }
 
 @Composable
-fun SettingsRow(glyph: Glyph?, title: String, detail: String, modifier: Modifier = Modifier, selected: Boolean = false, onClick: () -> Unit = {}, trailing: @Composable () -> Unit = {}) {
+fun SettingsRow(glyph: Glyph?, title: String, detail: String, modifier: Modifier = Modifier, selected: Boolean = false, onClick: () -> Unit = {}, leading: (@Composable () -> Unit)? = null, trailing: @Composable () -> Unit = {}) {
     val shape = RoundedCornerShape(12.dp)
     Surface(
         onClick = onClick,
@@ -499,10 +642,11 @@ fun SettingsRow(glyph: Glyph?, title: String, detail: String, modifier: Modifier
         border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = shape)),
     ) {
         Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            leading?.invoke()
             if (glyph != null) GlyphIcon(glyph, 22.dp, Palette.muted)
             Column(Modifier.weight(1f)) {
                 Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, maxLines = 1)
-                Text(detail, fontSize = 12.sp, color = Palette.muted, maxLines = 1)
+                if (detail.isNotEmpty()) Text(detail, fontSize = 12.sp, color = Palette.muted, maxLines = 1)
             }
             trailing()
         }

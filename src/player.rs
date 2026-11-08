@@ -1,6 +1,6 @@
 use crate::app::{Card, Choice, Nav, Page, Plaivo, card_for, join};
 use crate::plex::{self, Ctx, Item, Media, Quality, Server, Source, resolve_playable};
-use crate::prefs::{self, LanguagePrefs, TrackInfo};
+use crate::prefs::{self, LanguagePrefs, LanguageRule, TrackInfo};
 use crate::settings::{Scale, SkipMode};
 use crate::ui::theme::{self, Icon};
 use crate::video_host::{self, Region};
@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const CONTROLS_FOR: Duration = Duration::from_secs(3);
 const HINT_FOR: Duration = Duration::from_millis(1200);
 const QUIT_REPORT_WAIT: Duration = Duration::from_secs(2);
+const HOME_REFRESH: Duration = Duration::from_secs(120);
 
 #[derive(Deserialize)]
 struct MpvTrack {
@@ -44,6 +45,7 @@ struct MpvTrack {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Panel {
     Tracks,
+    SubtitleSearch,
     Settings,
     Quality,
     Speed,
@@ -54,6 +56,14 @@ pub enum Panel {
 }
 
 pub const SPEEDS: &[f64] = &[0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+#[derive(Default)]
+pub struct SubSearch {
+    pub language: String,
+    pub results: Option<Result<Vec<plex::SubtitleResult>, String>>,
+    pub downloading: Option<String>,
+    pub generation: u64,
+}
 
 #[derive(Clone)]
 pub struct Skip {
@@ -79,6 +89,7 @@ pub struct Player {
     pub audio_delay: f64,
     pub sub_delay: f64,
     languages: LanguagePrefs,
+    rule: Option<LanguageRule>,
     tracks_picked: bool,
     pub media: Media,
     pub skips: Vec<Skip>,
@@ -116,9 +127,22 @@ pub struct Player {
     hide_task: Option<Task<()>>,
     controls_until: Option<Instant>,
     play_gen: u64,
+    version: Option<(String, usize)>,
+    from_start: Option<String>,
+    pub opening: bool,
+    pub sub_search: SubSearch,
+    home_refreshed: Option<Instant>,
     pub hint: Option<(Icon, SharedString)>,
     hint_task: Option<Task<()>>,
     clock_task: Option<Task<()>>,
+}
+
+fn heading(it: &Item) -> (String, String) {
+    let duration = it.duration.map(plex::fmt_duration).unwrap_or_default();
+    match it.kind.as_str() {
+        "episode" => (it.grandparent_title.clone(), join(&[it.episode_label(), it.title.clone(), duration])),
+        _ => (it.title.clone(), join(&[it.year.map(|y| y.to_string()).unwrap_or_default(), duration])),
+    }
 }
 
 fn queue_card(e: &Item, server: &str) -> Card {
@@ -207,7 +231,7 @@ impl Plaivo {
         if server == plex::DISCOVER_ID {
             return self.toast("This title isn't in any of your libraries.", cx);
         }
-        if self.playing() && self.player.key == key && self.player.server.as_ref().is_some_and(|s| s.id == server) {
+        if self.player.version.as_ref().is_none_or(|(k, _)| *k != key) && self.playing() && self.player.key == key && self.player.server.as_ref().is_some_and(|s| s.id == server) {
             if self.player.paused {
                 self.toggle_pause();
             }
@@ -220,8 +244,9 @@ impl Plaivo {
         let Some(srv) = self.server(&server).or_else(|| downloaded().then(|| Server { id: server.clone(), ..Default::default() })) else {
             return self.advance_failed();
         };
+        self.show_opening(&server, &key, cx);
         let c = self.client.clone();
-        let (token, local, downloads) = (self.account.token.clone(), self.settings.languages(), self.downloads.clone());
+        let (token, local, downloads, rules) = (self.account.token.clone(), self.settings.languages(), self.downloads.clone(), self.settings.language_rules.clone());
         Self::bg(
             cx,
             move || {
@@ -229,33 +254,59 @@ impl Plaivo {
                     && let Some(file) = d.local(&srv.id, &key)
                     && let Some(it) = d.item(&srv.id, &key)
                 {
-                    return (srv, Ok(it), local, Some(file));
+                    let rule = prefs::language_rule(&srv.id, &it, &rules);
+                    return (srv, Ok(it), local, rule, Some(file));
                 }
                 let it = resolve_playable(&srv, &Ctx::new(c.clone(), Source::Live), &key);
+                let rule = it.as_ref().ok().and_then(|it| prefs::language_rule(&srv.id, it, &rules));
                 let languages = prefs::for_server(&c, &srv, token.as_deref(), &local);
-                (srv, it, languages, None)
+                (srv, it, languages, rule, None)
             },
-            move |this, (srv, r, languages, file), cx| match r {
+            move |this, (srv, r, languages, rule, file), cx| match r {
                 _ if this.player.play_gen != gen_ => {}
                 Ok(it) => {
+                    if rule.is_some() {
+                        log::info!("language override applies to {}: {rule:?}", it.rating_key);
+                    }
                     this.player.languages = languages;
+                    this.player.rule = rule;
                     if let Err(e) = this.start_item(srv, it, file, cx) {
                         this.advance_failed();
+                        this.abort_opening(cx);
                         this.toast(e, cx);
                     }
                 }
                 Err(e) => {
                     this.advance_failed();
+                    this.abort_opening(cx);
                     this.toast(format!("Could not play: {e}"), cx);
                 }
             },
         );
     }
 
-    fn start_item(&mut self, srv: Server, it: Item, local: Option<Local>, cx: &mut Context<Self>) -> Result<(), String> {
+    pub fn play_from_start(&mut self, server: String, key: String, cx: &mut Context<Self>) {
+        if self.playing() && self.player.key == key && self.player.server.as_ref().is_some_and(|s| s.id == server) {
+            self.seek_by(-self.player.time);
+            return self.expand_player(cx);
+        }
+        self.player.from_start = Some(key.clone());
+        self.play(server, key, cx);
+    }
+
+    pub fn play_version(&mut self, server: String, key: String, version: usize, cx: &mut Context<Self>) {
+        self.player.version = Some((key.clone(), version));
+        self.play(server, key, cx);
+    }
+
+    fn start_item(&mut self, srv: Server, mut it: Item, local: Option<Local>, cx: &mut Context<Self>) -> Result<(), String> {
+        if let Some((_, v)) = self.player.version.take().filter(|(k, v)| *k == it.rating_key && *v < it.media.len() && local.is_none()) {
+            it.media.swap(0, v);
+        }
         let part = it.media.first().and_then(|m| m.part.first()).ok_or("This item has no playable media")?;
         let offset = it.view_offset.unwrap_or(0) as f64 / 1000.0;
-        let resume = offset > 5.0 && it.progress() < 0.95;
+        let from_start = self.player.from_start.take().is_some_and(|k| k == it.rating_key);
+        let resume = !from_start && offset > 5.0 && it.progress() < 0.95;
         let subs = match &local {
             Some(l) => l.subtitles.iter().map(|(file, st)| ([file.to_string_lossy().into_owned(), st.display_title.clone(), st.language_code.clone()], st.forced)).collect(),
             None => part
@@ -265,11 +316,7 @@ impl Plaivo {
                 .map(|st| ([srv.media_url(&st.key), st.display_title.clone(), st.language_code.clone()], st.forced))
                 .collect(),
         };
-        let duration = it.duration.map(plex::fmt_duration).unwrap_or_default();
-        let (title, subtitle) = match it.kind.as_str() {
-            "episode" => (it.grandparent_title.clone(), join(&[it.episode_label(), it.title.clone(), duration])),
-            _ => (it.title.clone(), join(&[it.year.map(|y| y.to_string()).unwrap_or_default(), duration])),
-        };
+        let (title, subtitle) = heading(&it);
         let media = it.media[0].clone();
         let (url, session) = match &local {
             Some(l) => (l.file.to_string_lossy().into_owned(), None),
@@ -280,6 +327,7 @@ impl Plaivo {
             self.end_transcode(cx);
         }
         self.player.server = Some(srv);
+        self.player.home_refreshed = None;
         self.launch(&url, &it.rating_key, &title, &subtitle, it.duration.unwrap_or(0) as f64 / 1000.0, resume.then_some(offset), subs, cx)?;
         self.player.local = local.is_some();
         self.resolve_tracker_media(&it, cx);
@@ -372,6 +420,54 @@ impl Plaivo {
     pub(crate) fn cancel_pending_play(&mut self) {
         self.player.play_gen += 1;
         self.advance_failed();
+    }
+
+    fn known_item(&self, server: &str, key: &str) -> Option<Item> {
+        let detail = self.detail.as_ref().filter(|d| *d.server == *server).map(|d| &d.item);
+        let on_deck = detail.and_then(|it| it.on_deck.as_ref()).and_then(|d| d.metadata.as_ref());
+        let extras = detail.map_or(&[][..], |it| it.extras());
+        let episodes = self.episode_items.iter().filter(|_| self.detail_id.0 == server);
+        detail.into_iter().chain(on_deck).chain(extras).chain(episodes).find(|it| it.rating_key == key).cloned()
+    }
+
+    fn known_card(&self, server: &str, key: &str) -> Option<Card> {
+        let hubs = self.hubs.iter().flat_map(|h| h.items.iter());
+        let library = self.library.iter().flat_map(|l| l.items.iter().flatten());
+        let related = self.detail.iter().flat_map(|d| d.related.iter().flat_map(|(_, cards)| cards.iter()));
+        hubs.chain(library).chain(&self.results).chain(&self.player.queue).chain(related).find(|c| *c.key == *key && *c.server == *server).cloned()
+    }
+
+    fn show_opening(&mut self, server: &str, key: &str, cx: &mut Context<Self>) {
+        self.player.buffering = true;
+        if self.playing() {
+            return self.expand_player(cx);
+        }
+        let (title, subtitle, duration) = match self.known_item(server, key) {
+            Some(it) => {
+                let (title, subtitle) = heading(&it);
+                (title, subtitle, it.duration.unwrap_or(0) as f64 / 1000.0)
+            }
+            None => self.known_card(server, key).map_or_else(Default::default, |c| (c.title.to_string(), c.subtitle.to_string(), 0.0)),
+        };
+        self.player.opening = true;
+        self.player.video_ready = false;
+        self.player.title = title.into();
+        self.player.crumbs = subtitle.split(" · ").filter(|s| !s.is_empty()).map(|s| (SharedString::from(s.to_owned()), None)).collect();
+        self.player.time = 0.0;
+        self.player.duration = duration;
+        self.page = Page::Player;
+        self.wake_controls(cx);
+    }
+
+    pub fn abort_opening(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.player.opening) {
+            return;
+        }
+        self.player.play_gen += 1;
+        self.player.buffering = false;
+        if let Some(nav) = self.nav.last().cloned() {
+            self.navigate(nav, false, cx);
+        }
     }
 
     fn advance_failed(&mut self) {
@@ -600,6 +696,7 @@ impl Plaivo {
         self.ensure_player(cx)?;
         let p = &mut self.player;
         p.active = true;
+        p.opening = false;
         p.key = key.to_owned();
         p.duration = duration;
         p.time = start_at.unwrap_or(0.0);
@@ -710,7 +807,7 @@ impl Plaivo {
 
     pub fn minimize_player(&mut self, cx: &mut Context<Self>) {
         if !self.playing() {
-            return;
+            return self.abort_opening(cx);
         }
         self.shrink_player(cx);
         if let Some(nav) = self.nav.last().cloned() {
@@ -744,9 +841,13 @@ impl Plaivo {
     }
 
     fn report(&mut self, state: &str, cx: &mut Context<Self>) {
-        if let Some(job) = self.report_job(state, true) {
-            Self::detach(cx, job);
+        let refresh = state == "stopped" || self.player.home_refreshed.is_none_or(|t| t.elapsed() >= HOME_REFRESH);
+        let Some(job) = self.report_job(state, true) else { return };
+        if !refresh {
+            return Self::detach(cx, job);
         }
+        self.player.home_refreshed = Some(Instant::now());
+        Self::bg(cx, job, |this, _, cx| this.load_home(cx));
     }
 
     // Quit can't wait on a dead server: local files skip the network, streams get a short grace period.
@@ -902,7 +1003,7 @@ impl Plaivo {
 
     pub fn stop_playback(&mut self, cx: &mut Context<Self>) {
         if !self.playing() {
-            return;
+            return self.abort_opening(cx);
         }
         log::info!("stop playback at {:.1}s / {:.1}s", self.player.time, self.player.duration);
         self.trim_images(false, cx);
@@ -948,6 +1049,12 @@ impl Plaivo {
             return self.watch_call(|wt| wt.seek((t.max(0.0) * 1000.0) as i64));
         }
         self.mpv(|m| m.command(&["seek", &t.to_string(), "absolute"]));
+    }
+
+    pub fn preview_seek(&self, t: f64) {
+        if !self.watch_holds() {
+            self.mpv(|m| m.command(&["seek", &t.to_string(), "absolute+keyframes"]));
+        }
     }
 
     pub fn seek_by(&self, d: f64) {
@@ -1021,6 +1128,20 @@ impl Plaivo {
         }));
     }
 
+    pub fn add_external_subtitle(&mut self, url: String, title: String, lang: String) {
+        self.mpv(|m| m.command(&["sub-add", &url, "select", &title, &lang]));
+        self.player.tracks_picked = true;
+        self.player.external_subs.push(([url, title, lang], false));
+    }
+
+    pub fn can_search_subtitles(&self) -> bool {
+        !self.player.local && self.player.server.as_ref().is_some_and(|s| s.can_search_subtitles())
+    }
+
+    pub fn preferred_subtitle_language(&self) -> &str {
+        &self.player.languages.subtitles
+    }
+
     pub fn select_track(&mut self, kind: &str, id: &str) {
         self.player.tracks_picked = true;
         self.mpv(|m| m.set(kind, id));
@@ -1033,7 +1154,7 @@ impl Plaivo {
         let (audio, subs) = (of("audio"), of("sub"));
         let external_forced = |t: &MpvTrack| self.player.external_subs.iter().any(|(s, forced)| *forced && t.external_filename.as_deref() == Some(s[0].as_str()));
         let info = |list: &[&MpvTrack]| list.iter().map(|t| TrackInfo { language: t.lang.clone().unwrap_or_default(), forced: t.forced || external_forced(t), is_default: t.default }).collect::<Vec<_>>();
-        let (a, s) = prefs::pick(&info(&audio), &info(&subs), &self.player.languages);
+        let (a, s) = prefs::pick_with(&info(&audio), &info(&subs), &self.player.languages, self.player.rule.as_ref());
         log::debug!("auto tracks for {:?}: audio {a:?}, subtitles {s:?}", self.player.languages);
         if let Some(i) = a {
             mpv.set("aid", &audio[i].id.to_string());

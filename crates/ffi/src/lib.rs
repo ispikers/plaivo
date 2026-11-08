@@ -1,7 +1,8 @@
 use plaivo_core::downloads::{Downloads, State};
+use plaivo_core::menu::{self, Action};
 use plaivo_core::plex::{Client, Ctx, Item, QUALITIES, Server, Source, fmt_bitrate, resolve_playable};
-use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, SubtitleMode, TrackInfo};
-use plaivo_core::settings::{SUBTITLE_COLORS, Scale, Settings, SkipMode, library_key};
+use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
+use plaivo_core::settings::{BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key};
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
 use plaivo_core::{Account, first, jellyfin, join, store};
 use qrcodegen::{QrCode, QrCodeEcc};
@@ -68,6 +69,15 @@ pub struct Settings {
     pub library_order: Vec<String>,
     pub hidden_libraries: Vec<String>,
     pub density: u32,
+    pub theme: Theme,
+    pub view_mode: ViewMode,
+    pub grid_spacing: GridSpacing,
+    pub episode_poster: EpisodePoster,
+    pub episode_numbers: bool,
+    pub season_posters: bool,
+    pub hide_spoilers: bool,
+    pub watched_indicators: bool,
+    pub language_rules: Vec<LanguageRule>,
     pub debug_logging: bool,
     pub audio_language: String,
     pub subtitle_language: String,
@@ -122,6 +132,78 @@ pub enum SkipMode {
     Off,
     Button,
     Auto,
+}
+
+#[uniffi::remote(Record)]
+pub struct LanguageRule {
+    pub libraries: Vec<String>,
+    pub audio: Vec<String>,
+    pub subtitles: Vec<String>,
+    pub subtitle_mode: SubtitleMode,
+}
+
+#[uniffi::remote(Enum)]
+pub enum Action {
+    FromStart,
+    MarkWatched,
+    MarkUnwatched,
+    ClearProgress,
+    Trailer,
+    Rate,
+    Versions,
+    FileInfo,
+    Download,
+    AddToWatchlist,
+    RemoveFromWatchlist,
+    Details,
+}
+
+#[derive(uniffi::Record)]
+pub struct InfoLine {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct ItemMenu {
+    pub actions: Vec<Action>,
+    pub trailer_key: Option<String>,
+    pub stars: u8,
+    pub versions: Vec<String>,
+    pub file_info: Vec<InfoLine>,
+}
+
+#[uniffi::export]
+pub fn action_label(action: Action) -> String {
+    action.label().into()
+}
+
+#[uniffi::remote(Enum)]
+pub enum Theme {
+    System,
+    Light,
+    Dark,
+    Oled,
+}
+
+#[uniffi::remote(Enum)]
+pub enum ViewMode {
+    Grid,
+    List,
+}
+
+#[uniffi::remote(Enum)]
+pub enum GridSpacing {
+    Tight,
+    Normal,
+    Spacious,
+}
+
+#[uniffi::remote(Enum)]
+pub enum EpisodePoster {
+    Series,
+    Season,
+    Thumbnail,
 }
 
 #[derive(uniffi::Record)]
@@ -315,6 +397,7 @@ pub struct Playback {
     pub transcode_session: Option<String>,
     pub transcode_label: String,
     pub languages: LanguagePrefs,
+    pub language_rule: Option<LanguageRule>,
 }
 
 #[uniffi::export(callback_interface)]
@@ -364,21 +447,28 @@ pub struct Plaivo {
     watch_listener: OnceLock<Arc<dyn watch::WatchListener>>,
 }
 
+impl Plaivo {
+    fn card_prefs(&self) -> CardPrefs {
+        self.settings.lock().unwrap().card_prefs()
+    }
+}
+
 fn file_url(path: &Path) -> String {
     format!("file://{}", path.display())
 }
 
-fn card(srv: &Server, it: &Item, wide: bool) -> Card {
-    card_with(&srv.id, it, wide, |path, w, h| Some(srv.image_url(path, w, h)))
+fn card(srv: &Server, it: &Item, wide: bool, prefs: &CardPrefs) -> Card {
+    let blur = prefs.blur(it, prefs.art(it, wide));
+    card_with(&srv.id, it, wide, prefs, |path, w, h| Some(srv.image_url(path, w, h) + if blur && w < 1920 { BLUR_PARAM } else { "" }))
 }
 
-fn offline_card(d: &Downloads, server: &str, it: &Item, wide: bool) -> Card {
-    card_with(server, it, wide, |path, _, _| d.image(server, path).map(|p| file_url(&p)))
+fn offline_card(d: &Downloads, server: &str, it: &Item, wide: bool, prefs: &CardPrefs) -> Card {
+    card_with(server, it, wide, prefs, |path, _, _| d.image(server, path).map(|p| file_url(&p)))
 }
 
-fn card_with(server: &str, it: &Item, wide: bool, image: impl Fn(&str, u32, u32) -> Option<String>) -> Card {
-    let (title, subtitle) = it.card_text();
-    let art = it.card_art(wide);
+fn card_with(server: &str, it: &Item, wide: bool, prefs: &CardPrefs, image: impl Fn(&str, u32, u32) -> Option<String>) -> Card {
+    let (title, subtitle) = prefs.text(it);
+    let art = prefs.art(it, wide);
     let (w, h) = if wide { (480, 270) } else { (300, 450) };
     let backdrop = first(&[&it.art, &it.grandparent_art]);
     let kind = match it.kind.as_str() {
@@ -400,7 +490,7 @@ fn card_with(server: &str, it: &Item, wide: bool, image: impl Fn(&str, u32, u32)
             it.content_rating.clone(),
             it.year.map(|y| y.to_string()).unwrap_or_default(),
         ]),
-        summary: it.summary.clone(),
+        summary: if prefs.spoiler(it) { String::new() } else { it.summary.clone() },
         progress: it.progress(),
         watched: it.watched(),
         unwatched: it.unwatched(),
@@ -551,7 +641,11 @@ impl Plaivo {
                 .into_iter()
                 .filter_map(|(r, p)| {
                     let probed = p.join().unwrap_or_else(|_| Err("probe panicked".into()));
-                    probed.inspect_err(|e| log::warn!("{e}")).ok().or_else(|| previous.iter().find(|s| s.id == r.client_identifier).cloned())
+                    match &probed {
+                        Ok(srv) => log::info!("discovery: {} reachable at {}", srv.name, srv.uri),
+                        Err(e) => log::warn!("discovery: {e}, keeping the last known address"),
+                    }
+                    probed.ok().or_else(|| previous.iter().find(|s| s.id == r.client_identifier).cloned())
                 })
                 .collect()
         });
@@ -567,11 +661,12 @@ impl Plaivo {
         let srv = self.server(&server_id)?;
         let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
         let hubs = srv.hubs(&ctx)?;
+        let prefs = self.card_prefs();
         Ok(hubs
             .iter()
             .map(|h| {
-                let wide = h.wide();
-                Row { title: h.title.clone(), resume: h.is_continue(), wide, cards: h.metadata.iter().map(|it| card(&srv, it, wide)).collect() }
+                let wide = prefs.wide_hub(h);
+                Row { title: h.title.clone(), resume: h.is_continue(), wide, cards: h.metadata.iter().map(|it| card(&srv, it, wide, &prefs)).collect() }
             })
             .collect())
     }
@@ -592,18 +687,73 @@ impl Plaivo {
 
     pub fn library_page(&self, server_id: String, key: String, start: u64, size: u64) -> R<LibraryPage> {
         let srv = self.server(&server_id)?;
-        let (items, total) = srv.section_items(&Ctx::new(self.client.clone(), Source::Live), &key, start as usize, size as usize, "titleSort")?;
-        Ok(LibraryPage { cards: items.iter().map(|it| card(&srv, it, false)).collect(), total: total as u64 })
+        let (prefs, list) = {
+            let s = self.settings.lock().unwrap();
+            (s.card_prefs(), s.view_mode == ViewMode::List)
+        };
+        let (items, total) = srv.section_items(&Ctx::new(self.client.clone(), Source::Live), &key, start as usize, size as usize, "titleSort", list)?;
+        Ok(LibraryPage { cards: items.iter().map(|it| card(&srv, it, false, &prefs)).collect(), total: total as u64 })
+    }
+
+    pub fn item_menu(&self, server_id: String, key: String) -> R<ItemMenu> {
+        let srv = self.server(&server_id)?;
+        let it = srv.metadata(&Ctx::new(self.client.clone(), Source::Network), &key)?;
+        let token = self.account.lock().unwrap().token.clone();
+        let watchlisted = match (&token, it.plex_guid()) {
+            (Some(t), Some(guid)) if matches!(it.kind.as_str(), "movie" | "show") => self.client.watchlisted(t, guid).ok(),
+            _ => None,
+        };
+        let ctx = menu::Context { local: true, details: false, can_rate: srv.can_rate(), can_download: self.downloads.get().is_some(), signed_in: token.is_some(), watchlisted };
+        Ok(ItemMenu {
+            actions: menu::actions(&it, &ctx),
+            trailer_key: it.trailer().map(|t| t.rating_key.clone()),
+            stars: menu::stars(&it),
+            versions: it.media.iter().map(menu::version_label).collect(),
+            file_info: menu::file_info(&it).into_iter().map(|(label, value)| InfoLine { label, value }).collect(),
+        })
+    }
+
+    pub fn menu_action(&self, server_id: String, key: String, action: Action) -> R<String> {
+        let srv = self.server(&server_id)?;
+        Ok(match action {
+            Action::MarkWatched | Action::MarkUnwatched => {
+                let on = action == Action::MarkWatched;
+                srv.set_watched(&self.client, &key, on)?;
+                if on { "Marked as watched" } else { "Marked as unwatched" }.into()
+            }
+            Action::ClearProgress => {
+                srv.remove_from_continue_watching(&self.client, &key)?;
+                "Removed from Continue Watching".into()
+            }
+            Action::AddToWatchlist | Action::RemoveFromWatchlist => {
+                let on = action == Action::AddToWatchlist;
+                let token = self.account.lock().unwrap().token.clone().ok_or("Sign in to Plex to use the watchlist")?;
+                let it = srv.metadata(&Ctx::new(self.client.clone(), Source::Network), &key)?;
+                self.client.set_watchlisted(&token, it.plex_guid().ok_or("This title has no Plex ID")?, on)?;
+                if on { "Added to watchlist" } else { "Removed from watchlist" }.into()
+            }
+            _ => return Err(PlaivoError::Failed("This action opens on the device".into())),
+        })
+    }
+
+    pub fn rate(&self, server_id: String, key: String, stars: Option<u8>) -> R<()> {
+        Ok(self.server(&server_id)?.rate(&self.client, &key, stars)?)
+    }
+
+    pub fn server_offline(&self, server_id: String) -> bool {
+        plaivo_core::plex::is_down(&server_id)
     }
 
     pub fn search(&self, query: String) -> Vec<Card> {
-        let servers = self.account.lock().unwrap().all_servers();
+        let mut servers = self.account.lock().unwrap().all_servers();
+        servers.retain(|s| !plaivo_core::plex::is_down(&s.id));
         let ctx = Ctx::new(self.client.clone(), Source::Live);
+        let prefs = self.card_prefs();
         let mut hits: Vec<(f64, Card)> = std::thread::scope(|s| {
             let jobs: Vec<_> = servers.iter().map(|srv| (srv, s.spawn(|| srv.search(&ctx, &query)))).collect();
             jobs.into_iter()
                 .filter_map(|(srv, job)| Some((srv, job.join().ok()?.inspect_err(|e| log::warn!("search on {}: {e}", srv.name)).ok()?)))
-                .flat_map(|(srv, found)| found.into_iter().map(|(it, score)| (score, card(srv, &it, false))).collect::<Vec<_>>())
+                .flat_map(|(srv, found)| found.into_iter().map(|(it, score)| (score, card(srv, &it, false, &prefs))).collect::<Vec<_>>())
                 .collect()
         });
         hits.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -614,12 +764,15 @@ impl Plaivo {
         QUALITIES.iter().map(|q| QualityOption { kbps: q.kbps, label: q.label.into(), bitrate: fmt_bitrate(q.kbps as u64) }).collect()
     }
 
-    pub fn playback(&self, server_id: String, key: String, quality_kbps: u32, force_transcode: bool) -> R<Playback> {
-        if !force_transcode && let Some(p) = self.local_playback(&server_id, &key) {
+    pub fn playback(&self, server_id: String, key: String, quality_kbps: u32, force_transcode: bool, version: u32) -> R<Playback> {
+        if !force_transcode && version == 0 && let Some(p) = self.local_playback(&server_id, &key) {
             return Ok(p);
         }
         let srv = self.server(&server_id)?;
-        let it = resolve_playable(&srv, &Ctx::new(self.client.clone(), Source::Live), &key)?;
+        let mut it = resolve_playable(&srv, &Ctx::new(self.client.clone(), Source::Live), &key)?;
+        if (version as usize) < it.media.len() {
+            it.media.swap(0, version as usize);
+        }
         let part = it.media.first().and_then(|m| m.part.first()).ok_or("This item has no playable media")?;
         let media = &it.media[0];
         let (url, transcode) = srv.stream_url(&self.client, &it.rating_key, media, quality_kbps, force_transcode);
@@ -634,7 +787,9 @@ impl Plaivo {
         let languages = prefs::for_server(&self.client, &srv, token.as_deref(), &local);
         let transcode_label = transcode.as_ref().map(|(q, _)| format!("{} · {}", q.label, fmt_bitrate(q.kbps as u64))).unwrap_or_default();
         let file = part.file.rsplit(['/', '\\']).next().unwrap_or_default().to_owned();
-        Ok(self.playback_for(&srv.id, &it, url, file, subtitles, transcode.map(|(_, s)| s), transcode_label, languages))
+        let rules = self.settings.lock().unwrap().language_rules.clone();
+        let rule = prefs::language_rule(&srv.id, &it, &rules);
+        Ok(self.playback_for(&srv.id, &it, url, file, subtitles, transcode.map(|(_, s)| s), transcode_label, languages, rule))
     }
 
     pub fn account_languages(&self) -> R<Option<LanguagePrefs>> {
@@ -652,11 +807,12 @@ impl Plaivo {
     }
 
     pub fn queue(&self, server_id: String, show_key: String) -> R<Vec<Card>> {
-        let online = self.server(&server_id).and_then(|srv| Ok(srv.all_episodes(&Ctx::new(self.client.clone(), Source::Live), &show_key)?.iter().map(|it| card(&srv, it, true)).collect()));
+        let prefs = self.card_prefs();
+        let online = self.server(&server_id).and_then(|srv| Ok(srv.all_episodes(&Ctx::new(self.client.clone(), Source::Live), &show_key)?.iter().map(|it| card(&srv, it, true, &prefs)).collect()));
         let Some(d) = self.downloads.get().filter(|_| online.is_err()) else { return online };
         let mut episodes: Vec<Item> = d.library().into_iter().filter(|(s, it)| *s == server_id && it.grandparent_rating_key == show_key).map(|(_, it)| it).collect();
         episodes.sort_by_key(|it| (it.parent_index, it.index));
-        Ok(episodes.iter().map(|it| offline_card(d, &server_id, it, true)).collect())
+        Ok(episodes.iter().map(|it| offline_card(d, &server_id, it, true, &prefs)).collect())
     }
 
     pub fn stop_transcode(&self, server_id: String, session: String) {
@@ -787,7 +943,8 @@ impl Plaivo {
         let Some(d) = self.downloads.get() else { return Vec::new() };
         let mut items = d.library();
         items.sort_by_cached_key(|(_, it)| (it.card_text().0.to_lowercase(), it.parent_index, it.index));
-        items.iter().map(|(server, it)| offline_card(d, server, it, false)).collect()
+        let prefs = self.card_prefs();
+        items.iter().map(|(server, it)| offline_card(d, server, it, false, &prefs)).collect()
     }
 }
 
@@ -798,8 +955,8 @@ pub fn move_library(mut settings: Settings, arranged: Vec<String>, id: String, s
 }
 
 #[uniffi::export]
-pub fn pick_tracks(audio: Vec<TrackInfo>, text: Vec<TrackInfo>, languages: LanguagePrefs) -> TrackPick {
-    let (a, t) = prefs::pick(&audio, &text, &languages);
+pub fn pick_tracks(audio: Vec<TrackInfo>, text: Vec<TrackInfo>, languages: LanguagePrefs, rule: Option<LanguageRule>) -> TrackPick {
+    let (a, t) = prefs::pick_with(&audio, &text, &languages, rule.as_ref());
     TrackPick { audio: a.map(|i| i as u32), text: t.map(|i| i as u32) }
 }
 
@@ -902,7 +1059,9 @@ impl Plaivo {
         let languages = self.settings.lock().unwrap().languages();
         let file = local.file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
         log::info!("playing {key} from the downloaded file");
-        Some(self.playback_for(server, &it, file_url(&local.file), file, subtitles, None, String::new(), languages))
+        let rules = self.settings.lock().unwrap().language_rules.clone();
+        let rule = prefs::language_rule(server, &it, &rules);
+        Some(self.playback_for(server, &it, file_url(&local.file), file, subtitles, None, String::new(), languages, rule))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -916,6 +1075,7 @@ impl Plaivo {
         transcode_session: Option<String>,
         transcode_label: String,
         languages: LanguagePrefs,
+        language_rule: Option<LanguageRule>,
     ) -> Playback {
         let (title, subtitle) = it.card_text();
         let start_ms = it.view_offset.filter(|&o| o > 5_000 && it.progress() < 0.95).unwrap_or(0);
@@ -956,6 +1116,7 @@ impl Plaivo {
             transcode_session,
             transcode_label,
             languages,
+            language_rule,
         }
     }
 

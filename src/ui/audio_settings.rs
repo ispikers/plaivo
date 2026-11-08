@@ -85,7 +85,7 @@ impl Plaivo {
             .child(self.style_row("subtitle-position", "Position", "Height above the bottom of the video", if lift == 0 { "Bottom".into() } else { format!("{lift}% up") }, |s, step| {
                 s.subtitle_position = 100 - nudge(100 - s.subtitle_position.min(100), step, 5, 0, 50, 0)
             }, cx));
-        div().flex().flex_col().gap(px(28.)).child(languages).child(style)
+        div().flex().flex_col().gap(px(28.)).child(languages).child(self.render_language_rules(cx)).child(style)
     }
 
     pub fn render_language_list(&mut self, subtitles: bool, cx: &mut Context<Self>) -> Div {

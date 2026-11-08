@@ -587,7 +587,7 @@ fn live_plex_range_read() {
         .find_map(|srv| {
             let sections = srv.sections(&cx).ok()?;
             sections.iter().find_map(|sec| {
-                let (items, _) = srv.section_items(&cx, &sec.key, 0, 1, "addedAt:desc").ok()?;
+                let (items, _) = srv.section_items(&cx, &sec.key, 0, 1, "addedAt:desc", false).ok()?;
                 let key = &items.first()?.rating_key;
                 let leaf = if sec.kind == "show" { srv.all_episodes(&cx, key).ok()?.into_iter().next()? } else { items.into_iter().next()? };
                 let it = srv.metadata(&cx, &leaf.rating_key).ok()?;

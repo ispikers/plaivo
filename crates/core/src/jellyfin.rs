@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::first;
-use crate::plex::{Backend, Client, Ctx, Directory, Guid, Hub, Item, Marker, Media, OnDeck, PRODUCT, Part, Quality, R, Server, Stream, Tag, encode, err};
+use crate::plex::{Backend, Client, Ctx, Directory, Extras, Guid, Hub, Image, Item, Marker, Media, OnDeck, PRODUCT, Part, Person, Quality, R, Rating, Server, Stream, Tag, encode, err};
 
 const TICKS_PER_MS: u64 = 10_000;
 const LIST_FIELDS: &str = "ChildCount,RecursiveItemCount";
@@ -64,6 +64,8 @@ struct Dto {
     taglines: Vec<String>,
     official_rating: String,
     community_rating: Option<f64>,
+    critic_rating: Option<f64>,
+    people: Vec<JPerson>,
     run_time_ticks: Option<u64>,
     child_count: Option<u64>,
     recursive_item_count: Option<u64>,
@@ -90,8 +92,20 @@ struct Named {
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "PascalCase", default)]
+struct JPerson {
+    id: String,
+    name: String,
+    role: String,
+    #[serde(rename = "Type")]
+    kind: String,
+    primary_image_tag: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
 struct ImageTags {
     primary: String,
+    logo: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -186,13 +200,14 @@ impl Source {
                 };
                 let format = if s.codec == "subrip" { "srt" } else { &s.codec };
                 let key = if stream_type == 3 && s.is_external { format!("/Videos/{item_id}/{}/Subtitles/{}/Stream.{format}", self.id, s.index) } else { String::new() };
-                Some(Stream { stream_type, key, codec: s.codec.clone(), language_code: s.language.clone(), display_title: s.display_title.clone(), forced: s.is_forced })
+                Some(Stream { stream_type, key, codec: s.codec.clone(), language_code: s.language.clone(), display_title: s.display_title.clone(), forced: s.is_forced, selected: s.is_default })
             })
             .collect();
         Media {
             bitrate: self.bitrate.map(|b| b / 1000),
             height: video.and_then(|v| v.height),
             container: self.container,
+            video_codec: video.map(|v| v.codec.clone()).unwrap_or_default(),
             video_resolution: video.map(|v| resolution(v.width.unwrap_or(0), v.height.unwrap_or(0)).to_owned()).unwrap_or_default(),
             video_dynamic_range: video.map(dynamic_range).unwrap_or_default(),
             audio_codec: audio.map(|a| a.codec.clone()).unwrap_or_default(),
@@ -241,8 +256,18 @@ impl Dto {
             None => 0,
         });
         let guids = self.provider_ids.into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| Guid { id: format!("{}://{v}", k.to_ascii_lowercase()) }).collect();
+        let crew = |kind: &str| self.people.iter().filter(|p| p.kind == kind).map(|p| Tag { tag: p.name.clone() }).collect::<Vec<_>>();
+        let (director, writer) = (crew("Director"), crew("Writer"));
+        let role = self.people.iter().filter(|p| p.kind == "Actor").map(|p| Person { tag: p.name.clone(), role: p.role.clone(), thumb: image(&p.id, "Primary", &p.primary_image_tag) }).collect();
+        let ratings = self.critic_rating.map(|r| Rating { image: format!("rottentomatoes://image.rating.{}", if r >= 60. { "ripe" } else { "rotten" }), value: r / 10. }).into_iter().collect();
+        let images = Some(image(&self.id, "Logo", &self.image_tags.logo)).filter(|u| !u.is_empty()).map(|url| Image { kind: "clearLogo".into(), url }).into_iter().collect();
         let id = self.id;
         Item {
+            role,
+            director,
+            writer,
+            ratings,
+            images,
             thumb: image(&id, "Primary", &self.image_tags.primary),
             art: first(&[&backdrop, &parent_backdrop]).to_owned(),
             media: self.media_sources.into_iter().map(|s| s.into_media(&id)).collect(),
@@ -368,13 +393,14 @@ fn sort_params(sort: &str) -> (&'static str, &'static str) {
     (by, if dir == "desc" { "Descending" } else { "Ascending" })
 }
 
-pub fn section_items(srv: &Server, c: &Ctx, key: &str, start: usize, size: usize, sort: &str) -> R<(Vec<Item>, usize)> {
+pub fn section_items(srv: &Server, c: &Ctx, key: &str, start: usize, size: usize, sort: &str, summaries: bool) -> R<(Vec<Item>, usize)> {
+    let overview = if summaries { ",Overview" } else { "" };
     let (by, order) = sort_params(sort);
     let page: Page = get(
         srv,
         c,
         &format!(
-            "/Items?userId={}&ParentId={key}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy={by},SortName&SortOrder={order}&StartIndex={start}&Limit={size}&Fields={LIST_FIELDS}&ImageTypeLimit=1&EnableTotalRecordCount=true",
+            "/Items?userId={}&ParentId={key}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy={by},SortName&SortOrder={order}&StartIndex={start}&Limit={size}&Fields={LIST_FIELDS}{overview}&ImageTypeLimit=1&EnableTotalRecordCount=true",
             srv.user_id
         ),
     )?;
@@ -393,7 +419,29 @@ pub fn metadata(srv: &Server, c: &Ctx, key: &str) -> R<Item> {
         "movie" | "episode" => it.marker = get_quiet::<Segments>(srv, c, &format!("/MediaSegments/{key}")).map(markers).unwrap_or_default(),
         _ => {}
     }
+    if matches!(it.kind.as_str(), "movie" | "show") {
+        let list = |path: &str| get_quiet::<Vec<Dto>>(srv, c, &format!("/Items/{key}/{path}?userId={u}")).unwrap_or_default().into_iter().map(Dto::into_item);
+        let trailers = list("LocalTrailers").map(|t| Item { subtype: "trailer".into(), ..t });
+        let metadata: Vec<Item> = trailers.chain(list("SpecialFeatures")).collect();
+        it.extras = (!metadata.is_empty()).then_some(Extras { metadata });
+    }
     Ok(it)
+}
+
+pub fn related(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Hub>> {
+    let metadata = items(srv, c, &format!("/Items/{key}/Similar?userId={}&Limit=20&Fields={LIST_FIELDS}", srv.user_id))?;
+    Ok((!metadata.is_empty()).then(|| Hub { title: "More Like This".into(), id: "similar".into(), kind: "mixed".into(), metadata }).into_iter().collect())
+}
+
+pub fn clear_progress(srv: &Server, c: &Client, key: &str) -> R<()> {
+    let url = format!("{}/UserItems/{key}/UserData?userId={}", srv.uri, srv.user_id);
+    authed(c.agent.post(&url), c, Some(&srv.token)).send_json(json!({ "PlaybackPositionTicks": 0 })).map(drop).map_err(err)
+}
+
+pub fn set_watched(srv: &Server, c: &Client, key: &str, watched: bool) -> R<()> {
+    let url = format!("{}/UserPlayedItems/{key}?userId={}", srv.uri, srv.user_id);
+    let r = if watched { authed(c.agent.post(&url), c, Some(&srv.token)).send_empty() } else { authed(c.agent.delete(&url), c, Some(&srv.token)).call() };
+    r.map(drop).map_err(err)
 }
 
 pub fn children(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Item>> {
@@ -464,7 +512,8 @@ fn sep(path: &str) -> char {
 }
 
 pub fn image_url(srv: &Server, path: &str, w: u32, h: u32) -> String {
-    format!("{}{path}{}fillWidth={w}&fillHeight={h}&quality=90", srv.uri, sep(path))
+    let bound = if path.contains("/Images/Logo") { "max" } else { "fill" };
+    format!("{}{path}{}{bound}Width={w}&{bound}Height={h}&quality=90", srv.uri, sep(path))
 }
 
 pub fn media_url(srv: &Server, key: &str) -> String {

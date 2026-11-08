@@ -1,5 +1,6 @@
 pub mod downloads;
 pub mod jellyfin;
+pub mod menu;
 pub mod plex;
 pub mod prefs;
 pub mod settings;

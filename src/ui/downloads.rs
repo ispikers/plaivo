@@ -5,7 +5,7 @@ use crate::ui::home::content_width;
 use crate::ui::library::Grid;
 use crate::ui::settings::{note, toggle_row};
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{chip, icon, pill, progress_bar, round_button, row, section, tip};
+use crate::ui::widgets::{chip, icon, overlay_button, pill, progress_bar, round_button, row, section, tip};
 use gpui::{AnyElement, Context, Div, FontWeight, PathPromptOptions, PromptLevel, SharedString, Stateful, Window, div, prelude::*, px};
 use std::collections::HashMap;
 
@@ -151,7 +151,26 @@ impl Plaivo {
 
     pub fn detail_download_button(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let st = self.target_state(Target::Detail)?;
-        Some(pill("download", st.label("Download"), Some(st.icon()), false).h(px(48.)).min_w(px(200.)).on_click(cx.listener(|this, _, _, cx| this.download(Target::Detail, cx))))
+        let inner = match st {
+            Dl::Active(p) => div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(format!("{p}%")).into_any_element(),
+            _ => icon(st.icon(), 24., if st == Dl::Done { theme::accent() } else { theme::text() }).into_any_element(),
+        };
+        Some(
+            div()
+                .id("download")
+                .size(px(48.))
+                .flex_none()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .bg(theme::tint(0.08))
+                .hover(|s| s.bg(theme::tint(0.16)))
+                .tooltip(tip(st.label("Download")))
+                .child(inner)
+                .on_click(cx.listener(|this, _, _, cx| this.download(Target::Detail, cx))),
+        )
     }
 
     pub fn season_download_chip(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
@@ -177,12 +196,10 @@ impl Plaivo {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::tint(0.08)))
+                .occlude()
                 .tooltip(tip(st.label("Download")))
                 .child(inner)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.download(Target::Episode(i), cx);
-                }))
+                .on_click(cx.listener(move |this, _, _, cx| this.download(Target::Episode(i), cx)))
                 .into_any_element(),
         )
     }
@@ -350,9 +367,8 @@ impl Plaivo {
                 list = list.child(div().pt(px(12.)).text_size(px(18.)).font_weight(FontWeight::BOLD).child(label));
             }
             let (s, k) = (server.clone(), it.rating_key.clone());
-            let remove = round_button(("offline-remove", i), Icon::Delete, 40., 22., theme::black(0.), theme::tint(0.08), theme::muted()).my_auto().tooltip(tip("Remove download")).on_click(cx.listener(
+            let remove = overlay_button(("offline-remove", i), Icon::Delete, 40., 22., theme::black(0.), theme::tint(0.08), theme::muted()).my_auto().tooltip(tip("Remove download")).on_click(cx.listener(
                 move |this, _, _, cx| {
-                    cx.stop_propagation();
                     let (s, k) = (s.clone(), k.clone());
                     this.with_downloads(cx, move |d| d.remove(&s, &k));
                 },

@@ -1,26 +1,63 @@
-use gpui::{AssetSource, Hsla, Rgba, SharedString, rgb, rgba};
+use gpui::{AssetSource, Hsla, Rgba, SharedString, WindowAppearance, rgb, rgba};
+use plaivo_core::settings::Theme;
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+pub struct Palette {
+    pub bg: u32,
+    pub surface: u32,
+    pub text: u32,
+    pub outline: u32,
+}
+
+pub const DARK: Palette = Palette { bg: 0x0E0F12, surface: 0x15171C, text: 0xEDEDED, outline: 0xFFFFFF1F };
+pub const OLED: Palette = Palette { bg: 0x000000, surface: 0x0A0A0A, text: 0xEDEDED, outline: 0xFFFFFF1F };
+pub const LIGHT: Palette = Palette { bg: 0xF7F7F8, surface: 0xFFFFFF, text: 0x111111, outline: 0x00000019 };
+const PALETTES: [&Palette; 3] = [&DARK, &OLED, &LIGHT];
+
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+pub fn palette_for(theme: Theme, appearance: WindowAppearance) -> &'static Palette {
+    match theme {
+        Theme::Light => &LIGHT,
+        Theme::Dark => &DARK,
+        Theme::Oled => &OLED,
+        Theme::System => match appearance {
+            WindowAppearance::Light | WindowAppearance::VibrantLight => &LIGHT,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => &DARK,
+        },
+    }
+}
+
+pub fn apply(theme: Theme, appearance: WindowAppearance) {
+    let p = palette_for(theme, appearance);
+    ACTIVE.store(PALETTES.iter().position(|q| std::ptr::eq(*q, p)).unwrap_or(0), Ordering::Relaxed);
+}
+
+fn p() -> &'static Palette {
+    PALETTES[ACTIVE.load(Ordering::Relaxed)]
+}
 
 pub fn bg() -> Rgba {
-    rgb(0x0E0F12)
+    rgb(p().bg)
 }
 pub fn surface() -> Rgba {
-    rgb(0x15171C)
+    rgb(p().surface)
 }
 pub fn text() -> Rgba {
-    rgb(0xEDEDED)
+    rgb(p().text)
 }
 pub fn muted() -> Hsla {
     Hsla::from(text()).opacity(0.6)
 }
 pub fn accent() -> Rgba {
-    rgb(0xEDEDED)
+    text()
 }
 pub fn on_accent() -> Rgba {
-    rgb(0x0E0F12)
+    bg()
 }
 pub fn outline() -> Rgba {
-    rgba(0xFFFFFF1F)
+    rgba(p().outline)
 }
 pub fn tint(alpha: f32) -> Hsla {
     Hsla::from(text()).opacity(alpha)
@@ -121,6 +158,16 @@ icons! {
     Delete => "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z",
     Group => "M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z",
     Copy => "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z",
+    Star => "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z",
+    StarBorder => "M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z",
+    MoreVert => "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z",
+    BookmarkAdd => "M21 7h-2v2h-2V7h-2V5h2V3h2v2h2v2zm-2 14-7-3-7 3V5c0-1.1.9-2 2-2h7a5.002 5.002 0 0 0 5 7.9V21z",
+    Bookmark => "M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z",
+    Contrast => "M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.86 7 7.93s-3.06 7.44-7 7.93V4.07z",
+    ViewList => "M3 14h4v-4H3v4zm0 5h4v-4H3v4zM3 9h4V5H3v4zm5 5h13v-4H8v4zm0 5h13v-4H8v4zM8 5v4h13V5H8z",
+    GridView => "M3 3v8h8V3H3zm6 6H5V5h4v4zm-6 4v8h8v-8H3zm6 6H5v-4h4v4zm4-16v8h8V3h-8zm6 6h-4V5h4v4zm-6 4v8h8v-8h-8zm6 6h-4v-4h4v4z",
+    Image => "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z",
+    Layers =>"M11.99 18.54l-7.37-5.73L3 14.07l9 7 9-7-1.63-1.27-7.38 5.74zM12 16l7.36-5.73L21 9l-9-7-9 7 1.63 1.27L12 16z",
 }
 
 pub struct Assets;
@@ -148,5 +195,17 @@ mod tests {
             assert!(svg.starts_with(b"<svg"));
         }
         assert!(Assets.load("icons/Nope.svg").unwrap().is_none());
+    }
+
+    #[test]
+    fn themes_pick_their_palette() {
+        let pick = |t, a| palette_for(t, a).bg;
+        assert_eq!(pick(Theme::System, WindowAppearance::Light), LIGHT.bg);
+        assert_eq!(pick(Theme::System, WindowAppearance::VibrantDark), DARK.bg);
+        assert_eq!(pick(Theme::Oled, WindowAppearance::Light), OLED.bg);
+        apply(Theme::Light, WindowAppearance::Dark);
+        assert_eq!(bg(), rgb(LIGHT.bg));
+        apply(Theme::Dark, WindowAppearance::Dark);
+        assert_eq!(bg(), rgb(DARK.bg));
     }
 }

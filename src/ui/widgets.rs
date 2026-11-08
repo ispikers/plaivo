@@ -1,9 +1,10 @@
 use crate::app::{Card, Choice, Plaivo, Shape};
 use crate::ui::theme::{self, Icon};
 use gpui::{
-    AnyElement, App, BoxShadow, Bounds, ClickEvent, Context, ElementId, FontWeight, Hsla, ObjectFit, Pixels, SharedString, Stateful, Div, Svg, Window, canvas, div, img, point, prelude::*,
-    px, svg,
+    AnyElement, App, BoxShadow, Bounds, ClickEvent, Context, DispatchPhase, Div, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
+    Img, ScrollHandle, SharedString, Stateful, Svg, Window, canvas, div, fill, img, point, prelude::*, px, size, svg,
 };
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub fn icon(i: Icon, size: f32, color: impl Into<Hsla>) -> Svg {
@@ -58,10 +59,6 @@ pub fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>, selected: 
         .child(label.into())
 }
 
-pub fn info_chip(label: SharedString) -> Div {
-    div().h(px(30.)).px(px(10.)).rounded_full().flex().items_center().bg(Hsla::from(theme::surface()).opacity(0.8)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(label)
-}
-
 pub fn round_button(id: impl Into<ElementId>, i: Icon, size: f32, icon_size: f32, idle: Hsla, hover: Hsla, fg: impl Into<Hsla>) -> Stateful<Div> {
     div()
         .id(id.into())
@@ -75,6 +72,91 @@ pub fn round_button(id: impl Into<ElementId>, i: Icon, size: f32, icon_size: f32
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(icon(i, icon_size, fg))
+}
+
+pub fn backdrop(id: impl Into<ElementId>, close: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+    let close = Rc::new(close);
+    let right = close.clone();
+    floating(id).absolute().top_0().left_0().size_full().on_mouse_down(MouseButton::Left, move |e, w, cx| close(e, w, cx)).on_mouse_down(MouseButton::Right, move |e, w, cx| right(e, w, cx))
+}
+
+pub fn floating(id: impl Into<ElementId>) -> Stateful<Div> {
+    div().id(id.into()).occlude()
+}
+
+pub fn overlay_button(id: impl Into<ElementId>, i: Icon, size: f32, icon_size: f32, idle: Hsla, hover: Hsla, fg: impl Into<Hsla>) -> Stateful<Div> {
+    round_button(id, i, size, icon_size, idle, hover, fg).occlude()
+}
+
+struct ScrollDrag {
+    handle: ScrollHandle,
+    start_y: f32,
+    start_offset: f32,
+    ratio: f32,
+    max: f32,
+}
+
+thread_local! {
+    static SCROLL_DRAG: RefCell<Option<ScrollDrag>> = const { RefCell::new(None) };
+}
+
+const SCROLLBAR_W: f32 = 6.;
+const SCROLLBAR_MIN_THUMB: f32 = 40.;
+
+pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
+    let handle = handle.clone();
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let max = f32::from(handle.max_offset().y);
+            if max <= 0. {
+                return;
+            }
+            let track_h = f32::from(bounds.size.height);
+            let thumb_h = (track_h * track_h / (track_h + max)).clamp(SCROLLBAR_MIN_THUMB.min(track_h), track_h);
+            let ratio = max / (track_h - thumb_h).max(1.);
+            let offset = (-f32::from(handle.offset().y)).clamp(0., max);
+            let x = bounds.right() - px(SCROLLBAR_W + 4.);
+            let thumb = Bounds::new(point(x, bounds.top() + px(offset / ratio)), size(px(SCROLLBAR_W), px(thumb_h)));
+            let track = Bounds::new(point(x - px(6.), bounds.top()), size(px(SCROLLBAR_W + 12.), bounds.size.height));
+            let dragging = SCROLL_DRAG.with(|d| d.borrow().is_some());
+            window.paint_quad(fill(thumb, theme::tint(if dragging { 0.5 } else { 0.25 })).corner_radii(px(SCROLLBAR_W / 2.)));
+            let down = handle.clone();
+            window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble || e.button != MouseButton::Left || !track.contains(&e.position) {
+                    return;
+                }
+                let y = f32::from(e.position.y);
+                let start_offset = if thumb.contains(&e.position) { offset } else { ((y - f32::from(track.top()) - thumb_h / 2.) * ratio).clamp(0., max) };
+                down.set_offset(point(px(0.), px(-start_offset)));
+                SCROLL_DRAG.with(|d| *d.borrow_mut() = Some(ScrollDrag { handle: down.clone(), start_y: y, start_offset, ratio, max }));
+                cx.stop_propagation();
+                window.refresh();
+            });
+            window.on_mouse_event(|e: &MouseMoveEvent, _, window, _| {
+                SCROLL_DRAG.with(|d| {
+                    if let Some(s) = d.borrow().as_ref().filter(|_| e.dragging()) {
+                        let next = (s.start_offset + (f32::from(e.position.y) - s.start_y) * s.ratio).clamp(0., s.max);
+                        s.handle.set_offset(point(px(0.), px(-next)));
+                        window.refresh();
+                    }
+                });
+            });
+            window.on_mouse_event(|_: &MouseUpEvent, _, window, _| {
+                if SCROLL_DRAG.with(|d| d.borrow_mut().take()).is_some() {
+                    window.refresh();
+                }
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+pub fn scroll_box(id: impl Into<ElementId>) -> Stateful<Div> {
+    div().id(id.into()).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation())
 }
 
 pub fn section(title: impl Into<SharedString>) -> Div {
@@ -173,12 +255,20 @@ impl Plaivo {
             .collect()
     }
 
+    pub fn picture(&mut self, thumb: &Option<crate::app::Thumb>, shape: Shape) -> Option<Img> {
+        let im = self.image(thumb, shape)?;
+        Some(img(im).opacity(self.image_alpha()))
+    }
+
     pub fn media_card(&mut self, id: impl Into<ElementId>, card: &Card, width: f32, wide: bool, cx: &mut Context<Self>) -> AnyElement {
-        let art_w = width - 6.;
+        let pad = self.settings.card_pad();
+        let art_w = width - 2. * pad;
         let art_h = if wide { art_w * 9. / 16. } else { art_w * 1.5 };
-        let image = self.image(&card.thumb, if wide { Shape::Wide } else { Shape::Poster });
+        let check = card.watched && self.settings.watched_indicators;
+        let image = self.picture(&card.thumb, if wide { Shape::Wide } else { Shape::Poster });
         let placeholder = card.key.is_empty();
         let open = card.clone();
+        let (menu_server, menu_key) = (card.server.to_string(), card.key.to_string());
         let art = div()
             .relative()
             .w(px(art_w))
@@ -186,9 +276,9 @@ impl Plaivo {
             .rounded(px(8.))
             .overflow_hidden()
             .bg(theme::surface())
-            .when_some(image, |d, im| d.child(img(im).size_full().rounded(px(8.)).object_fit(ObjectFit::Cover)))
+            .when_some(image, |d, im| d.child(im.size_full().rounded(px(8.)).object_fit(ObjectFit::Cover)))
             .when(card.progress > 0. && !card.watched, |d| d.child(div().absolute().bottom(px(6.)).left(px(6.)).right(px(6.)).child(progress_bar(card.progress, 4., theme::surface()))))
-            .when(card.watched, |d| {
+            .when(check, |d| {
                 d.child(
                     div().absolute().top(px(4.)).right(px(4.)).size(px(24.)).rounded_full().bg(theme::text()).flex().items_center().justify_center().shadow(shadow(4., 0.3)).child(icon(Icon::Check, 16., theme::bg())),
                 )
@@ -221,7 +311,7 @@ impl Plaivo {
             div()
                 .flex()
                 .flex_col()
-                .pt(px(4.))
+                .pt(px(2. + pad * 2. / 3.))
                 .w(px(art_w))
                 .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::text()).truncate().child(card.title.clone()))
                 .child(div().text_size(px(11.)).text_color(theme::muted()).truncate().child(card.subtitle.clone()))
@@ -229,14 +319,17 @@ impl Plaivo {
         div()
             .id(id.into())
             .w(px(width))
-            .h(px(art_h + 46.))
+            .h(px(art_h + 40. + 2. * pad))
             .flex_none()
-            .p(px(3.))
+            .p(px(pad))
             .rounded(px(8.))
             .flex()
             .flex_col()
             .when(!placeholder, |d| {
-                d.cursor_pointer().hover(|s| s.bg(theme::tint(0.05))).on_click(cx.listener(move |this, _, _, cx| this.open(&open, cx)))
+                d.cursor_pointer()
+                    .hover(|s| s.bg(theme::tint(0.05)))
+                    .on_click(cx.listener(move |this, _, _, cx| this.open(&open, cx)))
+                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.open_item_menu(menu_server.clone(), menu_key.clone(), ev.position, cx)))
             })
             .child(art)
             .child(caption)

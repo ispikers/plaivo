@@ -1,9 +1,9 @@
 use crate::app::{Plaivo, Shape};
 use crate::ui::shell::{ease_out, progress};
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{icon, pill, round_button, skeleton};
+use crate::ui::widgets::{icon, overlay_button, pill, scrollbar, skeleton};
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, ScrollEvent, Window, div, img, linear_color_stop, linear_gradient,
+    AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, ScrollEvent, SharedString, Window, div, img, linear_color_stop, linear_gradient,
     point, prelude::*, px, rgb,
 };
 use std::time::{Duration, Instant};
@@ -12,13 +12,19 @@ const SWIPE: f32 = 60.;
 const SLIDE_ANIM: Duration = Duration::from_millis(320);
 
 pub fn content_width(this: &Plaivo, window: &Window) -> f32 {
-    let sidebar = if this.settings.sidebar_compact { theme::SIDEBAR_COMPACT } else { theme::SIDEBAR };
+    let sidebar = if this.page == crate::app::Page::Detail {
+        0.
+    } else if this.settings.sidebar_compact {
+        theme::SIDEBAR_COMPACT
+    } else {
+        theme::SIDEBAR
+    };
     f32::from(window.viewport_size().width) - sidebar
 }
 
-pub fn card_height(w: f32, wide: bool) -> f32 {
-    let art = w - 6.;
-    (if wide { art * 9. / 16. } else { art * 1.5 }) + 46.
+pub fn card_height(w: f32, wide: bool, pad: f32) -> f32 {
+    let art = w - 2. * pad;
+    (if wide { art * 9. / 16. } else { art * 1.5 }) + 40. + 2. * pad
 }
 
 pub fn card_width(content_w: f32, wide: bool, scale: f32) -> f32 {
@@ -30,7 +36,8 @@ pub fn card_width(content_w: f32, wide: bool, scale: f32) -> f32 {
 
 impl Plaivo {
     pub fn render_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(e) = self.home_error.clone() {
+        let offline = self.home_server().filter(|s| crate::plex::is_down(&s.id)).map(|s| SharedString::from(format!("Can't reach {} right now.", s.name)));
+        if let Some(e) = self.home_error.clone().or(offline) {
             return div()
                 .size_full()
                 .flex()
@@ -43,7 +50,7 @@ impl Plaivo {
                     div()
                         .flex()
                         .gap(px(12.))
-                        .child(pill("retry", "Retry", Some(Icon::Refresh), true).on_click(cx.listener(|this, _, _, cx| this.load_home(cx))))
+                        .child(pill("retry", "Retry", Some(Icon::Refresh), true).on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))))
                         .child(pill("change", "Change server", None, false).on_click(cx.listener(|this, _, _, cx| this.navigate(crate::app::Nav::Servers, true, cx))))
                         .when(self.has_downloads(), |d| {
                             d.child(pill("offline", "Downloads", Some(Icon::Download), false).on_click(cx.listener(|this, _, _, cx| this.navigate(crate::app::Nav::Downloads(None), true, cx))))
@@ -62,14 +69,14 @@ impl Plaivo {
             (0..self.hubs.len())
                 .map(|i| {
                     let w = card_width(cw, self.hubs[i].wide, self.settings.card_scale());
-                    let height = 38. + card_height(w, self.hubs[i].wide);
+                    let height = 38. + card_height(w, self.hubs[i].wide, self.settings.card_pad());
                     let near = top + height > scrolled - vh && top < scrolled + 2. * vh;
                     top += height + 16.;
                     self.render_hub(i, cw, near, window, cx)
                 })
                 .collect()
         };
-        div()
+        let page = div()
             .id("home")
             .size_full()
             .overflow_y_scroll()
@@ -78,15 +85,16 @@ impl Plaivo {
             .child(div().flex().flex_col().gap(px(16.)).pb(px(24.)).children(hero).children(hubs))
             .child(
                 div().absolute().top(px(12.)).right(px(12.)).child(
-                    round_button("refresh", Icon::Refresh, 40., 20., theme::black(0.3), theme::black(0.5), rgb(0xFFFFFF)).on_click(cx.listener(|this, _, _, cx| this.load_home(cx))),
+                    overlay_button("refresh", Icon::Refresh, 40., 20., theme::black(0.3), theme::black(0.5), rgb(0xFFFFFF)).on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))),
                 ),
-            )
-            .into_any_element()
+            );
+        div().size_full().relative().child(page).child(scrollbar(&self.home_scroll)).into_any_element()
     }
 
     fn render_hero(&mut self, width: f32, height: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let item = self.hero[self.hero_index.min(self.hero.len() - 1)].clone();
         let current = self.image(&item.thumb, Shape::Backdrop);
+        let arrived = self.image_alpha();
         let upcoming = self.hero[(self.hero_index + 1) % self.hero.len()].thumb.clone();
         self.image(&upcoming, Shape::Backdrop);
         let fade = self.view.hero_prev.map(|(i, t0)| (i, ease_out(progress(Some(t0), Duration::from_millis(500), window))));
@@ -120,9 +128,9 @@ impl Plaivo {
             .overflow_hidden()
             .bg(theme::bg())
             .when_some(previous, |d, im| d.child(img(im).absolute().size_full().object_fit(ObjectFit::Cover)))
-            .when_some(current, |d, im| d.child(img(im).absolute().size_full().object_fit(ObjectFit::Cover).opacity(alpha)))
+            .when_some(current, |d, im| d.child(img(im).absolute().size_full().object_fit(ObjectFit::Cover).opacity(alpha * arrived)))
             .child(div().absolute().size_full().bg(linear_gradient(180., linear_color_stop(bg.opacity(0.), 0.5), linear_color_stop(bg.opacity(1.), 0.94))))
-            .child(div().absolute().size_full().bg(linear_gradient(90., linear_color_stop(theme::black(0.65), 0.), linear_color_stop(theme::black(0.), 0.6))))
+            .child(div().absolute().size_full().bg(linear_gradient(90., linear_color_stop(bg.opacity(0.65), 0.), linear_color_stop(bg.opacity(0.), 0.6))))
             .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| this.hero_wheel(ev, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, _| this.view.hero_drag = Some(f32::from(ev.position.x))))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, ev: &MouseUpEvent, _, cx| this.hero_release(f32::from(ev.position.x), cx)))
@@ -201,7 +209,8 @@ impl Plaivo {
     fn render_hub_skeleton(&self, i: usize, cw: f32) -> AnyElement {
         let wide = i == 0;
         let w = card_width(cw, wide, self.settings.card_scale());
-        let art_h = if wide { (w - 6.) * 9. / 16. } else { (w - 6.) * 1.5 };
+        let pad = self.settings.card_pad();
+        let art_h = if wide { (w - 2. * pad) * 9. / 16. } else { (w - 2. * pad) * 1.5 };
         div()
             .flex()
             .flex_col()
@@ -209,7 +218,7 @@ impl Plaivo {
             .px(px(8.))
             .pt(if i == 0 { px(16.) } else { px(0.) })
             .child(div().pl(px(4.)).child(skeleton(px(180.), 20.)))
-            .child(div().flex().overflow_hidden().children((0..8).map(|_| div().w(px(w)).flex_none().p(px(3.)).child(div().w(px(w - 6.)).h(px(art_h)).rounded(px(8.)).bg(theme::surface())))))
+            .child(div().flex().overflow_hidden().children((0..8).map(|_| div().w(px(w)).flex_none().p(px(pad)).child(div().w(px(w - 2. * pad)).h(px(art_h)).rounded(px(8.)).bg(theme::surface())))))
             .into_any_element()
     }
 
@@ -219,6 +228,7 @@ impl Plaivo {
             (h.title.clone(), h.resume, h.wide, h.scroll.clone())
         };
         let w = card_width(cw, wide, self.settings.card_scale());
+        let pad = self.settings.card_pad();
         let hovered = self.view.hub_hover == Some(i);
         if let Some((from, to, t0)) = self.hubs[i].slide {
             let p = ease_out(progress(Some(t0), SLIDE_ANIM, window));
@@ -238,7 +248,7 @@ impl Plaivo {
                 if (first..last).contains(&j) {
                     self.media_card(("card", j), c, w, wide, cx)
                 } else {
-                    div().w(px(w)).h(px(card_height(w, wide))).flex_none().into_any_element()
+                    div().w(px(w)).h(px(card_height(w, wide, pad))).flex_none().into_any_element()
                 }
             })
             .collect();
@@ -246,7 +256,7 @@ impl Plaivo {
         let base = self.hubs[i].slide.map_or(offset, |(_, to, _)| to);
         let max = f32::from(scroll.max_offset().x);
         let page = (cw - 16.) * 0.8;
-        let arrow_y = if wide { (w - 6.) * 9. / 32. } else { (w - 6.) * 0.75 } - 24. + 3.;
+        let arrow_y = if wide { (w - 2. * pad) * 9. / 32. } else { (w - 2. * pad) * 0.75 } - 24. + pad;
         let left = hovered && offset < -1.;
         let right = hovered && -offset < max - 1.;
         div()
@@ -275,9 +285,8 @@ impl Plaivo {
                     .when(left, |d| {
                         d.child(
                             div().absolute().left(px(8.)).top(px(arrow_y)).child(
-                                round_button(("hub-left", i), Icon::ChevronLeft, 48., 32., theme::black(0.7), theme::black(0.9), rgb(0xFFFFFF)).on_click(cx.listener(move |this, _, _, cx| {
+                                overlay_button(("hub-left", i), Icon::ChevronLeft, 48., 32., theme::black(0.7), theme::black(0.9), rgb(0xFFFFFF)).on_click(cx.listener(move |this, _, _, cx| {
                                     this.hubs[i].slide = Some((offset, (base + page).min(0.), Instant::now()));
-                                    cx.stop_propagation();
                                     cx.notify();
                                 })),
                             ),
@@ -286,9 +295,8 @@ impl Plaivo {
                     .when(right, |d| {
                         d.child(
                             div().absolute().right(px(8.)).top(px(arrow_y)).child(
-                                round_button(("hub-right", i), Icon::ChevronRight, 48., 32., theme::black(0.7), theme::black(0.9), rgb(0xFFFFFF)).on_click(cx.listener(move |this, _, _, cx| {
+                                overlay_button(("hub-right", i), Icon::ChevronRight, 48., 32., theme::black(0.7), theme::black(0.9), rgb(0xFFFFFF)).on_click(cx.listener(move |this, _, _, cx| {
                                     this.hubs[i].slide = Some((offset, (base - page).max(-max), Instant::now()));
-                                    cx.stop_propagation();
                                     cx.notify();
                                 })),
                             ),

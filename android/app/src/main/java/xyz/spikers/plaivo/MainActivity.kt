@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = plaivoColors) {
+            PlaivoTheme {
                 Surface(Modifier.fillMaxSize()) {
                     var signedIn by remember { mutableStateOf(core.hasServers()) }
                     var session by remember { mutableIntStateOf(0) }
@@ -198,6 +198,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
     var focusHome by remember { mutableStateOf(true) }
     val sidebarFocus = remember { FocusRequester() }
     var menu by remember { mutableStateOf<MediaCard?>(null) }
+    var changes by remember { mutableIntStateOf(0) }
     val openMenu = remember { { card: MediaCard -> menu = card } }
     fun reloadServers() {
         if (!core.hasServers()) return onAccountChanged()
@@ -222,15 +223,16 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
     val arranged = remember(libraries, settings.libraryOrder) { core.arrangeLibraries(libraries) }
     val shown = remember(arranged, settings.hiddenLibraries, home) { arranged.filter { it.id !in settings.hiddenLibraries }.sortedBy { it.server != home?.id } }
     val cardScale = remember(settings.density) { cardScale(settings.density) }
+    val appearance = remember(settings) { appearanceOf(settings) }
     BackHandler(enabled = !inSidebar || screen != Screen.Home) {
         if (!inSidebar) runCatching { sidebarFocus.requestFocus() } else screen = Screen.Home
     }
     val inset by animateDpAsState(if (pinned) Dims.sidebar else Dims.sidebarCompact, tween(180, easing = EaseOutQuart), label = "inset")
     Box(Modifier.fillMaxSize().background(Palette.bg)) {
         Box(Modifier.fillMaxSize().padding(start = inset)) {
-            CompositionLocalProvider(LocalCardScale provides cardScale, LocalCardMenu provides openMenu) {
+            CompositionLocalProvider(LocalCardScale provides cardScale, LocalCardMenu provides openMenu, LocalAppearance provides appearance) {
                 when (val s = screen) {
-                    Screen.Home -> HomeScreen(home, serversLoaded, refresh, focusHome, { focusHome = false }, play) { screen = Screen.Downloads }
+                    Screen.Home -> HomeScreen(home, serversLoaded, refresh + changes, focusHome, { focusHome = false }, play) { screen = Screen.Downloads }
                     Screen.Search -> SearchScreen(play)
                     Screen.Downloads -> DownloadsScreen(play)
                     Screen.WatchTogether -> WatchTogetherScreen()
@@ -269,5 +271,5 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
             onFocusChanged = { inSidebar = it },
         )
     }
-    menu?.let { CardMenu(it) { menu = null } }
+    menu?.let { CardMenu(it, onDismiss = { menu = null }, onChanged = { changes++ }) }
 }

@@ -1,8 +1,9 @@
-use crate::app::{Card, Plaivo, SORTS};
-use crate::ui::home::{card_width, content_width};
+use crate::app::{Card, Plaivo, SORTS, Shape};
+use crate::settings::{DENSITY_MAX, ViewMode};
+use crate::ui::home::{card_height, card_width, content_width};
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{chip, icon, shadow};
-use gpui::{AnyElement, Context, FontWeight, SharedString, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list};
+use crate::ui::widgets::{backdrop, chip, floating, icon, shadow};
+use gpui::{AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, ObjectFit, SharedString, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Grid {
@@ -33,11 +34,14 @@ impl Plaivo {
     }
 
     pub fn grid(&mut self, g: Grid, cw: f32, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
+        if g == Grid::Library && self.settings.view_mode == ViewMode::List {
+            return self.list(scroll, cx);
+        }
         let w = card_width(cw, false, self.settings.card_scale());
         let cols = ((cw - 16.) / w).round().max(1.) as usize;
         let count = self.grid_len(g);
         let rows = count.div_ceil(cols);
-        let row_h = (w - 6.) * 1.5 + 46.;
+        let row_h = card_height(w, false, self.settings.card_pad());
         let tag = match g {
             Grid::Library => "lib",
             Grid::Results => "res",
@@ -60,6 +64,72 @@ impl Plaivo {
                             })
                             .collect();
                         div().h(px(row_h)).px(px(8.)).flex().children(cards)
+                    })
+                    .collect()
+            }),
+        )
+        .track_scroll(&scroll)
+        .flex_1()
+        .into_any_element()
+    }
+
+    fn list(&mut self, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
+        let density = self.settings.density.clamp(1, DENSITY_MAX);
+        let f = (density - 1) as f32 / 4.;
+        let poster_w = 70. + 50. * f;
+        let row_h = poster_w * 1.5 + 16.;
+        let summary_lines = [2, 2, 3, 4, 5][density as usize - 1];
+        let count = self.grid_len(Grid::Library);
+        uniform_list(
+            "lib-list",
+            count,
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                this.ensure_library_rows(range.start, range.end.min(count), cx);
+                range
+                    .map(|i| {
+                        let card = this.grid_item(Grid::Library, i);
+                        let image = this.picture(&card.thumb, Shape::Poster);
+                        let check = card.watched && this.settings.watched_indicators;
+                        let (open, server, key) = (card.clone(), card.server.to_string(), card.key.to_string());
+                        div()
+                            .id(SharedString::from(format!("lib-row-{i}")))
+                            .h(px(row_h))
+                            .mx(px(8.))
+                            .p(px(8.))
+                            .rounded(px(8.))
+                            .flex()
+                            .gap(px(12.))
+                            .when(!card.key.is_empty(), |d| {
+                                d.cursor_pointer()
+                                    .hover(|s| s.bg(theme::tint(0.05)))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.open(&open, cx)))
+                                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.open_item_menu(server.clone(), key.clone(), ev.position, cx)))
+                            })
+                            .child(
+                                div()
+                                    .relative()
+                                    .w(px(poster_w))
+                                    .h(px(poster_w * 1.5))
+                                    .flex_none()
+                                    .rounded(px(8.))
+                                    .overflow_hidden()
+                                    .bg(theme::surface())
+                                    .when_some(image, |d, im| d.child(im.size_full().rounded(px(8.)).object_fit(ObjectFit::Cover)))
+                                    .when(check, |d| {
+                                        d.child(div().absolute().top(px(4.)).right(px(4.)).size(px(20.)).rounded_full().bg(theme::text()).flex().items_center().justify_center().child(icon(Icon::Check, 14., theme::bg())))
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(div().text_size(px(13. + 3. * f)).font_weight(FontWeight::SEMIBOLD).line_clamp(2).child(card.title.clone()))
+                                    .child(div().text_size(px(10. + 3. * f)).text_color(theme::muted()).truncate().child(card.meta.clone()))
+                                    .child(div().text_size(px(10. + 3. * f)).line_height(px((10. + 3. * f) * 1.3)).text_color(theme::tint(0.5)).line_clamp(summary_lines).child(card.summary.clone())),
+                            )
                     })
                     .collect()
             }),
@@ -103,8 +173,15 @@ impl Plaivo {
             )
             .child(grid)
             .when(self.sort_open, |d| {
-                d.child(
-                    div()
+                d.child(backdrop(
+                    "sort-backdrop",
+                    cx.listener(|this, _, _, cx| {
+                        this.sort_open = false;
+                        cx.notify();
+                    }),
+                ))
+                .child(
+                    floating("sort-menu")
                         .absolute()
                         .top(px(56.))
                         .right(px(16.))

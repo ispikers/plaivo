@@ -121,7 +121,7 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
         else if (focused?.first == key && key in latestKeys) focused = null
     }
     LazyVerticalGrid(
-        columns = GridCells.FixedSize(Dims.poster * LocalCardScale.current + 14.dp),
+        columns = GridCells.FixedSize(Dims.poster * LocalCardScale.current + LocalAppearance.current.gap),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = Dims.edge - 7.dp, end = Dims.edge - 7.dp, top = 28.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -173,52 +173,7 @@ private fun QueueRow(d: Download, available: Boolean, modifier: Modifier) {
     }
 }
 
-@Composable
-fun CardMenu(card: MediaCard, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    val entries by DownloadQueue.entries.collectAsState()
-    val saved = entries.any { it.server == card.server && it.key == card.key }
-    val scopes = when (card.kind) {
-        "movie" -> listOf("Download movie" to DownloadScope.ITEM)
-        "episode" -> listOf("Download episode" to DownloadScope.ITEM, "Download season" to DownloadScope.SEASON, "Download show" to DownloadScope.SHOW)
-        "season" -> listOf("Download season" to DownloadScope.ITEM, "Download show" to DownloadScope.SHOW)
-        "show" -> listOf("Download show" to DownloadScope.ITEM)
-        else -> emptyList()
-    }
-    val first = remember { FocusRequester() }
-    val shape = RoundedCornerShape(16.dp)
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.width(460.dp).background(Palette.bg, shape).border(1.dp, Palette.outline, shape).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(card.title, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Palette.text, maxLines = 1)
-            if (card.subtitle.isNotEmpty()) Text(card.subtitle, fontSize = 13.sp, color = Palette.muted, maxLines = 1)
-            when {
-                saved -> SettingsRow(Glyph.Close, "Remove download", "Deletes it from this device", Modifier.focusRequester(first), onClick = {
-                    background.launch { core.removeDownload(card.server, card.key) }
-                    onDismiss()
-                })
-                scopes.isEmpty() -> Text("This can't be downloaded", fontSize = 14.sp, color = Palette.muted)
-                else -> scopes.forEachIndexed { i, (label, scope) ->
-                    SettingsRow(Glyph.Download, label, "", if (i == 0) Modifier.focusRequester(first) else Modifier, onClick = {
-                        download(context, card, scope)
-                        onDismiss()
-                    })
-                }
-            }
-            if (scopes.isNotEmpty() && (!Watch.inRoom || Watch.state?.host == true)) {
-                SettingsRow(Glyph.Group, "Watch together", if (Watch.inRoom) "Plays it for everyone in the room" else "Starts a room and plays it there", onClick = {
-                    Watch.share(card)
-                    onDismiss()
-                })
-            }
-        }
-        LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
-    }
-}
-
-private fun download(context: Context, card: MediaCard, scope: DownloadScope) {
+fun download(context: Context, card: MediaCard, scope: DownloadScope) {
     if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
         (context as? Activity)?.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
     }

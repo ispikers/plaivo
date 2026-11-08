@@ -1,5 +1,6 @@
 use crate::jellyfin;
-use crate::plex::{Client, R, Server, encode, err};
+use crate::plex::{Client, Item, R, Server, encode, err};
+use crate::settings::library_key;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -81,6 +82,16 @@ impl SubtitleMode {
     }
 }
 
+pub fn two_letter(code: &str) -> Option<&'static str> {
+    let code = code.to_ascii_lowercase();
+    LANGUAGES.iter().find(|(_, codes)| codes.contains(&code.as_str())).and_then(|(_, codes)| codes.iter().copied().find(|c| c.len() == 2))
+}
+
+pub fn language_label(code: &str) -> Option<&'static str> {
+    let code = code.to_ascii_lowercase();
+    LANGUAGES.iter().find(|(_, codes)| codes.contains(&code.as_str())).map(|(name, _)| *name)
+}
+
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct LanguagePrefs {
     pub audio: String,
@@ -152,6 +163,41 @@ pub fn pick_subtitle(tracks: &[TrackInfo], audio: &str, p: &LanguagePrefs) -> Op
     full.then(|| best(tracks, |t| !t.forced && (p.subtitles.is_empty() || same(&t.language, &p.subtitles))))
         .flatten()
         .or_else(|| best(tracks, |t| t.forced && (canonical(&t.language).is_empty() || same(&t.language, audio))))
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+#[serde(default)]
+pub struct LanguageRule {
+    pub libraries: Vec<String>,
+    pub audio: Vec<String>,
+    pub subtitles: Vec<String>,
+    pub subtitle_mode: SubtitleMode,
+}
+
+impl LanguageRule {
+    pub fn matches(&self, library: &str) -> bool {
+        self.libraries.iter().any(|l| l == library)
+    }
+
+    pub fn resolve(&self, audio: &[TrackInfo], subtitles: &[TrackInfo]) -> LanguagePrefs {
+        let first_present = |order: &[String], tracks: &[TrackInfo]| order.iter().find(|l| tracks.iter().any(|t| same(&t.language, l))).or(order.first()).cloned().unwrap_or_default();
+        LanguagePrefs { audio: first_present(&self.audio, audio), subtitles: first_present(&self.subtitles, subtitles), mode: self.subtitle_mode }
+    }
+}
+
+pub fn rule_for<'a>(rules: &'a [LanguageRule], library: &str) -> Option<&'a LanguageRule> {
+    rules.iter().find(|r| r.matches(library))
+}
+
+pub fn language_rule(server: &str, it: &Item, rules: &[LanguageRule]) -> Option<LanguageRule> {
+    rule_for(rules, &library_key(server, &it.library_section_id)).cloned()
+}
+
+pub fn pick_with(audio: &[TrackInfo], subtitles: &[TrackInfo], p: &LanguagePrefs, rule: Option<&LanguageRule>) -> (Option<usize>, Option<usize>) {
+    match rule {
+        Some(r) => pick(audio, subtitles, &r.resolve(audio, subtitles)),
+        None => pick(audio, subtitles, p),
+    }
 }
 
 pub fn pick(audio: &[TrackInfo], subtitles: &[TrackInfo], p: &LanguagePrefs) -> (Option<usize>, Option<usize>) {
@@ -303,6 +349,26 @@ pub fn save(c: &Client, plex_token: Option<&str>, jellyfin: &[Server], p: &Langu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_rules_match_and_resolve() {
+        let rule = LanguageRule { libraries: vec!["s/2".into(), "s/3".into()], audio: vec!["jpn".into(), "eng".into()], subtitles: vec!["eng".into()], subtitle_mode: SubtitleMode::Always };
+        let rules = [LanguageRule { libraries: vec!["s/9".into()], ..Default::default() }, rule.clone()];
+        assert_eq!(rule_for(&rules, "s/3"), Some(&rule));
+        assert_eq!(rule_for(&rules, "s/1"), None);
+        let ep = Item { kind: "episode".into(), library_section_id: "2".into(), ..Default::default() };
+        assert_eq!(language_rule("s", &ep, &rules), Some(rule.clone()));
+        let t = |l: &str| TrackInfo { language: l.into(), ..Default::default() };
+        assert_eq!(rule.resolve(&[t("en"), t("ja")], &[t("en")]), LanguagePrefs { audio: "jpn".into(), subtitles: "eng".into(), mode: SubtitleMode::Always });
+        assert_eq!(rule.resolve(&[t("en")], &[]).audio, "eng", "falls back to the next language the file has");
+        assert_eq!(pick_with(&[t("en"), t("ja")], &[t("fr"), t("en")], &LanguagePrefs::default(), Some(&rule)), (Some(1), Some(1)));
+    }
+
+    #[test]
+    fn languages_map_to_two_letter_codes() {
+        assert_eq!((two_letter("eng"), two_letter("FRA"), two_letter("ja"), two_letter("xx")), (Some("en"), Some("fr"), Some("ja"), None));
+        assert_eq!((language_label("ger"), language_label("")), (Some("German"), None));
+    }
 
     fn t(language: &str, forced: bool, is_default: bool) -> TrackInfo {
         TrackInfo { language: language.into(), forced, is_default }

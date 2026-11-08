@@ -79,7 +79,11 @@ fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFo
         if (rows.isEmpty()) io { runCatching { core.home(id, true) } }.onSuccess { if (it.isNotEmpty()) rows = it }
         io { runCatching { core.home(id, false) } }
             .onSuccess { rows = it; error = null }
-            .onFailure { if (rows.isEmpty()) error = it.message }
+            .onFailure {
+                val offline = core.serverOffline(id)
+                if (offline) rows = emptyList()
+                if (rows.isEmpty()) error = if (offline) "Can't reach ${server.name} right now." else it.message
+            }
     }
     when {
         server == null -> Message(if (serversLoaded) "No reachable server" else "Loading…", openDownloads.takeIf { serversLoaded })
@@ -177,7 +181,7 @@ private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> 
                         LazyRow(
                             modifier = Modifier.fillMaxWidth().focusRestorer(),
                             contentPadding = PaddingValues(horizontal = Dims.edge, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            horizontalArrangement = Arrangement.spacedBy(LocalAppearance.current.gap),
                         ) {
                             itemsIndexed(row.cards, key = { _, c -> "${c.server}/${c.key}" }) { i, card ->
                                 MediaTile(

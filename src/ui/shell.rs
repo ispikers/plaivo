@@ -25,9 +25,14 @@ pub fn progress(start: Option<Instant>, dur: Duration, window: &mut Window) -> f
 
 impl Render for Plaivo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        theme::apply(self.settings.theme, window.appearance());
         self.scale = window.scale_factor();
         self.viewport_w = (f32::from(window.viewport_size().width) * self.scale) as u32;
         self.lru.start_frame();
+        self.arrivals.retain(|_, t| t.elapsed() < crate::app::IMAGE_FADE);
+        if !self.arrivals.is_empty() {
+            window.request_animation_frame();
+        }
         let standalone = self.add_server_standalone();
         let chrome = !matches!(self.page, Page::Splash | Page::Auth | Page::Player) && !standalone;
         let mini = chrome && self.player.mini && self.playing();
@@ -38,6 +43,7 @@ impl Render for Plaivo {
             Page::AddServer if standalone => self.render_add_server(window, cx),
             _ => self.render_chrome(mini, window, cx),
         };
+        let overlays = if self.page == Page::Player { Vec::new() } else { self.render_overlays(window, cx) };
         let background: Option<Hsla> = match self.page {
             Page::Player if self.player.video_ready => None,
             Page::Player | Page::Splash => Some(rgb(0x000000).into()),
@@ -55,12 +61,17 @@ impl Render for Plaivo {
             .on_key_down(cx.listener(Self::on_key))
             .when_some(background, |d, bg| d.bg(bg))
             .child(content)
+            .children(overlays)
             .when_some(self.toast.clone(), |d, msg| d.child(self.render_toast(msg, if mini { theme::MINI_BAR } else { 0. })))
     }
 }
 
 impl Plaivo {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if ev.keystroke.key == "escape" && self.close_overlays() {
+            cx.stop_propagation();
+            return cx.notify();
+        }
         if self.page != Page::Player {
             let sub_page = match self.page {
                 Page::Detail | Page::Licenses => true,
@@ -126,12 +137,12 @@ impl Plaivo {
             Page::Watch => self.render_watch(window, cx),
             _ => div().into_any_element(),
         };
-        let sidebar = self.render_sidebar(window, cx);
+        let sidebar = (self.page != Page::Detail).then(|| self.render_sidebar(window, cx));
         div()
             .size_full()
             .flex()
             .flex_col()
-            .child(div().flex_1().min_h_0().flex().bg(theme::bg()).child(sidebar).child(div().flex_1().min_w_0().h_full().relative().child(page)))
+            .child(div().flex_1().min_h_0().flex().bg(theme::bg()).children(sidebar).child(div().flex_1().min_w_0().h_full().relative().child(page)))
             .when(mini, |d| d.child(self.render_mini(cx)))
             .into_any_element()
     }
