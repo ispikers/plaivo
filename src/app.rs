@@ -1,0 +1,1295 @@
+use crate::images::{self, Lru};
+use crate::player::Player;
+use crate::plex::{self, Client, Ctx, DISCOVER_ID, Item, R, Server, Source};
+use crate::settings::Settings;
+use crate::store;
+use crate::ui::input::{InputEvent, TextInput};
+use futures::StreamExt;
+use gpui::{AppContext, Bounds, Context, Entity, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString, Task, UniformListScrollHandle, Window};
+pub use plaivo_core::{Account, first, join};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+pub const PAGE: usize = 120;
+const IMAGE_BUDGET: usize = 192 << 20;
+const PLAYER_IMAGE_BUDGET: usize = 48 << 20;
+const LIBRARY_CACHE: usize = 4;
+const SUGGESTIONS: usize = 40;
+const SPLASH_TIMEOUT: Duration = Duration::from_secs(10);
+const FIRST_ROW_IMAGES: usize = 6;
+const TOAST_FOR: Duration = Duration::from_secs(5);
+pub const SORTS: &[(&str, &str)] = &[
+    ("titleSort", "Title"),
+    ("addedAt:desc", "Recently added"),
+    ("originallyAvailableAt:desc", "Release date"),
+    ("audienceRating:desc", "Rating"),
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Page {
+    Splash,
+    Auth,
+    Servers,
+    Home,
+    Library,
+    Search,
+    Detail,
+    Settings,
+    Player,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum Nav {
+    Home,
+    Servers,
+    Library(String, String),
+    Search,
+    Detail(String, String, Option<String>),
+    Settings,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Shape {
+    Poster,
+    Wide,
+    Backdrop,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Thumb {
+    pub server: String,
+    pub path: String,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct Card {
+    pub key: SharedString,
+    pub kind: SharedString,
+    pub title: SharedString,
+    pub subtitle: SharedString,
+    pub summary: SharedString,
+    pub meta: SharedString,
+    pub progress: f32,
+    pub watched: bool,
+    pub unwatched: u64,
+    pub parent: SharedString,
+    pub server: SharedString,
+    pub resume: bool,
+    pub thumb: Option<Thumb>,
+}
+
+#[derive(Clone, Default)]
+pub struct Choice {
+    pub id: SharedString,
+    pub label: SharedString,
+    pub sub: SharedString,
+    pub selected: bool,
+}
+
+pub struct Hub {
+    pub title: SharedString,
+    pub resume: bool,
+    pub wide: bool,
+    pub items: Vec<Card>,
+    pub scroll: ScrollHandle,
+    pub slide: Option<(f32, f32, Instant)>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct LibKey {
+    pub server: String,
+    pub section: String,
+    pub sort: String,
+}
+
+pub struct Library {
+    pub key: LibKey,
+    pub title: SharedString,
+    pub items: Vec<Option<Card>>,
+    pages: HashSet<usize>,
+    pub scroll: UniformListScrollHandle,
+}
+
+#[derive(Default)]
+pub struct DetailView {
+    pub server: SharedString,
+    pub eyebrow: SharedString,
+    pub title: SharedString,
+    pub chips: Vec<SharedString>,
+    pub genres: Vec<SharedString>,
+    pub summary: SharedString,
+    pub play_label: SharedString,
+    pub play_key: SharedString,
+    pub progress: f32,
+    pub art: Option<Thumb>,
+    pub is_show: bool,
+}
+
+pub struct SectionInfo {
+    pub server: String,
+    pub key: String,
+    pub title: String,
+    pub kind: String,
+}
+
+#[derive(Default)]
+pub struct Splash {
+    pub servers: Vec<(String, String, Status)>,
+    home_ok: bool,
+    probes_done: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Status {
+    Pending,
+    Ok,
+    Error,
+}
+
+#[derive(Default)]
+pub struct ViewState {
+    pub sidebar_anim: Option<Instant>,
+    pub hero_prev: Option<(usize, Instant)>,
+    pub hero_drag: Option<f32>,
+    pub hero_acc: f32,
+    pub hero_cooldown: Option<Instant>,
+    pub timeline: Bounds<Pixels>,
+    pub timeline_hover: Option<f32>,
+    pub volume: Bounds<Pixels>,
+    pub volume_drag: bool,
+    pub hub_hover: Option<usize>,
+    pub cursor_hidden: bool,
+}
+
+pub struct Plaivo {
+    pub focus: FocusHandle,
+    pub view: ViewState,
+    pub window: RawWindowHandle,
+    pub scale: f32,
+    pub viewport_w: u32,
+    pub account: Account,
+    pub settings: Settings,
+    pub client: Client,
+    pub servers: Vec<Server>,
+    pub sections: Vec<SectionInfo>,
+    pub page: Page,
+    pub nav: Vec<Nav>,
+    pub toast: Option<SharedString>,
+    toast_task: Option<Task<()>>,
+    pub auth_waiting: bool,
+    pub auth_error: Option<SharedString>,
+    pin_gen: Arc<AtomicU64>,
+    pub splash: Option<Splash>,
+    probe: Option<(Vec<Server>, usize)>,
+    pub servers_loading: bool,
+    pub servers_error: Option<SharedString>,
+    pub hero: Vec<Card>,
+    pub hero_index: usize,
+    hero_task: Option<Task<()>>,
+    pub hubs: Vec<Hub>,
+    pub home_error: Option<SharedString>,
+    pub home_ready: bool,
+    pub suggestions: Vec<Card>,
+    pub library: Option<Library>,
+    library_cache: Vec<Library>,
+    pub sort_open: bool,
+    pub search: Entity<TextInput>,
+    pub results: Vec<Card>,
+    pub searching: bool,
+    search_gen: u64,
+    search_task: Option<Task<()>>,
+    pub grid_scroll: UniformListScrollHandle,
+    pub detail: Option<DetailView>,
+    detail_id: (String, String),
+    pub seasons: Vec<Choice>,
+    season_items: Vec<Item>,
+    season: Option<String>,
+    pub episodes: Vec<Card>,
+    pub detail_scroll: ScrollHandle,
+    pub home_scroll: ScrollHandle,
+    queue: Arc<images::Queue>,
+    lru: Lru,
+    requested: HashSet<String>,
+    failed: HashSet<String>,
+    pub player: Player,
+    pub mpv_build: Option<Result<crate::mpv::Build, String>>,
+    pub mpv_build_task: Option<Task<()>>,
+}
+
+pub fn open_url(url: &str) {
+    #[cfg(windows)]
+    let r = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(url).spawn();
+    if let Err(e) = r {
+        log::error!("could not open browser: {e}");
+    }
+}
+
+fn thumb(server: &str, path: &str) -> Option<Thumb> {
+    (!path.is_empty()).then(|| Thumb { server: server.to_owned(), path: path.to_owned() })
+}
+
+pub fn card_for(it: &Item, wide: bool, server: &str) -> Card {
+    let (title, subtitle) = it.card_text();
+    let art = it.card_art(wide);
+    Card {
+        key: it.rating_key.clone().into(),
+        kind: it.kind.clone().into(),
+        title: title.into(),
+        subtitle: subtitle.into(),
+        progress: it.progress(),
+        watched: it.watched(),
+        unwatched: it.unwatched(),
+        parent: if it.kind == "season" { &it.parent_rating_key } else { &it.grandparent_rating_key }.clone().into(),
+        server: server.to_owned().into(),
+        thumb: thumb(server, art),
+        ..Default::default()
+    }
+}
+
+fn hero_card(it: &Item, server: &str) -> Card {
+    let mut card = card_for(it, true, server);
+    let kind = match it.kind.as_str() {
+        "movie" => "Movie",
+        "show" => "TV Show",
+        _ => "",
+    };
+    card.title = first(&[&it.grandparent_title, &it.title]).to_owned().into();
+    card.meta = join(&[
+        kind.into(),
+        it.audience_rating.map(|r| format!("★ {r:.1}")).unwrap_or_default(),
+        it.content_rating.clone(),
+        it.year.map(|y| y.to_string()).unwrap_or_default(),
+    ])
+    .into();
+    card.summary = it.summary.clone().into();
+    card.thumb = thumb(server, first(&[&it.art, &it.grandparent_art]));
+    card
+}
+
+
+fn title_rank(title: &str, q: &str) -> u8 {
+    let (t, q) = (title.to_lowercase(), q.to_lowercase());
+    if t == q {
+        0
+    } else if t.starts_with(&q) {
+        1
+    } else if t.split(|c: char| !c.is_alphanumeric()).any(|w| !w.is_empty() && w.starts_with(&q)) {
+        2
+    } else if t.contains(&q) {
+        3
+    } else {
+        4
+    }
+}
+
+// Library hits (episodes folded into their show) ranked by title match then server score; Discover hits the
+// account already owns are dropped, the rest follow in Discover's own order.
+fn rank_search(q: &str, home: &str, local: Vec<(String, Vec<(Item, f64)>)>, discover: Vec<Item>) -> Vec<(String, Item)> {
+    let mut seen = HashSet::new();
+    let mut owned_guids = HashSet::new();
+    let mut lib: Vec<(u8, bool, f64, String, Item)> = Vec::new();
+    for (server, hits) in local {
+        for (it, score) in hits {
+            let it = it.as_show();
+            if !matches!(it.kind.as_str(), "movie" | "show") || !seen.insert((server.clone(), it.rating_key.clone())) {
+                continue;
+            }
+            if !it.guid.is_empty() && !owned_guids.insert(it.guid.clone()) {
+                continue;
+            }
+            lib.push((title_rank(&it.title, q), server != home, -score, server.clone(), it));
+        }
+    }
+    lib.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
+    let owned_titles: HashSet<(String, Option<i64>)> = lib.iter().map(|e| (e.4.title.to_lowercase(), e.4.year)).collect();
+    let mut out: Vec<(String, Item)> = lib.into_iter().map(|e| (e.3, e.4)).collect();
+    out.extend(
+        discover
+            .into_iter()
+            .filter(|it| matches!(it.kind.as_str(), "movie" | "show"))
+            .filter(|it| !owned_guids.contains(&it.guid) && !owned_titles.contains(&(it.title.to_lowercase(), it.year)))
+            .map(|it| (DISCOVER_ID.to_owned(), it)),
+    );
+    out
+}
+
+pub fn shape_size(shape: Shape, scale: f32, width: u32) -> (u32, u32) {
+    let round = |w: f32| ((w * scale / 50.0).ceil() * 50.0) as u32;
+    match shape {
+        Shape::Poster => {
+            let w = round(210.0);
+            (w, w * 3 / 2)
+        }
+        Shape::Wide => {
+            let w = round(380.0);
+            (w, w * 9 / 16)
+        }
+        Shape::Backdrop => {
+            let w = width.clamp(1280, 3840) / 320 * 320;
+            (w, w * 9 / 16)
+        }
+    }
+}
+
+fn image_key(t: &Thumb, (w, h): (u32, u32)) -> String {
+    format!("{}{}@{w}x{h}", t.server, t.path)
+}
+
+type ImageRx = futures::channel::mpsc::UnboundedReceiver<(String, Option<Arc<RenderImage>>)>;
+
+impl Plaivo {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, account: Account, client: Client, queue: Arc<images::Queue>, images_rx: ImageRx) -> Self {
+        let raw = window.window_handle().expect("window handle").as_raw();
+        let search = cx.new(|cx| TextInput::new("Search movies and shows", cx));
+        cx.subscribe(&search, |this: &mut Self, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Changed(q) => this.search_debounced(q.to_string(), cx),
+            InputEvent::Submit(q) => this.search(q.to_string(), cx),
+        })
+        .detach();
+        cx.spawn(async move |this, cx| {
+            let mut rx = images_rx;
+            while let Some((key, img)) = rx.next().await {
+                if this.update(cx, |this, cx| this.on_image(key, img, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let mut s = Self {
+            focus: cx.focus_handle(),
+            view: ViewState::default(),
+            window: raw,
+            scale: window.scale_factor(),
+            viewport_w: (f32::from(window.viewport_size().width) * window.scale_factor()) as u32,
+            account,
+            settings: Settings::load(),
+            client,
+            servers: Vec::new(),
+            sections: Vec::new(),
+            page: Page::Auth,
+            nav: Vec::new(),
+            toast: None,
+            toast_task: None,
+            auth_waiting: false,
+            auth_error: None,
+            pin_gen: Arc::new(AtomicU64::new(0)),
+            splash: None,
+            probe: None,
+            servers_loading: false,
+            servers_error: None,
+            hero: Vec::new(),
+            hero_index: 0,
+            hero_task: None,
+            hubs: Vec::new(),
+            home_error: None,
+            home_ready: false,
+            suggestions: Vec::new(),
+            library: None,
+            library_cache: Vec::new(),
+            sort_open: false,
+            search,
+            results: Vec::new(),
+            searching: false,
+            search_gen: 0,
+            search_task: None,
+            grid_scroll: UniformListScrollHandle::new(),
+            detail: None,
+            detail_id: Default::default(),
+            seasons: Vec::new(),
+            season_items: Vec::new(),
+            season: None,
+            episodes: Vec::new(),
+            detail_scroll: ScrollHandle::new(),
+            home_scroll: ScrollHandle::new(),
+            queue,
+            lru: Lru::new(IMAGE_BUDGET),
+            requested: HashSet::new(),
+            failed: HashSet::new(),
+            player: Player::default(),
+            mpv_build: None,
+            mpv_build_task: None,
+        };
+        // Quit before Windows destroys the HWND; tearing down GPUI's composition target afterwards logs spurious errors.
+        window.on_window_should_close(cx, |_, cx| {
+            log::info!("window closed, shutting down");
+            cx.quit();
+            false
+        });
+        cx.on_app_quit(|this, _| {
+            this.report_stopped_blocking();
+            async {}
+        })
+        .detach();
+        window.focus(&s.focus, cx);
+        if s.account.token.is_some() {
+            s.begin_splash(cx);
+            if !s.account.servers.is_empty() {
+                s.set_servers(s.account.servers.clone(), cx);
+            }
+            s.discover(cx);
+        }
+        s
+    }
+
+    pub fn bg<T: Send + 'static>(cx: &mut Context<Self>, job: impl FnOnce() -> T + Send + 'static, done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static) {
+        let task = cx.background_executor().spawn(async move { job() });
+        cx.spawn(async move |this, cx| {
+            let v = task.await;
+            this.update(cx, |this, cx| {
+                done(this, v, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    // Stale-while-revalidate: apply the disk-cached response at once, then the network one only if it differs.
+    fn load<T: Send + 'static>(&self, cx: &mut Context<Self>, job: impl Fn(&Ctx) -> R<T> + Send + 'static, done: impl Fn(&mut Self, R<T>, &mut Context<Self>) + 'static) {
+        let client = self.client.clone();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        cx.background_executor()
+            .spawn(async move {
+                let cached = job(&Ctx::new(client.clone(), Source::Cache)).ok();
+                let had_cache = cached.is_some();
+                if let Some(v) = cached {
+                    let _ = tx.unbounded_send(Ok(v));
+                }
+                let net = Ctx::new(client, Source::Network);
+                let fresh = job(&net);
+                if !(had_cache && (fresh.is_err() || !net.changed())) {
+                    let _ = tx.unbounded_send(fresh);
+                }
+            })
+            .detach();
+        cx.spawn(async move |this, cx| {
+            while let Some(r) = rx.next().await {
+                let applied = this.update(cx, |this, cx| {
+                    done(this, r, cx);
+                    cx.notify();
+                });
+                if applied.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub fn toast(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let msg = msg.into();
+        log::warn!("toast: {msg}");
+        self.toast = Some(msg);
+        self.toast_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TOAST_FOR).await;
+            this.update(cx, |this, cx| {
+                this.toast = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    pub fn server(&self, id: &str) -> Option<Server> {
+        if id == DISCOVER_ID {
+            return self.account.token.as_deref().map(|t| self.client.discover(t));
+        }
+        self.servers.iter().find(|s| s.id == id).cloned()
+    }
+
+    pub fn home_server(&self) -> Option<Server> {
+        self.server(&self.settings.home_server).or_else(|| self.servers.first().cloned())
+    }
+
+    pub fn size_for(&self, shape: Shape) -> (u32, u32) {
+        shape_size(shape, self.scale, self.viewport_w)
+    }
+
+    fn image_url(&self, server: &str, path: &str, (w, h): (u32, u32)) -> Option<String> {
+        if path.starts_with("http") {
+            return Some(match self.home_server() {
+                Some(home) => home.image_url(path, w, h),
+                None => path.replace("/t/p/original/", "/t/p/w780/"),
+            });
+        }
+        self.server(server).map(|s| s.image_url(path, w, h))
+    }
+
+    pub fn image(&mut self, thumb: &Option<Thumb>, shape: Shape) -> Option<Arc<RenderImage>> {
+        let t = thumb.as_ref()?;
+        let size = self.size_for(shape);
+        let key = image_key(t, size);
+        if let Some(img) = self.lru.get(&key) {
+            return Some(img);
+        }
+        if self.requested.contains(&key) || self.failed.contains(&key) {
+            return None;
+        }
+        let url = self.image_url(&t.server, &t.path, size)?;
+        self.requested.insert(key.clone());
+        if let Some(dropped) = self.queue.push(images::Job { key, url }) {
+            self.requested.remove(&dropped.key);
+        }
+        None
+    }
+
+    pub fn trim_images(&mut self, full_player: bool, cx: &mut Context<Self>) {
+        for img in self.lru.set_budget(if full_player { PLAYER_IMAGE_BUDGET } else { IMAGE_BUDGET }) {
+            cx.drop_image(img, None);
+        }
+    }
+
+    fn on_image(&mut self, key: String, img: Option<Arc<RenderImage>>, cx: &mut Context<Self>) {
+        self.requested.remove(&key);
+        match img {
+            Some(img) => {
+                for old in self.lru.insert(key, img) {
+                    cx.drop_image(old, None);
+                }
+            }
+            None => {
+                self.failed.insert(key);
+            }
+        }
+        self.check_splash(cx);
+        cx.notify();
+    }
+
+    fn image_settled(&self, thumb: &Option<Thumb>, shape: Shape) -> bool {
+        thumb.as_ref().is_none_or(|t| {
+            let key = image_key(t, self.size_for(shape));
+            self.lru.contains(&key) || self.failed.contains(&key)
+        })
+    }
+
+    fn begin_splash(&mut self, cx: &mut Context<Self>) {
+        self.splash = Some(Splash::default());
+        self.nav = vec![Nav::Home];
+        self.page = Page::Splash;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SPLASH_TIMEOUT).await;
+            this.update(cx, |this, cx| this.finish_splash(cx)).ok();
+        })
+        .detach();
+    }
+
+    fn check_splash(&mut self, cx: &mut Context<Self>) {
+        let Some(sp) = &self.splash else { return };
+        if !(sp.home_ok || sp.probes_done) || !self.home_ready {
+            return;
+        }
+        let hero_ready = self.hero.first().is_none_or(|c| self.image_settled(&c.thumb, Shape::Backdrop));
+        let row_ready = self.hubs.first().is_none_or(|h| {
+            let shape = if h.wide { Shape::Wide } else { Shape::Poster };
+            h.items.iter().take(FIRST_ROW_IMAGES).all(|c| self.image_settled(&c.thumb, shape))
+        });
+        if hero_ready && row_ready {
+            self.finish_splash(cx);
+        }
+    }
+
+    fn finish_splash(&mut self, cx: &mut Context<Self>) {
+        if self.splash.take().is_none() {
+            return;
+        }
+        log::info!("startup complete, home ready: {}", self.home_ready);
+        if self.page == Page::Player {
+            return;
+        }
+        if self.servers.is_empty() {
+            self.nav = vec![Nav::Servers];
+            self.navigate(Nav::Servers, false, cx);
+        } else {
+            self.navigate(Nav::Home, false, cx);
+        }
+    }
+
+    pub fn sign_in(&mut self, cx: &mut Context<Self>) {
+        let gen_ = self.pin_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        self.auth_waiting = true;
+        self.auth_error = None;
+        let (c, pin_gen) = (self.client.clone(), self.pin_gen.clone());
+        Self::bg(
+            cx,
+            move || -> R<Option<String>> {
+                let pin = c.create_pin(true)?;
+                log::info!("sign-in: PIN {} created, waiting for browser approval", pin.id);
+                open_url(&c.auth_url(&pin.code));
+                let deadline = Instant::now() + Duration::from_secs(600);
+                while pin_gen.load(Ordering::SeqCst) == gen_ && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_secs(1));
+                    if let Some(t) = c.check_pin(pin.id)? {
+                        return Ok(Some(t));
+                    }
+                }
+                Ok(None)
+            },
+            move |this, r, cx| {
+                if this.pin_gen.load(Ordering::SeqCst) != gen_ {
+                    return;
+                }
+                this.auth_waiting = false;
+                match r {
+                    Ok(Some(token)) => {
+                        log::info!("sign-in: approved");
+                        this.account.token = Some(token);
+                        this.account.save();
+                        this.begin_splash(cx);
+                        this.discover(cx);
+                    }
+                    Ok(None) => {}
+                    Err(e) => this.auth_error = Some(format!("Sign-in failed: {e}").into()),
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
+        self.pin_gen.fetch_add(1, Ordering::SeqCst);
+        self.auth_waiting = false;
+        cx.notify();
+    }
+
+    pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        log::info!("signing out and clearing caches");
+        self.stop_playback(cx);
+        self.account.token = None;
+        self.account.servers.clear();
+        self.account.save();
+        self.settings.home_server.clear();
+        self.settings.recent_searches.clear();
+        self.settings.save();
+        self.servers.clear();
+        self.sections.clear();
+        self.nav.clear();
+        self.hero.clear();
+        self.hubs.clear();
+        self.suggestions.clear();
+        self.results.clear();
+        self.library = None;
+        self.library_cache.clear();
+        self.detail = None;
+        self.home_ready = false;
+        for img in self.lru.drain() {
+            cx.drop_image(img, None);
+        }
+        std::thread::spawn(store::clear_cache);
+        self.page = Page::Auth;
+        cx.notify();
+    }
+
+    fn discover(&mut self, cx: &mut Context<Self>) {
+        let Some(token) = self.account.token.clone() else { return };
+        self.servers_loading = true;
+        let c = self.client.clone();
+        Self::bg(cx, move || c.servers(&token).map(|r| (r, token)), |this, r, cx| match r {
+            Ok((resources, token)) => this.probe_servers(resources, token, cx),
+            Err(e) => this.discovery_done(Vec::new(), Some(e), cx),
+        });
+    }
+
+    fn probe_servers(&mut self, resources: Vec<plex::Resource>, token: String, cx: &mut Context<Self>) {
+        log::info!("discovery: {} server(s) on account: {}", resources.len(), resources.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "));
+        if resources.is_empty() {
+            return self.discovery_done(Vec::new(), Some("No Plex Media Servers found on this account.".into()), cx);
+        }
+        let total = resources.len();
+        if let Some(sp) = &mut self.splash {
+            sp.servers = resources.iter().map(|r| (r.client_identifier.clone(), r.name.clone(), Status::Pending)).collect();
+        }
+        self.probe = Some((Vec::new(), total));
+        for res in resources {
+            let (c, t) = (self.client.clone(), token.clone());
+            let id = res.client_identifier.clone();
+            Self::bg(cx, move || c.connect(&res, &t), move |this, r, cx| {
+                match &r {
+                    Ok(srv) => log::info!("discovery: {} reachable at {}", srv.name, srv.uri),
+                    Err(e) => log::warn!("discovery: {e}"),
+                }
+                let ok = r.is_ok();
+                let is_home = this.home_server().is_some_and(|h| h.id == id);
+                if let Some(sp) = &mut this.splash {
+                    if let Some(row) = sp.servers.iter_mut().find(|x| x.0 == id) {
+                        row.2 = if ok { Status::Ok } else { Status::Error };
+                    }
+                    if ok && is_home {
+                        sp.home_ok = true;
+                    }
+                }
+                let Some(probe) = &mut this.probe else { return };
+                if let Ok(server) = r {
+                    probe.0.push(server);
+                }
+                probe.1 -= 1;
+                if probe.1 == 0 {
+                    let mut list = this.probe.take().unwrap().0;
+                    list.sort_by_key(|x| !x.owned);
+                    this.discovery_done(list, None, cx);
+                } else {
+                    this.check_splash(cx);
+                }
+            });
+        }
+    }
+
+    fn discovery_done(&mut self, list: Vec<Server>, error: Option<String>, cx: &mut Context<Self>) {
+        self.servers_loading = false;
+        if let Some(sp) = &mut self.splash {
+            sp.probes_done = true;
+        }
+        if list.is_empty() {
+            let e = error.unwrap_or_else(|| "None of your Plex servers are reachable.".into());
+            if self.servers.is_empty() {
+                self.servers_error = Some(e.into());
+                self.finish_splash(cx);
+            } else {
+                log::warn!("server discovery failed, keeping cached connections: {e}");
+                self.check_splash(cx);
+            }
+            return;
+        }
+        self.servers_error = None;
+        if list != self.servers {
+            self.account.servers = list.clone();
+            self.account.save();
+            self.set_servers(list, cx);
+        }
+        self.check_splash(cx);
+    }
+
+    fn set_servers(&mut self, list: Vec<Server>, cx: &mut Context<Self>) {
+        let previous_home = self.home_server();
+        self.servers = list;
+        if self.server(&self.settings.home_server).is_none()
+            && let Some(first) = self.servers.first()
+        {
+            self.settings.home_server = first.id.clone();
+            self.settings.save();
+        }
+        self.sections.retain(|sec| self.servers.iter().any(|s| s.id == sec.server));
+        self.load_sections(cx);
+        if previous_home != self.home_server() || !self.home_ready {
+            self.load_home(cx);
+        }
+    }
+
+    pub fn pick_home_server(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.server(id).is_none() {
+            return;
+        }
+        self.settings.home_server = id.to_owned();
+        self.settings.save();
+        self.home_ready = false;
+        self.load_home(cx);
+        if self.page == Page::Servers {
+            self.nav = vec![Nav::Home];
+            self.navigate(Nav::Home, false, cx);
+        }
+        cx.notify();
+    }
+
+    fn load_sections(&mut self, cx: &mut Context<Self>) {
+        for srv in self.servers.clone() {
+            let id = srv.id.clone();
+            self.load(cx, move |c| srv.sections(c), move |this, r, _| match r {
+                Ok(dirs) => {
+                    this.sections.retain(|x| x.server != id);
+                    this.sections.extend(dirs.into_iter().map(|d| SectionInfo { server: id.clone(), key: d.key, title: d.title, kind: d.kind }));
+                }
+                Err(e) => log::warn!("sections for {id}: {e}"),
+            });
+        }
+    }
+
+    pub fn sections_in_order(&self) -> Vec<(SharedString, Vec<(String, String, SharedString, bool)>)> {
+        let home = self.home_server().map(|s| s.id).unwrap_or_default();
+        let mut order: Vec<&Server> = self.servers.iter().collect();
+        order.sort_by_key(|s| s.id != home);
+        order
+            .into_iter()
+            .map(|srv| {
+                let rows = self.sections.iter().filter(|x| x.server == srv.id).map(|x| (x.server.clone(), x.key.clone(), SharedString::from(x.title.clone()), x.kind == "movie")).collect::<Vec<_>>();
+                (SharedString::from(srv.name.clone()), rows)
+            })
+            .filter(|(_, rows)| !rows.is_empty())
+            .collect()
+    }
+
+    pub fn navigate(&mut self, nav: Nav, push: bool, cx: &mut Context<Self>) {
+        log::debug!("navigate {nav:?}");
+        if push && self.nav.last() != Some(&nav) {
+            self.nav.push(nav.clone());
+        }
+        self.sort_open = false;
+        match nav {
+            Nav::Home => self.page = Page::Home,
+            Nav::Servers => self.page = Page::Servers,
+            Nav::Search => self.page = Page::Search,
+            Nav::Settings => {
+                self.page = Page::Settings;
+                self.load_mpv_build(cx);
+            }
+            Nav::Library(server, section) => {
+                self.page = Page::Library;
+                let sort = self.library.as_ref().filter(|l| l.key.server == server && l.key.section == section).map(|l| l.key.sort.clone());
+                self.show_library(LibKey { server, section, sort: sort.unwrap_or_else(|| SORTS[0].0.to_owned()) }, cx);
+            }
+            Nav::Detail(server, key, season) => {
+                self.page = Page::Detail;
+                self.load_detail(server, key, season, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn back(&mut self, cx: &mut Context<Self>) {
+        if self.nav.len() > 1 {
+            self.nav.pop();
+        }
+        if let Some(nav) = self.nav.last().cloned() {
+            self.navigate(nav, false, cx);
+        }
+    }
+
+    pub fn open(&mut self, card: &Card, cx: &mut Context<Self>) {
+        if card.key.is_empty() {
+            return;
+        }
+        if card.resume {
+            return self.play(card.server.to_string(), card.key.to_string(), cx);
+        }
+        let q = self.search.read(cx).text().trim().to_owned();
+        if self.page == Page::Search && !q.is_empty() {
+            self.settings.remember_search(&q);
+            self.settings.save();
+        }
+        let nav = match card.kind.as_ref() {
+            "season" if !card.parent.is_empty() => Nav::Detail(card.server.to_string(), card.parent.to_string(), Some(card.key.to_string())),
+            _ => Nav::Detail(card.server.to_string(), card.key.to_string(), None),
+        };
+        self.navigate(nav, true, cx);
+    }
+
+    pub fn load_home(&mut self, cx: &mut Context<Self>) {
+        let Some(srv) = self.home_server() else { return };
+        self.home_error = None;
+        if !self.home_ready {
+            self.hero.clear();
+            self.hubs.clear();
+        }
+        let id = srv.id.clone();
+        self.load(cx, move |c| srv.hubs(c), move |this, r, cx| {
+            if this.home_server().map(|h| h.id) != Some(id.clone()) {
+                return;
+            }
+            match r {
+                Ok(hubs) => this.build_home(&id, hubs, cx),
+                Err(e) if !this.home_ready => {
+                    let name = this.server(&id).map(|x| x.name).unwrap_or_default();
+                    this.home_error = Some(format!("Could not reach {name}: {e}").into());
+                    this.finish_splash(cx);
+                }
+                Err(e) => log::warn!("home refresh failed: {e}"),
+            }
+        });
+    }
+
+    fn build_home(&mut self, server: &str, hubs: Vec<plex::Hub>, cx: &mut Context<Self>) {
+        let mut seen = HashSet::new();
+        self.hero = hubs
+            .iter()
+            .filter(|h| h.id.contains("recentlyAdded") || h.id.contains("featured"))
+            .chain(hubs.iter())
+            .flat_map(|h| h.metadata.iter())
+            .filter(|it| !first(&[&it.art, &it.grandparent_art]).is_empty() && matches!(it.kind.as_str(), "movie" | "show"))
+            .filter(|it| seen.insert(it.rating_key.clone()))
+            .take(6)
+            .map(|it| hero_card(it, server))
+            .collect();
+        self.hero_index = self.hero_index.min(self.hero.len().saturating_sub(1));
+        let old_scroll: Vec<ScrollHandle> = self.hubs.iter().map(|h| h.scroll.clone()).collect();
+        self.hubs = hubs
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let wide = h.wide();
+                let items = h
+                    .metadata
+                    .iter()
+                    .map(|it| {
+                        let mut c = card_for(it, wide, server);
+                        c.resume = h.is_continue();
+                        c
+                    })
+                    .collect();
+                Hub { title: h.title.clone().into(), resume: h.is_continue(), wide, items, scroll: old_scroll.get(i).cloned().unwrap_or_default(), slide: None }
+            })
+            .collect();
+        let mut seen = HashSet::new();
+        self.suggestions = hubs
+            .iter()
+            .filter(|h| !h.is_continue())
+            .flat_map(|h| h.metadata.iter())
+            .filter(|it| matches!(it.kind.as_str(), "movie" | "show") && seen.insert(it.rating_key.clone()))
+            .take(SUGGESTIONS)
+            .map(|it| card_for(it, false, server))
+            .collect();
+        self.home_ready = true;
+        for c in self.hero.clone().iter().take(2) {
+            self.image(&c.thumb, Shape::Backdrop);
+        }
+        if let Some((shape, firsts)) = self.hubs.first().map(|h| (if h.wide { Shape::Wide } else { Shape::Poster }, h.items.iter().take(FIRST_ROW_IMAGES).cloned().collect::<Vec<_>>())) {
+            for c in firsts {
+                self.image(&c.thumb, shape);
+            }
+        }
+        if self.hero_task.is_none() {
+            self.start_hero_rotation(cx);
+        }
+        self.check_splash(cx);
+    }
+
+    pub fn start_hero_rotation(&mut self, cx: &mut Context<Self>) {
+        self.hero_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(8)).await;
+                let alive = this.update(cx, |this, cx| {
+                    if this.page == Page::Home && this.hero.len() > 1 {
+                        this.view.hero_prev = Some((this.hero_index, Instant::now()));
+                        this.hero_index = (this.hero_index + 1) % this.hero.len();
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    pub fn step_hero(&mut self, d: isize, cx: &mut Context<Self>) {
+        let n = self.hero.len() as isize;
+        if n > 1 {
+            self.view.hero_prev = Some((self.hero_index, Instant::now()));
+            self.hero_index = ((self.hero_index as isize + d).rem_euclid(n)) as usize;
+            self.start_hero_rotation(cx);
+            cx.notify();
+        }
+    }
+
+    pub fn set_sort(&mut self, sort: &str, cx: &mut Context<Self>) {
+        self.sort_open = false;
+        if let Some(mut key) = self.library.as_ref().map(|l| l.key.clone()) {
+            key.sort = sort.to_owned();
+            self.show_library(key, cx);
+        }
+    }
+
+    fn show_library(&mut self, key: LibKey, cx: &mut Context<Self>) {
+        if self.library.as_ref().is_some_and(|l| l.key == key) {
+            return self.refresh_library_page(0, cx);
+        }
+        if let Some(cur) = self.library.take() {
+            self.library_cache.retain(|l| l.key != cur.key);
+            self.library_cache.push(cur);
+            if self.library_cache.len() > LIBRARY_CACHE {
+                self.library_cache.remove(0);
+            }
+        }
+        let title = self.sections.iter().find(|s| s.server == key.server && s.key == key.section).map(|s| s.title.clone()).unwrap_or_default();
+        self.library = Some(match self.library_cache.iter().position(|l| l.key == key) {
+            Some(i) => self.library_cache.remove(i),
+            None => Library { key, title: title.into(), items: vec![None; 48], pages: HashSet::new(), scroll: UniformListScrollHandle::new() },
+        });
+        self.refresh_library_page(0, cx);
+    }
+
+    pub fn ensure_library_rows(&mut self, start: usize, end: usize, cx: &mut Context<Self>) {
+        let Some(lib) = &self.library else { return };
+        if lib.pages.is_empty() || end <= start {
+            return;
+        }
+        let pages: Vec<usize> = (start / PAGE..=(end - 1) / PAGE)
+            .filter(|p| !lib.pages.contains(p) && p * PAGE < lib.items.len() && lib.items[p * PAGE..(p * PAGE + PAGE).min(lib.items.len())].iter().any(Option::is_none))
+            .collect();
+        for p in pages {
+            self.refresh_library_page(p, cx);
+        }
+    }
+
+    fn refresh_library_page(&mut self, page: usize, cx: &mut Context<Self>) {
+        let Some(lib) = &mut self.library else { return };
+        let first_load = lib.pages.is_empty();
+        lib.pages.insert(page);
+        let key = lib.key.clone();
+        let Some(srv) = self.server(&key.server) else { return };
+        let k = key.clone();
+        self.load(cx, move |c| srv.section_items(c, &k.section, page * PAGE, PAGE, &k.sort), move |this, r, cx| match r {
+            Ok((items, total)) => {
+                let Some(lib) = this.library.as_mut().filter(|l| l.key == key).or_else(|| this.library_cache.iter_mut().find(|l| l.key == key)) else { return };
+                if page == 0 && (first_load || lib.items.len() != total) {
+                    lib.items.resize(total, None);
+                }
+                for (i, it) in items.iter().enumerate() {
+                    if let Some(slot) = lib.items.get_mut(page * PAGE + i) {
+                        *slot = Some(card_for(it, false, &key.server));
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(l) = this.library.as_mut().filter(|l| l.key == key) {
+                    l.pages.remove(&page);
+                }
+                this.toast(format!("Could not load library: {e}"), cx);
+            }
+        });
+    }
+
+    fn search_debounced(&mut self, q: String, cx: &mut Context<Self>) {
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(300)).await;
+            this.update(cx, |this, cx| this.search(q, cx)).ok();
+        }));
+    }
+
+    pub fn search(&mut self, q: String, cx: &mut Context<Self>) {
+        self.search_gen += 1;
+        let gen_ = self.search_gen;
+        let q = q.trim().to_owned();
+        if q.chars().count() < 2 {
+            self.results.clear();
+            self.searching = false;
+            cx.notify();
+            return;
+        }
+        self.searching = true;
+        let (servers, c, token) = (self.servers.clone(), self.client.clone(), self.account.token.clone().unwrap_or_default());
+        Self::bg(
+            cx,
+            move || {
+                let discover = {
+                    let (c, q) = (c.clone(), q.clone());
+                    std::thread::spawn(move || c.discover_search(&q, &token))
+                };
+                let local: Vec<_> = servers
+                    .into_iter()
+                    .map(|srv| {
+                        let (c, q) = (c.clone(), q.clone());
+                        std::thread::spawn(move || (srv.id.clone(), srv.search(&Ctx::new(c, Source::Live), &q)))
+                    })
+                    .collect();
+                let local: Vec<_> = local.into_iter().filter_map(|h| h.join().ok()).collect();
+                (q, local, discover.join().unwrap_or_else(|_| Err("search thread panicked".into())))
+            },
+            move |this, (q, local, discover), cx| {
+                if this.search_gen != gen_ {
+                    return;
+                }
+                let mut errors = Vec::new();
+                let local: Vec<(String, Vec<(Item, f64)>)> = local.into_iter().filter_map(|(srv, r)| r.map_err(|e| errors.push(e)).ok().map(|hits| (srv, hits))).collect();
+                let home = this.home_server().map(|h| h.id).unwrap_or_default();
+                this.results = rank_search(&q, &home, local, discover.unwrap_or_default())
+                    .iter()
+                    .map(|(server, it)| {
+                        let mut c = card_for(it, false, server);
+                        if server == DISCOVER_ID {
+                            c.subtitle = join(&[c.subtitle.to_string(), "Not in your library".into()]).into();
+                        }
+                        c
+                    })
+                    .collect();
+                this.searching = false;
+                if this.results.is_empty()
+                    && let Some(e) = errors.first()
+                {
+                    this.toast(format!("Search failed: {e}"), cx);
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    fn load_detail(&mut self, server: String, key: String, season: Option<String>, cx: &mut Context<Self>) {
+        let Some(srv) = self.server(&server) else { return };
+        if self.detail_id != (server.clone(), key.clone()) {
+            self.detail = None;
+            self.seasons.clear();
+            self.season_items.clear();
+            self.episodes.clear();
+            self.season = None;
+            self.detail_scroll = ScrollHandle::new();
+        }
+        if season.is_some() {
+            self.season = season;
+        }
+        self.detail_id = (server.clone(), key.clone());
+        self.load(
+            cx,
+            move |c| -> R<(Item, Vec<Item>)> {
+                let it = srv.metadata(c, &key)?;
+                let seasons = if it.kind == "show" { srv.children(c, &key)? } else { Vec::new() };
+                Ok((it, seasons))
+            },
+            move |this, r, cx| match r {
+                Ok((it, seasons)) if this.detail_id == (server.clone(), it.rating_key.clone()) => this.apply_detail(&server, it, seasons, cx),
+                Ok(_) => {}
+                Err(e) => this.toast(format!("Could not load details: {e}"), cx),
+            },
+        );
+    }
+
+    fn apply_detail(&mut self, server: &str, it: Item, seasons: Vec<Item>, cx: &mut Context<Self>) {
+        let media = it.media.first();
+        let resolution = media.map(|m| match m.video_resolution.as_str() {
+            "4k" => "4K".to_owned(),
+            "" => String::new(),
+            r if r.chars().all(|c| c.is_ascii_digit()) => format!("{r}p"),
+            r => r.to_uppercase(),
+        });
+        let on_deck = it.on_deck.as_ref().and_then(|d| d.metadata.as_ref());
+        let (mut play_key, mut play_label, progress) = match it.kind.as_str() {
+            "show" => match on_deck {
+                Some(ep) => (
+                    ep.rating_key.clone(),
+                    format!("{} S{}E{}", if ep.progress() > 0.0 { "Resume" } else { "Play" }, ep.parent_index.unwrap_or(0), ep.index.unwrap_or(0)),
+                    ep.progress(),
+                ),
+                None => (it.rating_key.clone(), "Play".into(), 0.0),
+            },
+            _ => (it.rating_key.clone(), if it.progress() > 0.0 { "Resume" } else { "Play" }.into(), it.progress()),
+        };
+        let mut chips = vec![
+            if it.kind == "episode" { it.originally_available_at.clone() } else { it.year.map(|y| y.to_string()).unwrap_or_default() },
+            it.content_rating.clone(),
+            it.duration.filter(|_| it.kind != "show").map(plex::fmt_duration).unwrap_or_default(),
+            it.child_count.filter(|_| it.kind == "show").map(|n| format!("{n} season{}", if n == 1 { "" } else { "s" })).unwrap_or_default(),
+            resolution.unwrap_or_default(),
+            media.map(|m| m.video_dynamic_range.clone()).filter(|r| r != "SDR").unwrap_or_default(),
+            it.audience_rating.map(|r| format!("★ {r:.1}")).unwrap_or_default(),
+        ];
+        if server == DISCOVER_ID {
+            chips.insert(0, "Not in your library".into());
+            play_key.clear();
+            play_label.clear();
+        }
+        chips.retain(|c| !c.is_empty());
+        self.detail = Some(DetailView {
+            server: server.to_owned().into(),
+            eyebrow: if it.kind == "episode" { join(&[it.grandparent_title.clone(), it.episode_label()]) } else { String::new() }.into(),
+            title: it.title.clone().into(),
+            chips: chips.into_iter().map(Into::into).collect(),
+            genres: it.genre.iter().take(4).map(|t| t.tag.clone().into()).collect(),
+            summary: it.summary.clone().into(),
+            play_label: play_label.into(),
+            play_key: play_key.into(),
+            progress,
+            art: thumb(server, first(&[&it.art, &it.grandparent_art])),
+            is_show: it.kind == "show",
+        });
+        if it.kind == "show" {
+            let valid = |k: &String| seasons.iter().any(|x| &x.rating_key == k);
+            let pick = self
+                .season
+                .clone()
+                .filter(valid)
+                .or_else(|| on_deck.map(|e| e.parent_rating_key.clone()).filter(valid))
+                .or_else(|| seasons.iter().find(|x| x.index != Some(0)).or(seasons.first()).map(|x| x.rating_key.clone()));
+            self.season_items = seasons;
+            if let Some(k) = pick {
+                self.select_season(k, cx);
+            }
+        }
+    }
+
+    pub fn select_season(&mut self, key: String, cx: &mut Context<Self>) {
+        let Some(srv) = self.server(&self.detail_id.0) else { return };
+        self.season = Some(key.clone());
+        self.seasons = self
+            .season_items
+            .iter()
+            .map(|x| Choice { id: x.rating_key.clone().into(), label: x.title.clone().into(), selected: x.rating_key == key, ..Default::default() })
+            .collect();
+        let server = srv.id.clone();
+        let k = key.clone();
+        self.load(cx, move |c| srv.children(c, &k), move |this, r, cx| {
+            if this.season.as_deref() != Some(key.as_str()) || this.detail_id.0 != server {
+                return;
+            }
+            match r {
+                Ok(eps) => {
+                    this.episodes = eps
+                        .iter()
+                        .map(|e| {
+                            let mut card = card_for(e, true, &server);
+                            card.title = format!("{}. {}", e.index.unwrap_or(0), e.title).into();
+                            card.summary = e.summary.clone().into();
+                            card.meta = join(&[e.duration.map(plex::fmt_duration).unwrap_or_default(), e.originally_available_at.clone()]).into();
+                            card.thumb = thumb(&server, &e.thumb);
+                            card
+                        })
+                        .collect();
+                }
+                Err(e) => this.toast(format!("Could not load episodes: {e}"), cx),
+            }
+        });
+        cx.notify();
+    }
+
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.settings.sidebar_compact = !self.settings.sidebar_compact;
+        self.settings.save();
+        self.view.sidebar_anim = Some(Instant::now());
+        cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(key: &str, kind: &str, title: &str, guid: &str) -> Item {
+        Item { rating_key: key.into(), kind: kind.into(), title: title.into(), guid: guid.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn title_matches_rank_above_incidental_hits() {
+        let local = vec![(
+            "home".to_owned(),
+            vec![(item("1", "movie", "Sherlock Gnomes", "g1"), 0.99), (item("2", "show", "Dexter's Laboratory", "g2"), 0.5), (item("3", "show", "Dexter", "g3"), 0.4)],
+        )];
+        let keys: Vec<_> = rank_search("dexter", "home", local, vec![]).into_iter().map(|(_, i)| i.rating_key).collect();
+        assert_eq!(keys, ["3", "2", "1"]);
+    }
+
+    #[test]
+    fn episodes_fold_into_one_show_and_owned_discover_hits_drop() {
+        let mut ep = item("10", "episode", "Pilot", "");
+        ep.grandparent_rating_key = "2".into();
+        ep.grandparent_title = "Dexter's Laboratory".into();
+        let local = vec![("home".to_owned(), vec![(item("2", "show", "Dexter's Laboratory", "g2"), 0.5), (ep.clone(), 0.4), (ep, 0.3)])];
+        let discover = vec![item("x", "show", "Dexter's Laboratory", "g2"), item("y", "show", "Dexter: New Blood", "g9")];
+        let out = rank_search("dexter", "home", local, discover);
+        let keys: Vec<_> = out.iter().map(|(s, i)| format!("{s}/{}", i.rating_key)).collect();
+        assert_eq!(keys, ["home/2", "discover/y"]);
+    }
+
+    #[test]
+    fn word_prefix_beats_substring() {
+        assert!(title_rank("The Dexter Files", "dex") < title_rank("Index", "dex"));
+        assert_eq!(title_rank("Dexter", "DEXTER"), 0);
+    }
+
+    #[test]
+    fn image_sizes_round_up_to_50px_steps() {
+        assert_eq!(shape_size(Shape::Poster, 1.0, 0), (250, 375));
+        assert_eq!(shape_size(Shape::Poster, 1.5, 0), (350, 525));
+        assert_eq!(shape_size(Shape::Backdrop, 1.0, 5000), (3840, 2160));
+    }
+}

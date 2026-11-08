@@ -1,0 +1,46 @@
+[workspace]
+members = [".", "crates/core", "crates/ffi", "crates/uniffi-bindgen"]
+
+[package]
+name = "plaivo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+plaivo-core = { path = "crates/core" }
+anyhow = "1"
+futures = "0.3"
+gpui = { git = "https://github.com/zed-industries/zed", rev = "9a8ab54db4f9f9af4dc6efb42b304c55c6a62bd3", version = "0.2.2" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "9a8ab54db4f9f9af4dc6efb42b304c55c6a62bd3", features = ["font-kit"] }
+smallvec = "1"
+unicode-segmentation = "1"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+libloading = "0.9.0"
+log = "0.4.35"
+raw-window-handle = "0.6"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default", "json", "gzip"] }
+
+[build-dependencies]
+serde_json = "1.0.154"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_Globalization"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow", "NSView", "NSColor", "NSResponder", "NSGraphics", "NSCursor"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[patch."https://github.com/zed-industries/zed"]
+gpui_windows = { path = "vendor/gpui_windows" }

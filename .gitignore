@@ -1,0 +1,13 @@
+/target
+/deps/*/*
+!/deps/*/.gitkeep
+/android/.gradle
+/android/.idea
+/android/.kotlin
+/android/build
+/android/app/build
+/android/local.properties
+.env
+.env.*
+*.jks
+*.keystore

@@ -1,0 +1,15 @@
+[package]
+name = "plaivo-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.35"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default", "json", "gzip"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls", "json", "gzip"] }

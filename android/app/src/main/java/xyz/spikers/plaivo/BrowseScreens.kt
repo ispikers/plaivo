@@ -1,0 +1,224 @@
+package xyz.spikers.plaivo
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.tv.material3.Border
+import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.Surface
+import androidx.tv.material3.Text
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import uniffi.plaivo_ffi.Card as MediaCard
+import uniffi.plaivo_ffi.Section
+import uniffi.plaivo_ffi.ServerInfo
+
+private const val PAGE = 120uL
+private const val SEARCH_DEBOUNCE_MS = 500L
+
+@Composable
+private fun PosterGrid(cards: List<MediaCard>, play: (MediaCard) -> Unit, header: @Composable () -> Unit, onNearEnd: () -> Unit = {}) {
+    LazyVerticalGrid(
+        columns = GridCells.FixedSize(Dims.poster + 14.dp),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = Dims.edge - 7.dp, end = Dims.edge - 7.dp, top = 28.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) { Box(Modifier.padding(start = 7.dp)) { header() } }
+        itemsIndexed(cards, key = { _, c -> "${c.server}/${c.key}" }) { i, card ->
+            if (i >= cards.size - 30) LaunchedEffect(cards.size) { onNearEnd() }
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) { MediaTile(card, wide = false) { play(card) } }
+        }
+    }
+}
+
+@Composable
+private fun Heading(text: String) {
+    Text(text, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Palette.text)
+}
+
+@Composable
+fun LibraryScreen(library: Section, play: (MediaCard) -> Unit) {
+    var cards by remember(library) { mutableStateOf<List<MediaCard>>(emptyList()) }
+    var total by remember(library) { mutableLongStateOf(-1L) }
+    var loading by remember(library) { mutableStateOf(false) }
+    var error by remember(library) { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    fun more() {
+        if (loading || (total >= 0 && cards.size >= total)) return
+        loading = true
+        scope.launch {
+            io { runCatching { core.libraryPage(library.server, library.key, cards.size.toULong(), PAGE) } }
+                .onSuccess { cards = cards + it.cards; total = it.total.toLong(); error = null }
+                .onFailure { error = it.message }
+            loading = false
+        }
+    }
+    LaunchedEffect(library) { more() }
+    PosterGrid(cards, play, header = {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Heading(library.title)
+            val status = error ?: if (total < 0) "Loading…" else "$total items"
+            Text(status, fontSize = 13.sp, color = Palette.muted)
+        }
+    }, onNearEnd = ::more)
+}
+
+@Composable
+fun SearchScreen(play: (MediaCard) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<MediaCard>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+    var focused by remember { mutableStateOf(false) }
+    LaunchedEffect(query) {
+        val q = query.trim()
+        if (q.isEmpty()) {
+            results = emptyList()
+            return@LaunchedEffect
+        }
+        delay(SEARCH_DEBOUNCE_MS)
+        searching = true
+        results = io { core.search(q) }
+        searching = false
+    }
+    PosterGrid(results, play, header = {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            BasicTextField(
+                value = query,
+                onValueChange = { query = it },
+                singleLine = true,
+                textStyle = TextStyle(fontSize = 16.sp, color = Palette.text),
+                cursorBrush = SolidColor(Palette.text),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {}),
+                modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth().onFocusChanged { focused = it.isFocused },
+                decorationBox = { field ->
+                    Row(
+                        Modifier
+                            .height(44.dp)
+                            .background(Palette.surface, CircleShape)
+                            .border(BorderStroke(if (focused) 2.dp else 1.dp, if (focused) Palette.text else Palette.outline), CircleShape)
+                            .padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        GlyphIcon(Glyph.Search, 20.dp, Palette.muted)
+                        Box(Modifier.weight(1f)) {
+                            if (query.isEmpty()) Text("Search your libraries", fontSize = 16.sp, color = Palette.muted)
+                            field()
+                        }
+                    }
+                },
+            )
+            val status = when {
+                searching -> "Searching…"
+                query.isNotBlank() && results.isEmpty() -> "No results"
+                else -> ""
+            }
+            if (status.isNotEmpty()) Text(status, fontSize = 13.sp, color = Palette.muted)
+        }
+    })
+}
+
+@Composable
+fun SettingsScreen(servers: List<ServerInfo>, homeId: String?, onHome: (String) -> Unit, onSignOut: () -> Unit) {
+    val context = LocalContext.current
+    val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = Dims.edge, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item { Heading("Settings") }
+        item { SectionTitle("Home server") }
+        item { Text("Home shows Continue Watching and recommendations from this server. Libraries from every server stay in the sidebar.", fontSize = 13.sp, color = Palette.muted) }
+        items(servers.size) { i ->
+            val s = servers[i]
+            val selected = s.id == homeId
+            SettingsRow(Glyph.Server, s.name, if (s.owned) "Owned" else "Shared with you", selected = selected, onClick = { onHome(s.id) }) {
+                if (selected) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
+            }
+        }
+        if (servers.isEmpty()) item { Text("No servers found.", fontSize = 13.sp, color = Palette.muted) }
+        item { SectionTitle("Account") }
+        item { SettingsRow(Glyph.Person, "Plex account", "Signed in · select to sign out", onClick = onSignOut) { GlyphIcon(Glyph.Logout, 20.dp, Palette.muted) } }
+        item { SectionTitle("About") }
+        item { SettingsRow(Glyph.PlayCircle, "Plaivo", "Version $version") }
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, modifier = Modifier.padding(top = 18.dp))
+}
+
+@Composable
+private fun SettingsRow(glyph: Glyph, title: String, detail: String, selected: Boolean = false, onClick: (() -> Unit)? = null, trailing: @Composable () -> Unit = {}) {
+    val content: @Composable () -> Unit = {
+        Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            GlyphIcon(glyph, 22.dp, Palette.muted)
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, maxLines = 1)
+                Text(detail, fontSize = 12.sp, color = Palette.muted, maxLines = 1)
+            }
+            trailing()
+        }
+    }
+    val shape = RoundedCornerShape(12.dp)
+    if (onClick == null) {
+        Box(Modifier.widthIn(max = 560.dp).fillMaxWidth().background(Palette.surface, shape)) { content() }
+    } else {
+        Surface(
+            onClick = onClick,
+            modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(),
+            shape = ClickableSurfaceDefaults.shape(shape),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = if (selected) Palette.tint(0.10f) else Palette.surface,
+                contentColor = Palette.text,
+                focusedContainerColor = Palette.tint(0.12f),
+                focusedContentColor = Palette.text,
+            ),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+            border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = shape)),
+        ) { content() }
+    }
+}

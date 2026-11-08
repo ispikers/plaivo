@@ -1,0 +1,23 @@
+libmpv
+------
+
+Plaivo plays video with libmpv (https://mpv.io), Copyright (C) the mpv
+developers. libmpv is not part of the Plaivo executable: it is a separate
+shared library (libmpv-2.dll on Windows, libmpv.2.dylib on macOS) loaded at
+runtime from the folder next to the Plaivo executable. You may replace it with
+your own build of libmpv.
+
+libmpv built without GPL-only components (meson option -Dgpl=false), as
+shipped with Plaivo, is licensed under the GNU Lesser General Public License,
+version 2.1 or (at your option) any later version.
+
+It contains FFmpeg (https://ffmpeg.org), licensed under the GNU Lesser General
+Public License, version 2.1 or later (version 3 or later when FFmpeg is built
+with --enable-version3), and further libraries under their own licenses.
+
+Source code:
+  mpv     https://github.com/mpv-player/mpv
+  FFmpeg  https://ffmpeg.org/download.html
+
+The GNU LGPL version 2.1, the GNU LGPL version 3 and the GNU GPL version 3
+(whose terms the LGPL version 3 incorporates) follow in full.
