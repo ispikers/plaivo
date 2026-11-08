@@ -84,7 +84,7 @@ pub fn sign_out(account: &mut Account, settings: &mut Settings) {
 #[cfg(not(target_os = "android"))]
 pub(crate) fn http() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
-    ureq::Agent::config_builder().tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build())
+    ureq::Agent::config_builder().tls_config(TlsConfig::builder().provider(TlsProvider::Rustls).root_certs(RootCerts::PlatformVerifier).build())
 }
 
 #[cfg(target_os = "android")]

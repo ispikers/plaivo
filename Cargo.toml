@@ -21,7 +21,6 @@ raw-window-handle = "0.6"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 flate2 = "1.1.11"
-ureq = { version = "3", default-features = false, features = ["native-tls-no-default", "json", "gzip"] }
 
 [build-dependencies]
 serde_json = "1.0.154"

@@ -10,8 +10,8 @@ serde_json = "1.0.154"
 flate2 = "1.1.11"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-ureq = { version = "3", default-features = false, features = ["native-tls-no-default", "json", "gzip"] }
-tungstenite = { version = "0.30", default-features = false, features = ["handshake", "native-tls"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "json", "gzip"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 ureq = { version = "3", default-features = false, features = ["rustls", "json", "gzip"] }

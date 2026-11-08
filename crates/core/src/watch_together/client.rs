@@ -492,9 +492,6 @@ fn open(url: &str) -> Option<Socket> {
     let (mut ws, _) = tungstenite::client_tls_with_config(url, tcp, Some(config), None).ok()?;
     let tcp = match ws.get_mut() {
         MaybeTlsStream::Plain(s) => s,
-        #[cfg(not(target_os = "android"))]
-        MaybeTlsStream::NativeTls(s) => s.get_mut(),
-        #[cfg(target_os = "android")]
         MaybeTlsStream::Rustls(s) => &mut s.sock,
         _ => return None,
     };
