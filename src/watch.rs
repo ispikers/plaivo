@@ -343,6 +343,7 @@ impl Plaivo {
         }
         let same = self.playing() && self.player.key == key && self.player.server.as_ref().is_some_and(|s| s.id == server);
         if same {
+            self.cancel_pending_play();
             let at = (self.player.time * 1000.0) as i64;
             self.watch_share(server, key, None, at, cx);
             self.expand_player(cx);

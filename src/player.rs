@@ -211,6 +211,7 @@ impl Plaivo {
             if self.player.paused {
                 self.toggle_pause();
             }
+            self.cancel_pending_play();
             return self.expand_player(cx);
         }
         self.player.play_gen += 1;
@@ -368,10 +369,18 @@ impl Plaivo {
         self.play(card.server.to_string(), card.key.to_string(), cx);
     }
 
+    pub(crate) fn cancel_pending_play(&mut self) {
+        self.player.play_gen += 1;
+        self.advance_failed();
+    }
+
     fn advance_failed(&mut self) {
         let p = &mut self.player;
         p.up_next_cancelled |= p.advancing;
         p.stop_sent &= !p.advancing;
+        if p.advancing {
+            p.buffering = !p.video_ready || p.mpv.as_ref().and_then(|m| m.get("paused-for-cache")).as_deref() == Some("yes");
+        }
         p.advancing = false;
     }
 
