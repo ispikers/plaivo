@@ -1,0 +1,11 @@
+{
+  "type": "status",
+  "epoch": 3,
+  "player": "ready",
+  "match": {
+    "state": "matched",
+    "deltaMs": -120
+  },
+  "offsetMs": 0,
+  "rttMs": 48
+}

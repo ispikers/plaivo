@@ -1,0 +1,10 @@
+{
+  "type": "status",
+  "epoch": 3,
+  "player": "buffering",
+  "match": {
+    "state": "mismatched",
+    "deltaMs": -5000
+  },
+  "offsetMs": 604800000
+}

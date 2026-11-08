@@ -1,0 +1,10 @@
+{
+  "relays": [
+    {
+      "id": "buecher",
+      "name": "Bücher",
+      "url": "wss://xn--bcher-kva.example/v1/ws",
+      "prefixes": "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+    }
+  ]
+}

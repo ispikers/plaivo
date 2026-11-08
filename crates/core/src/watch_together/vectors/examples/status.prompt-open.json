@@ -1,0 +1,11 @@
+{
+  "type": "status",
+  "epoch": 3,
+  "player": "loading",
+  "match": {
+    "state": "searching",
+    "deltaMs": 4200
+  },
+  "offsetMs": 0,
+  "rttMs": 120
+}

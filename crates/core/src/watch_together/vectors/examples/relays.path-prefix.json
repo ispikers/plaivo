@@ -1,0 +1,10 @@
+{
+  "relays": [
+    {
+      "id": "x-1",
+      "name": "Example",
+      "url": "wss://example.com/owp/v1/ws",
+      "prefixes": "Z"
+    }
+  ]
+}

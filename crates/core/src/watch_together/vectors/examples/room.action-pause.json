@@ -1,0 +1,55 @@
+{
+  "type": "room",
+  "rev": 43,
+  "code": "K7MQ2X",
+  "epoch": 3,
+  "phase": "paused",
+  "positionMs": 63020,
+  "atMs": 918273645,
+  "rate": 1.0,
+  "control": "host",
+  "locked": false,
+  "waitingOn": [],
+  "action": {
+    "kind": "pause",
+    "by": "p3"
+  },
+  "participants": [
+    {
+      "peerId": "p1",
+      "name": "Edde",
+      "client": "Example/1.31.0",
+      "host": true,
+      "connected": true,
+      "player": "ready",
+      "match": {
+        "state": "matched",
+        "deltaMs": -120
+      },
+      "offsetMs": 0
+    },
+    {
+      "peerId": "p3",
+      "name": "Anna",
+      "client": "Sample/1.4.0",
+      "host": false,
+      "connected": true,
+      "player": "ready",
+      "match": {
+        "state": "mismatched",
+        "deltaMs": 4200
+      },
+      "offsetMs": 4200
+    },
+    {
+      "peerId": "p4",
+      "name": "Kim",
+      "client": "OWP Web Example/0.1.0",
+      "host": false,
+      "connected": false,
+      "player": "idle",
+      "match": null,
+      "offsetMs": 0
+    }
+  ]
+}

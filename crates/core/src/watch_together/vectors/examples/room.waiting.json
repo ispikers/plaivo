@@ -1,0 +1,41 @@
+{
+  "type": "room",
+  "rev": 7,
+  "code": "QW2E9R",
+  "epoch": 1,
+  "phase": "waiting",
+  "positionMs": 0,
+  "atMs": 15023,
+  "rate": 1.25,
+  "control": "everyone",
+  "locked": true,
+  "waitingOn": [
+    "p2"
+  ],
+  "participants": [
+    {
+      "peerId": "p1",
+      "name": "Edde",
+      "client": "Example/1.31.0",
+      "host": true,
+      "connected": true,
+      "player": "ready",
+      "match": {
+        "state": "matched"
+      },
+      "offsetMs": 0
+    },
+    {
+      "peerId": "p2",
+      "name": "Anna",
+      "client": "Sample/1.4.0",
+      "host": false,
+      "connected": true,
+      "player": "loading",
+      "match": {
+        "state": "searching"
+      },
+      "offsetMs": 0
+    }
+  ]
+}

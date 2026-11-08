@@ -1,0 +1,34 @@
+{
+  "type": "joined",
+  "code": "D4XN7P",
+  "you": {
+    "peerId": "p1",
+    "token": "q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E"
+  },
+  "room": {
+    "rev": 1,
+    "code": "D4XN7P",
+    "epoch": 0,
+    "phase": "idle",
+    "positionMs": 0,
+    "atMs": 15023,
+    "rate": 1,
+    "control": "host",
+    "locked": false,
+    "waitingOn": [],
+    "participants": [
+      {
+        "peerId": "p1",
+        "name": "Edde",
+        "client": "Example/1.31.0",
+        "host": true,
+        "connected": true,
+        "player": "idle",
+        "match": null,
+        "offsetMs": 0
+      }
+    ]
+  },
+  "media": null,
+  "serverTime": 15024
+}

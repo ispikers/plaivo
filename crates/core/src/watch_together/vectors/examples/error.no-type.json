@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "invalid_message",
+  "message": "a message must be a JSON object with a string type",
+  "re": null
+}

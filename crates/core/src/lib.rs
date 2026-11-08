@@ -1,6 +1,7 @@
 pub mod plex;
 pub mod settings;
 pub mod store;
+pub mod watch_together;
 
 use plex::Server;
 use serde::{Deserialize, Serialize};

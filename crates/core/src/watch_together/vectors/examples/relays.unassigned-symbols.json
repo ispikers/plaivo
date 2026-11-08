@@ -1,0 +1,22 @@
+{
+  "relays": [
+    {
+      "id": "a",
+      "name": "Relay A",
+      "url": "wss://a.relay.example/v1/ws",
+      "prefixes": "2345678"
+    },
+    {
+      "id": "b",
+      "name": "Relay B",
+      "url": "wss://b.relay.example/v1/ws",
+      "prefixes": "9ABCDEF"
+    },
+    {
+      "id": "c",
+      "name": "Relay C",
+      "url": "wss://c.relay.example/v1/ws",
+      "prefixes": "GHJKMNP"
+    }
+  ]
+}

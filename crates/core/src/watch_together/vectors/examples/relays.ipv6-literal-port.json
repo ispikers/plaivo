@@ -1,0 +1,10 @@
+{
+  "relays": [
+    {
+      "id": "home",
+      "name": "Home",
+      "url": "wss://[2001:db8::20]:8443/v1/ws",
+      "prefixes": "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+    }
+  ]
+}

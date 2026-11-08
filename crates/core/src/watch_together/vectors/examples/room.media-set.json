@@ -1,0 +1,89 @@
+{
+  "type": "room",
+  "rev": 30,
+  "code": "K7MQ2X",
+  "epoch": 3,
+  "phase": "waiting",
+  "positionMs": 0,
+  "atMs": 918273645,
+  "rate": 1.0,
+  "control": "host",
+  "locked": false,
+  "waitingOn": [
+    "p1",
+    "p3"
+  ],
+  "action": {
+    "kind": "media",
+    "by": "p1"
+  },
+  "participants": [
+    {
+      "peerId": "p1",
+      "name": "Edde",
+      "client": "Example/1.31.0",
+      "host": true,
+      "connected": true,
+      "player": "ready",
+      "match": {
+        "state": "matched",
+        "deltaMs": -120
+      },
+      "offsetMs": 0
+    },
+    {
+      "peerId": "p3",
+      "name": "Anna",
+      "client": "Sample/1.4.0",
+      "host": false,
+      "connected": true,
+      "player": "ready",
+      "match": {
+        "state": "mismatched",
+        "deltaMs": 4200
+      },
+      "offsetMs": 4200
+    },
+    {
+      "peerId": "p4",
+      "name": "Kim",
+      "client": "OWP Web Example/0.1.0",
+      "host": false,
+      "connected": false,
+      "player": "idle",
+      "match": null,
+      "offsetMs": 0
+    }
+  ],
+  "media": {
+    "kind": "episode",
+    "title": "Pilot",
+    "ids": {
+      "imdb": "tt0959621",
+      "tvdb": "349232"
+    },
+    "series": {
+      "title": "Breaking Bad",
+      "year": 2008,
+      "ids": {
+        "imdb": "tt0903747",
+        "tmdb": "1396",
+        "tvdb": "81189"
+      }
+    },
+    "season": 1,
+    "episode": 1,
+    "durationMs": 3487000,
+    "file": {
+      "sizeBytes": 2147483648,
+      "oshash": "8e245d9679d31e12",
+      "name": "Breaking.Bad.S01E01.1080p.mkv"
+    },
+    "ext": {
+      "com.example": {
+        "server": "1a2b3c",
+        "item": "4711"
+      }
+    }
+  }
+}
