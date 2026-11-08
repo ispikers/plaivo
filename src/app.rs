@@ -224,7 +224,7 @@ pub struct Plaivo {
     pub auth_error: Option<SharedString>,
     pin_gen: Arc<AtomicU64>,
     pub splash: Option<Splash>,
-    probe: Option<(Vec<Server>, usize)>,
+    probe: Option<(Vec<Server>, usize, bool)>,
     pub servers_loading: bool,
     pub servers_error: Option<SharedString>,
     pub hero: Vec<Card>,
@@ -366,6 +366,8 @@ fn title_rank(title: &str, q: &str) -> u8 {
     }
 }
 
+// Library hits (episodes folded into their show) ranked by title match then server score; Discover hits the
+// account already owns are dropped, the rest follow in Discover's own order.
 fn rank_search(q: &str, home: &str, local: Vec<(String, Vec<(Item, f64)>)>, discover: Vec<Item>) -> Vec<(String, Item)> {
     let mut seen = HashSet::new();
     let mut owned_guids = HashSet::new();
@@ -980,7 +982,7 @@ impl Plaivo {
         if let Some(sp) = &mut self.splash {
             sp.servers = resources.iter().map(|r| (r.client_identifier.clone(), r.name.clone(), Status::Pending)).collect();
         }
-        self.probe = Some((Vec::new(), total));
+        self.probe = Some((Vec::new(), total, false));
         for res in resources {
             let (c, t) = (self.client.clone(), token.clone());
             let id = res.client_identifier.clone();
@@ -999,15 +1001,15 @@ impl Plaivo {
                         sp.home_ok = true;
                     }
                 }
+                let previous = this.account.servers.iter().find(|s| s.id == id).cloned();
                 let Some(probe) = &mut this.probe else { return };
-                if let Ok(server) = r {
-                    probe.0.push(server);
-                }
+                probe.2 |= ok;
+                probe.0.extend(r.ok().or(previous));
                 probe.1 -= 1;
                 if probe.1 == 0 {
-                    let mut list = this.probe.take().unwrap().0;
+                    let (mut list, _, any_ok) = this.probe.take().unwrap();
                     list.sort_by_key(|x| !x.owned);
-                    this.discovery_done(list, None, cx);
+                    this.discovery_done(if any_ok { list } else { Vec::new() }, None, cx);
                 } else {
                     this.check_splash(cx);
                 }

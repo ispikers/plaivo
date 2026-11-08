@@ -30,6 +30,8 @@ mod imp {
     static REGION: Mutex<Option<Region>> = Mutex::new(None);
     static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
+    // mpv renders into a disabled child window; GPUI draws into a DirectComposition visual that composites above
+    // child windows, so video, UI, thumbnails and Peek all come from this one window.
     pub struct VideoHost {
         app: HWND,
         host: HWND,
@@ -50,7 +52,8 @@ mod imp {
                     ..std::mem::zeroed()
                 };
                 RegisterClassW(&wc);
-                // Without WS_CLIPCHILDREN a paused mpv re-renders its frame continuously (~30% of a core).
+                // WS_CLIPCHILDREN keeps the host's background paints from invalidating mpv's window; without it a
+                // paused mpv re-renders its frame continuously (~30% of a core).
                 let host = CreateWindowExW(
                     WS_EX_NOPARENTNOTIFY,
                     class.as_ptr(),

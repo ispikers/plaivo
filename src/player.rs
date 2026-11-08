@@ -207,16 +207,18 @@ impl Plaivo {
         if server == plex::DISCOVER_ID {
             return self.toast("This title isn't in any of your libraries.", cx);
         }
-        self.player.play_gen += 1;
-        let gen_ = self.player.play_gen;
         if self.playing() && self.player.key == key && self.player.server.as_ref().is_some_and(|s| s.id == server) {
             if self.player.paused {
                 self.toggle_pause();
             }
             return self.expand_player(cx);
         }
+        self.player.play_gen += 1;
+        let gen_ = self.player.play_gen;
         let downloaded = || self.offline.iter().any(|(s, it)| *s == server && it.rating_key == key);
-        let Some(srv) = self.server(&server).or_else(|| downloaded().then(|| Server { id: server.clone(), ..Default::default() })) else { return };
+        let Some(srv) = self.server(&server).or_else(|| downloaded().then(|| Server { id: server.clone(), ..Default::default() })) else {
+            return self.advance_failed();
+        };
         let c = self.client.clone();
         let (token, local, downloads) = (self.account.token.clone(), self.settings.languages(), self.downloads.clone());
         Self::bg(
@@ -774,10 +776,10 @@ impl Plaivo {
     }
 
     fn on_mpv(&mut self, e: mpv::Event, cx: &mut Context<Self>) {
-        let shown = |this: &Self| (this.player.time as u64, this.active_skip().is_some());
-        let before = shown(self);
         let notify = match e {
             mpv::Event::Time(t) => {
+                let shown = |this: &mut Self| (this.player.time as u64, this.active_skip().is_some(), this.up_next().map(|(_, left)| left.max(0.).ceil() as u64));
+                let before = shown(self);
                 self.player.time = t;
                 if self.player.last_report.is_none_or(|r| r.elapsed() > Duration::from_secs(10)) {
                     let state = if self.player.paused { "paused" } else { "playing" };
