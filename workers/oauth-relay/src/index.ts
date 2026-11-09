@@ -9,8 +9,6 @@ type Env = {
 	PLAIVO_RELAY_PUBLIC_URL?: string;
 	PLAIVO_MAL_CLIENT_ID?: string;
 	PLAIVO_MAL_CLIENT_SECRET?: string;
-	PLAIVO_ANILIST_CLIENT_ID?: string;
-	PLAIVO_ANILIST_CLIENT_SECRET?: string;
 };
 
 export class Sessions extends DurableObject<Env> {
@@ -53,6 +51,7 @@ export default {
 				"Content-Type": reply.contentType,
 				"Cache-Control": "no-store",
 				"Referrer-Policy": "no-referrer",
+				...(reply.location && { Location: reply.location }),
 			},
 		});
 	},

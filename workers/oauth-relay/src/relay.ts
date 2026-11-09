@@ -4,22 +4,27 @@ const MAX_PARAM = 2048;
 
 const AUTHORIZE = {
 	mal: "https://myanimelist.net/v1/oauth2/authorize",
-	anilist: "https://anilist.co/api/v2/oauth/authorize",
 } as const;
-export const TOKEN = {
-	mal: "https://myanimelist.net/v1/oauth2/token",
-	anilist: "https://anilist.co/api/v2/oauth/token",
+export const MAL_TOKEN = "https://myanimelist.net/v1/oauth2/token";
+
+const EXPIRED =
+	"This sign-in link has expired or was already used. Start again from Plaivo.";
+const FAILED = "Sign-in failed. Close this tab and try again from Plaivo.";
+const VERDICTS = {
+	access_denied: [200, "Sign-in was cancelled. You can close this tab."],
+	exchange_failed: [502, FAILED],
+	signed_in: [200, "Signed in. You can close this tab and return to Plaivo."],
 } as const;
 
 const HTML = "text/html; charset=utf-8";
 const JSON_TYPE = "application/json";
+const USER_AGENT = "Plaivo-OAuth-Relay/1.0 (+https://plaivo.app)";
 
-export type Service = "mal" | "anilist";
+export type Service = "mal";
 export type Client = { id: string; secret?: string };
 export type Config = {
 	publicUrl: string;
-	mal?: Client;
-	anilist?: Client;
+	mal: Client;
 };
 export type Tokens = {
 	access_token: string;
@@ -27,14 +32,17 @@ export type Tokens = {
 	expires_in?: number;
 	token_type?: string;
 };
-export type TokenRequest =
-	| { url: string; form: Record<string, string> }
-	| { url: string; json: Record<string, string> };
+export type TokenRequest = { url: string; form: Record<string, string> };
 export type ExchangeError = "rejected" | "unavailable";
 export type Exchange = (
 	request: TokenRequest,
 ) => Promise<Tokens | ExchangeError>;
-export type Reply = { status: number; contentType: string; body: string };
+export type Reply = {
+	status: number;
+	contentType: string;
+	body: string;
+	location?: string;
+};
 export type Limits = { ttl: number; maxSessions: number };
 
 export interface Sql {
@@ -45,6 +53,9 @@ export interface Sql {
 }
 
 type Outcome = Tokens | "access_denied" | "exchange_failed";
+
+const verdict = (outcome: Outcome) =>
+	VERDICTS[typeof outcome === "string" ? outcome : "signed_in"];
 
 export const error = (status: number, code: string): Reply =>
 	json(status, { error: code });
@@ -64,7 +75,7 @@ const page = (status: number, message: string): Reply => ({
 });
 
 const parseService = (name: unknown): Service | undefined =>
-	name === "mal" || name === "anilist" ? name : undefined;
+	name === "mal" ? name : undefined;
 
 function parseJson(body: string): Record<string, unknown> | undefined {
 	try {
@@ -114,13 +125,43 @@ export class Relay {
 			return this.result(query);
 		if (method === "POST" && path === "/auth/refresh")
 			return this.refresh(body);
-		const service =
-			method === "GET"
-				? parseService(/^\/auth\/([^/]*)\/callback$/.exec(path)?.[1])
-				: undefined;
-		return service
+		const [, name, callback] =
+			/^\/auth\/([^/]*)(\/callback)?$/.exec(path) ?? [];
+		const service = method === "GET" ? parseService(name) : undefined;
+		if (!service) return error(404, "not_found");
+		return callback
 			? this.callback(service, query)
-			: error(404, "not_found");
+			: this.authorize(service, query);
+	}
+
+	// The app shows this short link (and its QR code); it redirects to the provider's long authorize URL.
+	private authorize(service: Service, query: URLSearchParams): Reply {
+		const state = param(query, "state");
+		const [row] = state
+			? this.sql
+					.exec(
+						"SELECT verifier FROM sessions WHERE state = ? AND service = ? AND outcome IS NULL AND expires > ?",
+						state,
+						service,
+						Date.now(),
+					)
+					.toArray()
+			: [];
+		if (!state || !row) return page(400, EXPIRED);
+		const target = new URLSearchParams({
+			response_type: "code",
+			client_id: this.config[service].id,
+			redirect_uri: this.redirectUri(service),
+			state,
+			code_challenge: row.verifier as string,
+			code_challenge_method: "plain",
+		});
+		return {
+			status: 302,
+			contentType: HTML,
+			body: "",
+			location: `${AUTHORIZE[service]}?${target}`,
+		};
 	}
 
 	private redirectUri(service: Service) {
@@ -130,24 +171,11 @@ export class Relay {
 	private start(body: string): Reply {
 		const service = parseService(parseJson(body)?.service);
 		if (!service) return error(400, "invalid_service");
-		const client = this.config[service];
-		if (!client) return error(503, "service_not_configured");
 		const [id, state, verifier] = [
 			randomHex(32),
 			randomHex(32),
 			randomHex(48),
 		];
-		const query = new URLSearchParams({
-			response_type: "code",
-			client_id: client.id,
-			redirect_uri: this.redirectUri(service),
-			state,
-		});
-		if (service === "mal") {
-			query.append("code_challenge", verifier);
-			query.append("code_challenge_method", "plain");
-		}
-
 		const now = Date.now();
 		this.sql.exec("DELETE FROM sessions WHERE expires <= ?", now);
 		const [{ n }] = this.sql
@@ -164,7 +192,7 @@ export class Relay {
 		);
 		return json(200, {
 			session: id,
-			authorize_url: `${AUTHORIZE[service]}?${query}`,
+			authorize_url: `${this.config.publicUrl}/auth/${service}?state=${state}`,
 			expires_in: this.limits.ttl / 1000,
 		});
 	}
@@ -173,20 +201,9 @@ export class Relay {
 		service: Service,
 		query: URLSearchParams,
 	): Promise<Reply> {
-		const expired =
-			"This sign-in link has expired or was already used. Start again from Plaivo.";
 		const state = param(query, "state");
-		if (!state) return page(400, expired);
-		// Claimed synchronously so a second callback can't reuse the state while the exchange is awaited.
-		const [claimed] = this.sql
-			.exec(
-				"UPDATE sessions SET state = NULL WHERE state = ? AND service = ? AND outcome IS NULL AND expires > ? RETURNING id, verifier",
-				state,
-				service,
-				Date.now(),
-			)
-			.toArray();
-		if (!claimed) return page(400, expired);
+		const claimed = state && this.claim(service, state);
+		if (!claimed) return page(400, EXPIRED);
 
 		const [providerError, code] = [
 			param(query, "error"),
@@ -196,10 +213,31 @@ export class Relay {
 		if (providerError === "access_denied") outcome = "access_denied";
 		else if (!providerError && code) {
 			const got = await this.exchange(
-				this.codeRequest(service, code, claimed.verifier as string),
+				this.codeRequest(code, claimed.verifier),
 			);
 			if (typeof got !== "string") outcome = got;
 		}
+		this.settle(claimed.id, outcome);
+		const [status, message] = verdict(outcome);
+		return page(status, message);
+	}
+
+	// Claimed synchronously so a second callback can't reuse the state while the exchange is awaited.
+	private claim(service: Service, state: string) {
+		const [row] = this.sql
+			.exec(
+				"UPDATE sessions SET state = NULL WHERE state = ? AND service = ? AND outcome IS NULL AND expires > ? RETURNING id, verifier",
+				state,
+				service,
+				Date.now(),
+			)
+			.toArray();
+		return (
+			row && { id: row.id as string, verifier: row.verifier as string }
+		);
+	}
+
+	private settle(id: string, outcome: Outcome) {
 		this.sql.exec(
 			"UPDATE sessions SET outcome = ?, expires = ? WHERE id = ?",
 			JSON.stringify(
@@ -208,49 +246,21 @@ export class Relay {
 					: { tokens: outcome },
 			),
 			Date.now() + this.limits.ttl,
-			claimed.id as string,
-		);
-		if (outcome === "access_denied")
-			return page(200, "Sign-in was cancelled. You can close this tab.");
-		if (outcome === "exchange_failed")
-			return page(
-				502,
-				"Sign-in failed. Close this tab and try again from Plaivo.",
-			);
-		return page(
-			200,
-			"Signed in. You can close this tab and return to Plaivo.",
+			id,
 		);
 	}
 
-	private codeRequest(
-		service: Service,
-		code: string,
-		verifier: string,
-	): TokenRequest {
-		const client = this.config[service]!;
-		const redirect_uri = this.redirectUri(service);
-		return service === "mal"
-			? {
-					url: TOKEN.mal,
-					form: {
-						...malCredentials(client),
-						grant_type: "authorization_code",
-						code,
-						redirect_uri,
-						code_verifier: verifier,
-					},
-				}
-			: {
-					url: TOKEN.anilist,
-					json: {
-						grant_type: "authorization_code",
-						client_id: client.id,
-						client_secret: client.secret ?? "",
-						redirect_uri,
-						code,
-					},
-				};
+	private codeRequest(code: string, verifier: string): TokenRequest {
+		return {
+			url: MAL_TOKEN,
+			form: {
+				...malCredentials(this.config.mal),
+				grant_type: "authorization_code",
+				code,
+				redirect_uri: this.redirectUri("mal"),
+				code_verifier: verifier,
+			},
+		};
 	}
 
 	private result(query: URLSearchParams): Reply {
@@ -285,11 +295,9 @@ export class Relay {
 		}
 		const service = parseService(request.service);
 		if (!service) return error(400, "invalid_service");
-		if (service === "anilist") return error(400, "refresh_unsupported");
 		const client = this.config.mal;
-		if (!client) return error(503, "service_not_configured");
 		const got = await this.exchange({
-			url: TOKEN.mal,
+			url: MAL_TOKEN,
 			form: {
 				...malCredentials(client),
 				grant_type: "refresh_token",
@@ -316,27 +324,10 @@ export function configFrom(env: Record<string, unknown>): Config {
 		);
 	}
 	const mal = read("PLAIVO_MAL_CLIENT_ID");
-	const pair = (id: string, secret: string) => {
-		const [i, s] = [read(id), read(secret)];
-		if (!i !== !s)
-			throw new Error(`set both ${id} and ${secret}, or neither`);
-		return i && s ? { id: i, secret: s } : undefined;
-	};
-	const anilist = pair(
-		"PLAIVO_ANILIST_CLIENT_ID",
-		"PLAIVO_ANILIST_CLIENT_SECRET",
-	);
-	if (!mal && !anilist) {
-		throw new Error(
-			"configure at least one service: PLAIVO_MAL_CLIENT_ID or PLAIVO_ANILIST_CLIENT_ID",
-		);
-	}
+	if (!mal) throw new Error("PLAIVO_MAL_CLIENT_ID must be set");
 	return {
 		publicUrl: publicUrl.replace(/\/+$/, ""),
-		mal: mal
-			? { id: mal, secret: read("PLAIVO_MAL_CLIENT_SECRET") }
-			: undefined,
-		anilist,
+		mal: { id: mal, secret: read("PLAIVO_MAL_CLIENT_SECRET") },
 	};
 }
 
@@ -360,21 +351,16 @@ function tokensFrom(value: unknown): Tokens | undefined {
 export async function fetchTokens(
 	request: TokenRequest,
 ): Promise<Tokens | ExchangeError> {
-	const isForm = "form" in request;
 	try {
 		const response = await fetch(request.url, {
 			method: "POST",
-			headers: isForm
-				? { Accept: JSON_TYPE }
-				: { Accept: JSON_TYPE, "Content-Type": JSON_TYPE },
-			body: isForm
-				? new URLSearchParams(request.form)
-				: JSON.stringify(request.json),
+			headers: { Accept: JSON_TYPE, "User-Agent": USER_AGENT },
+			body: new URLSearchParams(request.form),
 			signal: AbortSignal.timeout(15_000),
 		});
 		if (!response.ok) {
 			console.error(
-				`token request to ${request.url} answered ${response.status}`,
+				`token request to ${request.url} answered ${response.status}: ${(await response.text()).slice(0, 300)}`,
 			);
 			return exchangeError(response.status);
 		}

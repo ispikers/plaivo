@@ -6,9 +6,9 @@ import {
 	type ExchangeError,
 	exchangeError,
 	type Limits,
+	MAL_TOKEN,
 	Relay,
 	type Sql,
-	TOKEN,
 	type TokenRequest,
 	type Tokens,
 } from "./relay";
@@ -23,7 +23,6 @@ const tokens = (): Tokens => ({
 const config = (): Config => ({
 	publicUrl: "https://relay.test",
 	mal: { id: "mal-id", secret: "mal-secret" },
-	anilist: { id: "ani-id", secret: "ani-secret" },
 });
 
 function memory(): Sql {
@@ -64,9 +63,15 @@ async function start(relay: Relay, service: string) {
 	);
 	expect(reply.status).toBe(200);
 	const body = JSON.parse(reply.body);
+	const short = new URL(body.authorize_url);
+	expect(short.origin + short.pathname).toBe(
+		`https://relay.test/auth/${service}`,
+	);
+	const hop = await relay.handle("GET", short.pathname + short.search, "");
 	return {
 		session: body.session as string,
-		params: new URL(body.authorize_url).searchParams,
+		short: short.pathname + short.search,
+		params: new URL(hop.location ?? short.href).searchParams,
 	};
 }
 
@@ -96,33 +101,12 @@ test("mal flow delivers tokens once", async () => {
 	expect(JSON.parse(got.body)).toEqual(tokens());
 	expect((await result(relay, session)).status).toBe(410);
 
-	expect(seen[0].url).toBe(TOKEN.mal);
+	expect(seen[0].url).toBe(MAL_TOKEN);
 	expect("form" in seen[0] && seen[0].form).toMatchObject({
 		code: "abc",
 		code_verifier: params.get("code_challenge")!,
 		client_secret: "mal-secret",
 		redirect_uri: params.get("redirect_uri")!,
-	});
-});
-
-test("anilist flow uses client secret", async () => {
-	const { relay, seen } = fake(tokens);
-	const { session, params } = await start(relay, "anilist");
-	expect(params.has("code_challenge")).toBe(false);
-	expect(
-		(
-			await callback(
-				relay,
-				`/auth/anilist/callback?code=xyz&state=${params.get("state")}`,
-			)
-		).status,
-	).toBe(200);
-	expect((await result(relay, session)).status).toBe(200);
-	expect(seen[0].url).toBe(TOKEN.anilist);
-	expect("json" in seen[0] && seen[0].json).toMatchObject({
-		client_secret: "ani-secret",
-		code: "xyz",
-		grant_type: "authorization_code",
 	});
 });
 
@@ -144,7 +128,7 @@ test("unknown or reused state is rejected", async () => {
 				`/auth/anilist/callback?code=abc&state=${state}`,
 			)
 		).status,
-	).toBe(400);
+	).toBe(404);
 	expect(
 		(await callback(relay, `/auth/mal/callback?code=abc&state=${state}`))
 			.status,
@@ -180,12 +164,12 @@ test("denied and failed exchanges report errors", async () => {
 	expect(denied.seen).toHaveLength(0);
 
 	const { relay } = fake(() => "rejected");
-	const { session, params } = await start(relay, "anilist");
+	const { session, params } = await start(relay, "mal");
 	expect(
 		(
 			await callback(
 				relay,
-				`/auth/anilist/callback?code=c&state=${params.get("state")}`,
+				`/auth/mal/callback?code=c&state=${params.get("state")}`,
 			)
 		).status,
 	).toBe(502);
@@ -211,7 +195,7 @@ test("session cap answers busy", async () => {
 		limits: { ttl: 600_000, maxSessions: 2 },
 	});
 	await start(relay, "mal");
-	await start(relay, "anilist");
+	await start(relay, "mal");
 	const busy = await relay.handle("POST", "/auth/start", '{"service":"mal"}');
 	expect([busy.status, busy.body]).toEqual([503, '{"error":"busy"}']);
 });
@@ -245,18 +229,10 @@ test("invalid requests are rejected", async () => {
 		(await callback(relay, "/auth/trakt/callback?code=a&state=b")).status,
 	).toBe(404);
 	expect((await callback(relay, "/")).status).toBe(404);
-	const malOnly = fake(tokens, {
-		config: { ...config(), anilist: undefined },
-	});
 	expect(
-		(
-			await malOnly.relay.handle(
-				"POST",
-				"/auth/start",
-				'{"service":"anilist"}',
-			)
-		).status,
-	).toBe(503);
+		(await relay.handle("POST", "/auth/start", '{"service":"anilist"}'))
+			.status,
+	).toBe(400);
 });
 
 test("refresh uses the secret and maps errors", async () => {
@@ -331,18 +307,33 @@ test("config validation matches the server's", () => {
 	expect(ok).toEqual({
 		publicUrl: "https://relay.test",
 		mal: { id: "id", secret: undefined },
-		anilist: undefined,
 	});
 	expect(() => configFrom({ PLAIVO_MAL_CLIENT_ID: "id" })).toThrow(
 		"PLAIVO_RELAY_PUBLIC_URL",
 	);
-	expect(() =>
-		configFrom({
-			PLAIVO_RELAY_PUBLIC_URL: "https://x",
-			PLAIVO_ANILIST_CLIENT_ID: "id",
-		}),
-	).toThrow("set both");
 	expect(() => configFrom({ PLAIVO_RELAY_PUBLIC_URL: "https://x" })).toThrow(
-		"at least one",
+		"PLAIVO_MAL_CLIENT_ID",
 	);
+});
+
+test("the short sign-in link redirects only while the session is open", async () => {
+	const { relay } = fake(tokens);
+	const { short, params } = await start(relay, "mal");
+	const hop = await relay.handle("GET", short, "");
+	expect(hop.status).toBe(302);
+	expect(hop.location).toStartWith(
+		"https://myanimelist.net/v1/oauth2/authorize?",
+	);
+	expect(params.get("state")).toBe(
+		new URLSearchParams(short.split("?")[1]).get("state"),
+	);
+	expect((await relay.handle("GET", "/auth/mal?state=nope", "")).status).toBe(
+		400,
+	);
+	expect((await relay.handle("GET", "/auth/mal", "")).status).toBe(400);
+	await callback(
+		relay,
+		`/auth/mal/callback?error=access_denied&state=${params.get("state")}`,
+	);
+	expect((await relay.handle("GET", short, "")).status).toBe(400);
 });
