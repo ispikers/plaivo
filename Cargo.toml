@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/core", "crates/ffi", "crates/oauth-relay", "crates/uniffi-bindgen"]
+members = [".", "crates/core", "crates/ffi", "crates/uniffi-bindgen"]
 
 [package]
 name = "plaivo"

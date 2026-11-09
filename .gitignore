@@ -13,3 +13,9 @@
 *.keystore
 
 *.md
+!README.md
+
+node_modules/
+.wrangler/
+.dev.vars
+biome.json
