@@ -1,6 +1,6 @@
 use plaivo_core::downloads::{Downloads, State};
 use plaivo_core::menu::{self, Action};
-use plaivo_core::plex::{Client, Ctx, Item, QUALITIES, Server, Source, fmt_bitrate, resolve_playable};
+use plaivo_core::plex::{self, Client, Ctx, Hub, Item, QUALITIES, SORTS, Server, Source, fmt_bitrate, resolve_playable};
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key};
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
@@ -334,10 +334,38 @@ pub struct LibraryPage {
 
 #[derive(uniffi::Record)]
 pub struct Row {
+    pub key: String,
     pub title: String,
     pub resume: bool,
     pub wide: bool,
     pub cards: Vec<Card>,
+}
+
+#[derive(uniffi::Enum)]
+pub enum Listing {
+    Items { sort: String },
+    Collections,
+    CollectionItems,
+}
+
+#[derive(uniffi::Record)]
+pub struct SortOption {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct HubSort {
+    pub id: String,
+    pub label: String,
+    pub order: Vec<u32>,
+}
+
+#[derive(uniffi::Record)]
+pub struct HubList {
+    pub cards: Vec<Card>,
+    pub sorts: Vec<HubSort>,
+    pub initial: String,
 }
 
 #[derive(uniffi::Record)]
@@ -659,15 +687,20 @@ impl Plaivo {
     pub fn home(&self, server_id: String, cached: bool) -> R<Vec<Row>> {
         let srv = self.server(&server_id)?;
         let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
-        let hubs = srv.hubs(&ctx)?;
+        Ok(rows(&srv, &srv.hubs(&ctx)?, &self.card_prefs()))
+    }
+
+    pub fn library_hubs(&self, server_id: String, key: String, movies: bool, cached: bool) -> R<Vec<Row>> {
+        let srv = self.server(&server_id)?;
+        let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
+        Ok(rows(&srv, &srv.section_hubs(&ctx, &key, if movies { "movie" } else { "show" })?, &self.card_prefs()))
+    }
+
+    pub fn hub_list(&self, server_id: String, key: String) -> R<HubList> {
+        let srv = self.server(&server_id)?;
+        let items = srv.hub_items(&Ctx::new(self.client.clone(), Source::Live), &key)?;
         let prefs = self.card_prefs();
-        Ok(hubs
-            .iter()
-            .map(|h| {
-                let wide = prefs.wide_hub(h);
-                Row { title: h.title.clone(), resume: h.is_continue(), wide, cards: h.metadata.iter().map(|it| card(&srv, it, wide, &prefs)).collect() }
-            })
-            .collect())
+        Ok(HubList { cards: items.iter().map(|it| card(&srv, it, false, &prefs)).collect(), sorts: hub_sorts(&items, &key), initial: plex::initial_sort(&key) })
     }
 
     pub fn libraries(&self, cached: bool) -> Vec<Section> {
@@ -684,13 +717,19 @@ impl Plaivo {
         })
     }
 
-    pub fn library_page(&self, server_id: String, key: String, start: u64, size: u64) -> R<LibraryPage> {
+    pub fn library_page(&self, server_id: String, key: String, listing: Listing, start: u64, size: u64) -> R<LibraryPage> {
         let srv = self.server(&server_id)?;
         let (prefs, list) = {
             let s = self.settings.lock().unwrap();
             (s.card_prefs(), s.view_mode == ViewMode::List)
         };
-        let (items, total) = srv.section_items(&Ctx::new(self.client.clone(), Source::Live), &key, start as usize, size as usize, "titleSort", list)?;
+        let ctx = Ctx::new(self.client.clone(), Source::Live);
+        let (start, size) = (start as usize, size as usize);
+        let (items, total) = match listing {
+            Listing::Items { sort } => srv.section_items(&ctx, &key, start, size, &sort, list)?,
+            Listing::Collections => srv.collections(&ctx, &key, start, size)?,
+            Listing::CollectionItems => srv.collection_items(&ctx, &key, start, size, list)?,
+        };
         Ok(LibraryPage { cards: items.iter().map(|it| card(&srv, it, false, &prefs)).collect(), total: total as u64 })
     }
 
@@ -948,6 +987,11 @@ impl Plaivo {
 }
 
 #[uniffi::export]
+pub fn library_sorts() -> Vec<SortOption> {
+    SORTS.iter().map(|(id, label)| SortOption { id: (*id).into(), label: (*label).into() }).collect()
+}
+
+#[uniffi::export]
 pub fn move_library(mut settings: Settings, arranged: Vec<String>, id: String, step: i32) -> Settings {
     settings.move_library(&arranged, &id, step as isize);
     settings
@@ -982,6 +1026,27 @@ pub fn subtitle_colors() -> Vec<SubtitleColor> {
 #[uniffi::export]
 pub fn card_scale(density: u32) -> f32 {
     Settings { density, ..Default::default() }.card_scale()
+}
+
+fn hub_sorts(items: &[Item], key: &str) -> Vec<HubSort> {
+    plex::hub_sorts(items, key)
+        .into_iter()
+        .map(|(id, label)| {
+            let mut sorted: Vec<&Item> = items.iter().collect();
+            plex::sort_items(&mut sorted, id);
+            let order = sorted.iter().map(|it| items.iter().position(|x| std::ptr::eq(x, *it)).unwrap_or_default() as u32).collect();
+            HubSort { id: id.into(), label: label.into(), order }
+        })
+        .collect()
+}
+
+fn rows(srv: &Server, hubs: &[Hub], prefs: &CardPrefs) -> Vec<Row> {
+    hubs.iter()
+        .map(|h| {
+            let wide = prefs.wide_hub(h);
+            Row { key: h.key.clone(), title: h.title.clone(), resume: h.is_continue(), wide, cards: h.metadata.iter().map(|it| card(srv, it, wide, prefs)).collect() }
+        })
+        .collect()
 }
 
 fn download_parent<'a>(scope: &DownloadScope, it: &'a Item) -> Option<&'a String> {
@@ -1217,6 +1282,18 @@ mod tests {
         core.sign_out();
         assert!(!core.signed_in() && core.settings().home_server.is_empty() && core.tracked.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hub_sorts_give_card_orders() {
+        use super::{Item, hub_sorts};
+        let items = [Item { title: "b".into(), ..Default::default() }, Item { title: "a".into(), added_at: Some(1), ..Default::default() }];
+        let sorts = hub_sorts(&items, "/hubs/x");
+        let order = |id: &str| sorts.iter().find(|s| s.id == id).map(|s| s.order.clone());
+        assert_eq!(order(""), Some(vec![0, 1]));
+        assert_eq!(order("titleSort"), Some(vec![1, 0]));
+        assert_eq!(order("addedAt:desc"), Some(vec![1, 0]));
+        assert!(hub_sorts(&items[..1], "/hubs/x").iter().all(|s| s.id != "addedAt:desc"));
     }
 
     #[test]

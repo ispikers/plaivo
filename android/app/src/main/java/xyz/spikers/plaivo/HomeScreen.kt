@@ -71,7 +71,7 @@ private val centerFocused = object : BringIntoViewSpec {
 }
 
 @Composable
-fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFocus: Boolean, onFocusTaken: () -> Unit, play: (MediaCard) -> Unit, openDownloads: () -> Unit) {
+fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFocus: Boolean, onFocusTaken: () -> Unit, play: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit, openDownloads: () -> Unit) {
     var rows by remember(server?.id) { mutableStateOf<List<MediaRow>>(emptyList()) }
     var error by remember(server?.id) { mutableStateOf<String?>(null) }
     LaunchedEffect(server?.id, refresh) {
@@ -88,7 +88,7 @@ fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFo
     when {
         server == null -> Message(if (serversLoaded) "No reachable server" else "Loading…", openDownloads.takeIf { serversLoaded })
         rows.isEmpty() -> Message(error ?: "Loading…", openDownloads.takeIf { error != null })
-        else -> Spotlight(rows, takeFocus, onFocusTaken, play)
+        else -> Spotlight(rows, takeFocus, onFocusTaken, play, openRow)
     }
 }
 
@@ -103,7 +103,7 @@ fun Message(text: String, openDownloads: (() -> Unit)? = null) {
 }
 
 @Composable
-private fun Spotlight(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> Unit, play: (MediaCard) -> Unit) {
+fun Spotlight(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> Unit, play: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit) {
     var focused by remember { mutableStateOf(rows.first().cards.firstOrNull()) }
     var shown by remember { mutableStateOf(focused) }
     LaunchedEffect(focused) {
@@ -123,7 +123,7 @@ private fun Spotlight(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: ()
                 shown,
                 Modifier.align(Alignment.TopStart).padding(start = Dims.edge, top = top).width(maxWidth * 0.57f).height(maxHeight - railHeight - top - 8.dp),
             )
-            Rails(rows, takeFocus, onFocusTaken, { focused = it }, play, Modifier.align(Alignment.BottomStart).fillMaxWidth().height(railHeight))
+            Rails(rows, takeFocus, onFocusTaken, { focused = it }, play, openRow, Modifier.align(Alignment.BottomStart).fillMaxWidth().height(railHeight))
         }
     }
 }
@@ -150,7 +150,7 @@ private fun Info(card: MediaCard?, modifier: Modifier) {
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
-private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> Unit, onFocus: (MediaCard) -> Unit, play: (MediaCard) -> Unit, modifier: Modifier) {
+private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> Unit, onFocus: (MediaCard) -> Unit, play: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit, modifier: Modifier) {
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var active by remember { mutableIntStateOf(0) }
@@ -192,6 +192,7 @@ private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> 
                                     onFocus = { onFocus(card) },
                                 ) { play(card) }
                             }
+                            if (row.key.isNotEmpty()) item(key = "see-all") { SeeAll(row.wide, dim = index != active) { openRow(row) } }
                         }
                     }
                 }

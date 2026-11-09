@@ -51,6 +51,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.plaivo_ffi.Card as MediaCard
+import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.Section
 import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.SignIn as Pin
@@ -200,6 +201,10 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
     var menu by remember { mutableStateOf<MediaCard?>(null) }
     var changes by remember { mutableIntStateOf(0) }
     val openMenu = remember { { card: MediaCard -> menu = card } }
+    var libTab by remember { mutableStateOf(LibTab.Recommended) }
+    var pages by remember { mutableStateOf(listOf<SubPage>()) }
+    val open = { card: MediaCard -> if (card.kind == "collection") pages = pages + SubPage.Collection(card.server, card.key, card.title) else play(card) }
+    val openRow = { server: String, row: MediaRow -> pages = pages + SubPage.Hub(server, row.key, row.title) }
     fun reloadServers() {
         if (!core.hasServers()) return onAccountChanged()
         servers = core.servers()
@@ -232,8 +237,8 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
         Box(Modifier.fillMaxSize().padding(start = inset)) {
             CompositionLocalProvider(LocalCardScale provides cardScale, LocalCardMenu provides openMenu, LocalAppearance provides appearance) {
                 when (val s = screen) {
-                    Screen.Home -> HomeScreen(home, serversLoaded, refresh + changes, focusHome, { focusHome = false }, play) { screen = Screen.Downloads }
-                    Screen.Search -> SearchScreen(play)
+                    Screen.Home -> HomeScreen(home, serversLoaded, refresh + changes, focusHome, { focusHome = false }, open, { row -> home?.let { openRow(it.id, row) } }) { screen = Screen.Downloads }
+                    Screen.Search -> SearchScreen(open)
                     Screen.Downloads -> DownloadsScreen(play)
                     Screen.WatchTogether -> WatchTogetherScreen()
                     Screen.Settings -> SettingsScreen(
@@ -257,7 +262,17 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                         focusHome = true
                         screen = Screen.Home
                     }
-                    is Screen.Browse -> LibraryScreen(s.library, play)
+                    is Screen.Browse -> key(s.library.id) { LibraryScreen(s.library, libTab, { libTab = it }, open) { row -> openRow(s.library.server, row) } }
+                }
+                pages.forEachIndexed { i, p ->
+                    key(i, p) {
+                        FullPage(onBack = { pages = pages.take(i) }) {
+                            when (p) {
+                                is SubPage.Hub -> HubListScreen(p.server, p.key, p.title, open)
+                                is SubPage.Collection -> CollectionScreen(p.server, p.key, p.title, open)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -272,4 +287,9 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
         )
     }
     menu?.let { CardMenu(it, onDismiss = { menu = null }, onChanged = { changes++ }) }
+}
+
+sealed interface SubPage {
+    data class Hub(val server: String, val key: String, val title: String) : SubPage
+    data class Collection(val server: String, val key: String, val title: String) : SubPage
 }

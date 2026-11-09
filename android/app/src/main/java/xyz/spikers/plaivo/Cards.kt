@@ -2,6 +2,7 @@ package xyz.spikers.plaivo
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -75,5 +76,26 @@ fun MediaTile(card: MediaCard, wide: Boolean, modifier: Modifier = Modifier, dim
         }
         Text(card.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, modifier = Modifier.padding(top = 6.dp))
         Text(card.subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = Palette.muted)
+    }
+}
+
+@Composable
+fun SeeAll(wide: Boolean, dim: Boolean, onClick: () -> Unit) {
+    Column(Modifier.width((if (wide) Dims.wide else Dims.poster) * LocalCardScale.current)) {
+        Card(
+            onClick = onClick,
+            modifier = Modifier.fillMaxWidth().aspectRatio(if (wide) 16f / 9f else 2f / 3f),
+            shape = CardDefaults.shape(cardShape),
+            colors = CardDefaults.colors(containerColor = Palette.surface, focusedContainerColor = Palette.tint(0.12f)),
+            scale = CardDefaults.scale(focusedScale = 1f),
+            border = CardDefaults.border(focusedBorder = Border(BorderStroke(2.5.dp, Palette.text), shape = cardShape)),
+            glow = CardDefaults.glow(),
+        ) {
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+                val tint = Palette.text.copy(alpha = if (dim) 0.54f else 1f)
+                GlyphIcon(Glyph.ChevronRight, 28.dp, tint)
+                Text("See all", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = tint)
+            }
+        }
     }
 }

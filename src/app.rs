@@ -1,7 +1,7 @@
 use crate::downloads::{Downloads, Entry, State};
 use crate::images::{self, Lru};
 use crate::player::Player;
-use crate::plex::{self, Client, Ctx, DISCOVER_ID, Item, R, Server, Source};
+use crate::plex::{self, Client, Ctx, DISCOVER_ID, Item, R, SORTS, Server, Source, initial_sort, sort_items};
 use crate::settings::{BLUR_PARAM, CardPrefs, EpisodePoster, Settings, ViewMode, library_key};
 use crate::store;
 use crate::ui::add_server::AddServer;
@@ -30,12 +30,6 @@ pub const IMAGE_FADE: Duration = Duration::from_millis(300);
 const FIRST_ROW_IMAGES: usize = 6;
 const TOAST_FOR: Duration = Duration::from_secs(5);
 const LOCAL_IMAGE: &str = "#local";
-pub const SORTS: &[(&str, &str)] = &[
-    ("titleSort", "Title"),
-    ("addedAt:desc", "Recently added"),
-    ("originallyAvailableAt:desc", "Release date"),
-    ("audienceRating:desc", "Rating"),
-];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -198,8 +192,8 @@ impl HubList {
         self.cards = items.into_iter().map(|it| Card { resume: self.resume, ..card_for(it, false, &self.server) }).collect();
     }
 
-    pub fn has_added(&self) -> bool {
-        self.items.iter().any(|it| it.added_at.is_some()) || initial_sort(&self.key) == "addedAt:desc"
+    pub fn sorts(&self) -> Vec<(&'static str, &'static str)> {
+        plex::hub_sorts(&self.items, &self.key)
     }
 }
 
@@ -431,25 +425,6 @@ fn hub_rows(hubs: &[plex::Hub], server: &str, old: &[Hub]) -> Vec<Hub> {
             }
         })
         .collect()
-}
-
-fn initial_sort(key: &str) -> String {
-    let param = key.split(['?', '&']).find_map(|p| p.strip_prefix("sort="));
-    if let Some((id, _)) = SORTS.iter().find(|(id, _)| Some(*id) == param) {
-        return (*id).to_owned();
-    }
-    if key.starts_with("latest:") || key.to_ascii_lowercase().contains("recentlyadded") { "addedAt:desc".to_owned() } else { String::new() }
-}
-
-fn sort_items(items: &mut [&Item], sort: &str) {
-    use std::cmp::Reverse;
-    match sort {
-        "titleSort" => items.sort_by_cached_key(|it| first(&[&it.grandparent_title, &it.title]).to_lowercase()),
-        "addedAt:desc" => items.sort_by_key(|it| Reverse(it.added_at)),
-        "originallyAvailableAt:desc" => items.sort_by_cached_key(|it| Reverse(if it.originally_available_at.is_empty() { it.year.map(|y| y.to_string()).unwrap_or_default() } else { it.originally_available_at.clone() })),
-        "audienceRating:desc" => items.sort_by(|a, b| b.audience_rating.partial_cmp(&a.audience_rating).unwrap_or(std::cmp::Ordering::Equal)),
-        _ => {}
-    }
 }
 
 pub fn episode_card(e: &Item, server: &str) -> Card {
@@ -1864,32 +1839,6 @@ mod tests {
 
     fn item(key: &str, kind: &str, title: &str, guid: &str) -> Item {
         Item { rating_key: key.into(), kind: kind.into(), title: title.into(), guid: guid.into(), ..Default::default() }
-    }
-
-    #[test]
-    fn recent_hub_lists_open_on_their_date_sort() {
-        assert_eq!(initial_sort("/library/sections/1/all?sort=originallyAvailableAt:desc&originallyAvailableAt>=-1y"), "originallyAvailableAt:desc");
-        assert_eq!(initial_sort("/hubs/home/recentlyAdded?type=1&sectionID=1"), "addedAt:desc");
-        assert_eq!(initial_sort("latest:abc"), "addedAt:desc");
-        assert_eq!(initial_sort("/library/sections/1/all?sort=lastViewedAt:desc"), "");
-        assert_eq!(initial_sort("/hubs/continueWatching/items"), "");
-    }
-
-    #[test]
-    fn hub_lists_sort_with_missing_values_last() {
-        let a = Item { added_at: Some(5), audience_rating: Some(7.), year: Some(1999), ..item("a", "movie", "beta", "") };
-        let b = Item { audience_rating: Some(9.), originally_available_at: "2005-01-02".into(), ..item("b", "movie", "Alpha", "") };
-        let c = Item { added_at: Some(9), grandparent_title: "Gamma".into(), ..item("c", "episode", "Aardvark", "") };
-        let keys = |sort: &str| {
-            let mut v = vec![&a, &b, &c];
-            sort_items(&mut v, sort);
-            v.iter().map(|it| it.rating_key.as_str()).collect::<String>()
-        };
-        assert_eq!(keys(""), "abc");
-        assert_eq!(keys("titleSort"), "bac");
-        assert_eq!(keys("addedAt:desc"), "cab");
-        assert_eq!(keys("originallyAvailableAt:desc"), "bac");
-        assert_eq!(keys("audienceRating:desc"), "bac");
     }
 
     #[test]

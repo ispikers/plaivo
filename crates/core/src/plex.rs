@@ -528,6 +528,37 @@ static DOWN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 pub const HUB_MAX: usize = 1000;
 
+pub const SORTS: &[(&str, &str)] = &[
+    ("titleSort", "Title"),
+    ("addedAt:desc", "Recently added"),
+    ("originallyAvailableAt:desc", "Release date"),
+    ("audienceRating:desc", "Rating"),
+];
+
+pub fn initial_sort(key: &str) -> String {
+    let param = key.split(['?', '&']).find_map(|p| p.strip_prefix("sort="));
+    if let Some((id, _)) = SORTS.iter().find(|(id, _)| Some(*id) == param) {
+        return (*id).to_owned();
+    }
+    if key.starts_with("latest:") || key.to_ascii_lowercase().contains("recentlyadded") { "addedAt:desc".to_owned() } else { String::new() }
+}
+
+pub fn sort_items(items: &mut [&Item], sort: &str) {
+    use std::cmp::Reverse;
+    match sort {
+        "titleSort" => items.sort_by_cached_key(|it| first(&[&it.grandparent_title, &it.title]).to_lowercase()),
+        "addedAt:desc" => items.sort_by_key(|it| Reverse(it.added_at)),
+        "originallyAvailableAt:desc" => items.sort_by_cached_key(|it| Reverse(if it.originally_available_at.is_empty() { it.year.map(|y| y.to_string()).unwrap_or_default() } else { it.originally_available_at.clone() })),
+        "audienceRating:desc" => items.sort_by(|a, b| b.audience_rating.partial_cmp(&a.audience_rating).unwrap_or(std::cmp::Ordering::Equal)),
+        _ => {}
+    }
+}
+
+pub fn hub_sorts(items: &[Item], key: &str) -> Vec<(&'static str, &'static str)> {
+    let added = items.iter().any(|it| it.added_at.is_some()) || initial_sort(key) == "addedAt:desc";
+    std::iter::once(("", "Default")).chain(SORTS.iter().copied().filter(|(id, _)| *id != "addedAt:desc" || added)).collect()
+}
+
 pub fn is_down(server_id: &str) -> bool {
     DOWN.lock().unwrap_or_else(|e| e.into_inner()).contains(server_id)
 }
@@ -1091,6 +1122,32 @@ pub fn fmt_bitrate(kbps: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_hub_lists_open_on_their_date_sort() {
+        assert_eq!(initial_sort("/library/sections/1/all?sort=originallyAvailableAt:desc&originallyAvailableAt>=-1y"), "originallyAvailableAt:desc");
+        assert_eq!(initial_sort("/hubs/home/recentlyAdded?type=1&sectionID=1"), "addedAt:desc");
+        assert_eq!(initial_sort("latest:abc"), "addedAt:desc");
+        assert_eq!(initial_sort("/library/sections/1/all?sort=lastViewedAt:desc"), "");
+        assert_eq!(initial_sort("/hubs/continueWatching/items"), "");
+    }
+
+    #[test]
+    fn hub_lists_sort_with_missing_values_last() {
+        let a = Item { added_at: Some(5), audience_rating: Some(7.), year: Some(1999), ..Item { rating_key: "a".into(), kind: "movie".into(), title: "beta".into(), ..Default::default() } };
+        let b = Item { audience_rating: Some(9.), originally_available_at: "2005-01-02".into(), ..Item { rating_key: "b".into(), kind: "movie".into(), title: "Alpha".into(), ..Default::default() } };
+        let c = Item { added_at: Some(9), grandparent_title: "Gamma".into(), ..Item { rating_key: "c".into(), kind: "episode".into(), title: "Aardvark".into(), ..Default::default() } };
+        let keys = |sort: &str| {
+            let mut v = vec![&a, &b, &c];
+            sort_items(&mut v, sort);
+            v.iter().map(|it| it.rating_key.as_str()).collect::<String>()
+        };
+        assert_eq!(keys(""), "abc");
+        assert_eq!(keys("titleSort"), "bac");
+        assert_eq!(keys("addedAt:desc"), "cab");
+        assert_eq!(keys("originallyAvailableAt:desc"), "bac");
+        assert_eq!(keys("audienceRating:desc"), "bac");
+    }
 
     #[test]
     fn parses_metadata_container() {

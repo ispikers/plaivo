@@ -1,4 +1,5 @@
-use crate::app::{Card, LIB_TABS, LibTab, Listing, Nav, Plaivo, SORTS, Shape};
+use crate::app::{Card, LIB_TABS, LibTab, Listing, Nav, Plaivo, Shape};
+use crate::plex::SORTS;
 use crate::settings::{DENSITY_MAX, ViewMode};
 use crate::ui::home::{card_height, card_width, content_width};
 use crate::ui::theme::{self, Icon};
@@ -198,8 +199,7 @@ impl Plaivo {
     pub fn render_hub_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(l) = &self.hub_list else { return div().into_any_element() };
         let (title, sort, scroll, loaded, empty) = (l.title.clone(), l.sort.clone(), l.scroll.clone(), l.loaded, l.cards.is_empty());
-        let mut options = vec![("", "Default")];
-        options.extend(SORTS.iter().copied().filter(|(id, _)| *id != "addedAt:desc" || l.has_added()));
+        let options = l.sorts();
         let cw = content_width(self, window);
         let body = if empty {
             message(if loaded { "Nothing here" } else { "" })
