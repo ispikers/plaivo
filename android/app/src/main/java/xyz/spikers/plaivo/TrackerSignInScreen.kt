@@ -36,7 +36,6 @@ import uniffi.plaivo_ffi.TrackerSignIn
 val Service.title get() = when (this) {
     Service.TRAKT -> "Trakt"
     Service.MAL -> "MyAnimeList"
-    Service.ANILIST -> "AniList"
 }
 
 private fun failure(reason: String) = when (reason) {

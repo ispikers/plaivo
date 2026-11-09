@@ -61,7 +61,6 @@ fn name(s: Service) -> &'static str {
     match s {
         Service::Trakt => "Trakt",
         Service::Mal => "MyAnimeList",
-        Service::Anilist => "AniList",
     }
 }
 
@@ -216,7 +215,7 @@ impl Plaivo {
             .flex()
             .flex_col()
             .gap(px(28.))
-            .child(note("Anime is matched to MyAnimeList and AniList by its TVDB, TMDB or AniDB ID."))
+            .child(note("Anime is matched to MyAnimeList by its TVDB, TMDB or AniDB ID."))
             .children(Service::ALL.map(|s| self.render_service(s, cx)))
     }
 }

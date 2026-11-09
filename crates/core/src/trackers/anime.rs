@@ -14,7 +14,6 @@ const SHORT: &str = "anime mappings cut short";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnimeMatch {
     pub mal: Option<u64>,
-    pub anilist: Option<u64>,
     pub progress: u32,
 }
 
@@ -167,8 +166,8 @@ fn unit(media: &Media) -> Option<u32> {
 }
 
 pub(super) fn direct(media: &Media) -> Option<AnimeMatch> {
-    let (mal, anilist) = (num(media, "mal"), num(media, "anilist"));
-    (series_level(media) && (mal.is_some() || anilist.is_some())).then_some(AnimeMatch { mal, anilist, progress: unit(media)? })
+    let mal = num(media, "mal");
+    (series_level(media) && mal.is_some()).then_some(AnimeMatch { mal, progress: unit(media)? })
 }
 
 pub(super) fn mappable(media: &Media) -> bool {
@@ -189,7 +188,7 @@ pub(super) fn resolve(raw: &[u8], media: &Media) -> Result<Option<AnimeMatch>, S
     let found = find(&t, media, progress)?;
     let Some((row, progress)) = found else { return Ok(None) };
     let id = |name: &str| -> Result<Option<u64>, String> { Ok(t.ints(name)?[row].and_then(|n| u64::try_from(n).ok()).filter(|&n| n > 0)) };
-    Ok(Some(AnimeMatch { mal: id("mal_id")?, anilist: id("anilist_id")?, progress }))
+    Ok(Some(AnimeMatch { mal: id("mal_id")?, progress }))
 }
 
 fn single(rows: Vec<usize>) -> Option<usize> {
@@ -433,8 +432,8 @@ mod tests {
         Media { movie: true, ids: ids(pairs), ..Media::default() }
     }
 
-    fn m(mal: Option<u64>, anilist: Option<u64>, progress: u32) -> Option<AnimeMatch> {
-        Some(AnimeMatch { mal, anilist, progress })
+    fn m(mal: Option<u64>, progress: u32) -> Option<AnimeMatch> {
+        Some(AnimeMatch { mal, progress })
     }
 
     #[test]
@@ -442,24 +441,24 @@ mod tests {
         let raw = fixture();
         let r = |media: Media| resolve(&raw, &media).unwrap();
         let show = [("tvdb", "5000"), ("tmdb", "70"), ("imdb", "tt9999")];
-        assert_eq!(r(ep(&show, 1, 5)), m(Some(100), Some(200), 5));
-        assert_eq!(r(ep(&show, 1, 13)), m(Some(101), Some(201), 1));
-        assert_eq!(r(ep(&show, 2, 3)), m(Some(102), Some(202), 3));
+        assert_eq!(r(ep(&show, 1, 5)), m(Some(100), 5));
+        assert_eq!(r(ep(&show, 1, 13)), m(Some(101), 1));
+        assert_eq!(r(ep(&show, 2, 3)), m(Some(102), 3));
         assert_eq!(r(ep(&show, 3, 1)), None);
         assert_eq!(r(ep(&show, 0, 5)), None);
-        assert_eq!(r(Media { order: Some(EpisodeOrder::Tmdb), ..ep(&show, 2, 4) }), m(Some(101), Some(201), 4));
-        assert_eq!(r(ep(&[("tmdb", "70")], 3, 2)), m(Some(102), Some(202), 2));
-        assert_eq!(r(ep(&[("tvdb", "6000")], 1, 7)), m(None, Some(205), 7));
+        assert_eq!(r(Media { order: Some(EpisodeOrder::Tmdb), ..ep(&show, 2, 4) }), m(Some(101), 4));
+        assert_eq!(r(ep(&[("tmdb", "70")], 3, 2)), m(Some(102), 2));
+        assert_eq!(r(ep(&[("tvdb", "6000")], 1, 7)), m(None, 7));
         assert_eq!(r(ep(&[("tvdb", "6000")], 4, 7)), None);
         assert_eq!(r(ep(&[("tvdb", "7000")], 1, 2)), None);
-        assert_eq!(r(ep(&[("tvdb", "7000")], 2, 2)), m(Some(109), None, 2));
-        assert_eq!(r(movie(&[("tmdb", "901")])), m(Some(103), Some(203), 1));
+        assert_eq!(r(ep(&[("tvdb", "7000")], 2, 2)), m(Some(109), 2));
+        assert_eq!(r(movie(&[("tmdb", "901")])), m(Some(103), 1));
         assert_eq!(r(movie(&[("tmdb", "70")])), None);
-        assert_eq!(r(movie(&[("imdb", "tt0002")])), m(Some(104), None, 1));
-        assert_eq!(r(ep(&[("anidb", "12"), ("tvdb", "5000")], 1, 2)), m(Some(102), Some(202), 2));
+        assert_eq!(r(movie(&[("imdb", "tt0002")])), m(Some(104), 1));
+        assert_eq!(r(ep(&[("anidb", "12"), ("tvdb", "5000")], 1, 2)), m(Some(102), 2));
         assert_eq!(r(ep(&[("anidb", "12")], 2, 2)), None);
-        assert_eq!(r(ep(&[("anilist", "77")], 1, 3)), m(None, Some(77), 3));
-        assert_eq!(r(ep(&[("anilist", "77")], 2, 3)), None);
+        assert_eq!(r(ep(&[("mal", "77")], 1, 3)), m(Some(77), 3));
+        assert_eq!(r(ep(&[("mal", "77")], 2, 3)), None);
         assert_eq!(r(ep(&[("tvdb", "1"), ("imdb", "tt5")], 1, 1)), None);
         assert!(!mappable(&ep(&[("plex", "plex://show/1")], 1, 1)));
     }
@@ -489,7 +488,6 @@ mod tests {
         r("Frieren tmdb 209867 S1E1", ep(&[("tmdb", "209867")], 1, 1));
         r("Jujutsu Kaisen tmdb order 95479 S1E30", Media { order: Some(EpisodeOrder::Tmdb), ..ep(&[("tvdb", "377543"), ("tmdb", "95479")], 1, 30) });
         assert_eq!(bebop.and_then(|m| m.mal), Some(1));
-        assert_eq!(bebop.and_then(|m| m.anilist), Some(1));
         let meta: Meta = store::read_json(&mappings.meta_path()).unwrap();
         println!("etag: {:?}", meta.etag);
         let mut again = Mappings::new(dir.clone());

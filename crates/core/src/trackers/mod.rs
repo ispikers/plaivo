@@ -38,7 +38,7 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-const ID_KINDS: [&str; 6] = ["imdb", "tmdb", "tvdb", "anidb", "anilist", "mal"];
+const ID_KINDS: [&str; 5] = ["imdb", "tmdb", "tvdb", "anidb", "mal"];
 
 fn item_ids(it: &Item) -> Ids {
     let mut ids = ids_from_guids(it.guids.iter().map(|g| g.id.as_str()));
@@ -51,24 +51,22 @@ fn item_ids(it: &Item) -> Ids {
 pub enum Service {
     Trakt,
     Mal,
-    Anilist,
 }
 
 impl Service {
-    pub const ALL: [Service; 3] = [Service::Trakt, Service::Mal, Service::Anilist];
+    pub const ALL: [Service; 2] = [Service::Trakt, Service::Mal];
 
     fn key(self) -> &'static str {
         match self {
             Service::Trakt => "trakt",
             Service::Mal => "mal",
-            Service::Anilist => "anilist",
         }
     }
 
     pub fn configured(self) -> bool {
         match self {
             Service::Trakt => trakt_id().is_some(),
-            Service::Mal | Service::Anilist => true,
+            Service::Mal => true,
         }
     }
 }
@@ -112,13 +110,12 @@ impl Default for Account {
 struct Accounts {
     trakt: Account,
     mal: Account,
-    anilist: Account,
     trakt_progress: bool,
 }
 
 impl Default for Accounts {
     fn default() -> Self {
-        Self { trakt: Account::default(), mal: Account::default(), anilist: Account::default(), trakt_progress: true }
+        Self { trakt: Account::default(), mal: Account::default(), trakt_progress: true }
     }
 }
 
@@ -127,7 +124,6 @@ impl Accounts {
         match s {
             Service::Trakt => &self.trakt,
             Service::Mal => &self.mal,
-            Service::Anilist => &self.anilist,
         }
     }
 
@@ -135,11 +131,10 @@ impl Accounts {
         match s {
             Service::Trakt => &mut self.trakt,
             Service::Mal => &mut self.mal,
-            Service::Anilist => &mut self.anilist,
         }
     }
 
-    fn active(&self, s: Service, configured: [bool; 3]) -> bool {
+    fn active(&self, s: Service, configured: [bool; 2]) -> bool {
         configured[s as usize] && self.get(s).token.is_some() && self.get(s).scrobble
     }
 }
@@ -347,7 +342,7 @@ struct Shared {
 
 struct Inner {
     dir: PathBuf,
-    configured: [bool; 3],
+    configured: [bool; 2],
     shared: Mutex<Shared>,
     queue: Mutex<Queue>,
     tx: Sender<Job>,
@@ -369,7 +364,7 @@ impl Trackers {
         trackers
     }
 
-    fn detached(config: PathBuf, configured: [bool; 3]) -> (Self, Receiver<Job>) {
+    fn detached(config: PathBuf, configured: [bool; 2]) -> (Self, Receiver<Job>) {
         let accounts = store::read_json(&config.join(ACCOUNTS_FILE)).unwrap_or_default();
         let (tx, rx) = channel();
         let shared = Mutex::new(Shared { accounts, session: None, threshold: 90.0, shows: HashMap::new() });
@@ -455,7 +450,7 @@ impl Trackers {
             }
             (Service::Trakt, 404) | (_, 410) => Poll::Failed("expired".into()),
             (Service::Trakt, 409 | 418) => Poll::Failed("denied".into()),
-            (Service::Mal | Service::Anilist, 403) => Poll::Failed(resp.json()["error"].as_str().unwrap_or("denied").to_owned()),
+            (Service::Mal, 403) => Poll::Failed(resp.json()["error"].as_str().unwrap_or("denied").to_owned()),
             _ => Poll::Pending,
         }
     }
@@ -604,18 +599,18 @@ impl Inner {
             Ok(None) => return Outcome::Drop,
             Err(()) => return Outcome::Retry,
         };
-        let Some(id) = (if s == Service::Mal { m.mal } else { m.anilist }) else { return Outcome::Drop };
-        let snapshot = match self.call(s, |t| lists::snapshot_request(s, id, t)) {
+        let Some(id) = m.mal else { return Outcome::Drop };
+        let snapshot = match self.call(s, |t| lists::snapshot_request(id, t)) {
             Ok(r) if r.status == 200 => r.json(),
             Ok(r) => return classify(r.status),
             Err(o) => return o,
         };
-        let Some(snap) = lists::parse_snapshot(s, &snapshot) else { return Outcome::Drop };
+        let Some(snap) = lists::parse_snapshot(&snapshot) else { return Outcome::Drop };
         let Some((progress, complete)) = lists::decide(&snap, m.progress, w.media.movie) else {
             log::info!("{} {id}: list already at {} episodes, nothing to write", s.key(), snap.progress);
             return Outcome::Done;
         };
-        match self.call(s, |t| lists::update_request(s, id, t, progress, complete)) {
+        match self.call(s, |t| lists::update_request(id, t, progress, complete)) {
             Ok(r) => {
                 log::info!("{} {id}: progress {progress}{}: HTTP {}", s.key(), if complete { " (completed)" } else { "" }, r.status);
                 if r.json().get("errors").is_some() { Outcome::Drop } else { classify(r.status) }
@@ -689,7 +684,7 @@ mod tests {
     #[test]
     fn show_ids_are_cached_and_a_failed_fetch_is_not() {
         let dir = std::env::temp_dir().join(format!("plaivo-trackers-shows-{}", std::process::id()));
-        let (t, _rx) = Trackers::detached(dir.clone(), [false; 3]);
+        let (t, _rx) = Trackers::detached(dir.clone(), [false; 2]);
         let srv = Server { id: "s".into(), uri: "http://127.0.0.1:9".into(), ..Default::default() };
         let client = Client::new("test".into());
         assert_eq!(t.show_ids(&client, &srv, None, "1"), None);
@@ -735,8 +730,8 @@ mod tests {
         let m = episode();
         let all = |_| true;
         let w = |service| Job::Write(Write { service, media: m.clone(), pct: 91.0 });
-        assert_eq!(jobs(vec![Action::Watched(91.0)], &m, all, true), vec![w(Service::Mal), w(Service::Anilist)]);
-        assert_eq!(jobs(vec![Action::Watched(91.0)], &m, all, false), vec![w(Service::Trakt), w(Service::Mal), w(Service::Anilist)]);
+        assert_eq!(jobs(vec![Action::Watched(91.0)], &m, all, true), vec![w(Service::Mal)]);
+        assert_eq!(jobs(vec![Action::Watched(91.0)], &m, all, false), vec![w(Service::Trakt), w(Service::Mal)]);
         assert_eq!(jobs(vec![Action::Watched(91.0)], &m, |s| s == Service::Mal, false), vec![w(Service::Mal)]);
         assert_eq!(jobs(vec![Action::Trakt("stop", 50.0)], &m, all, true), vec![Job::Scrobble("stop", m.clone(), 50.0)]);
         assert_eq!(jobs(vec![Action::Trakt("stop", 91.0)], &m, all, true), vec![w(Service::Trakt)]);
@@ -809,27 +804,20 @@ mod tests {
 
     #[test]
     fn list_request_shapes_and_decisions() {
-        let r = lists::update_request(Service::Mal, 1, "tok", 5, false);
+        let r = lists::update_request(1, "tok", 5, false);
         assert_eq!((r.method, r.url.as_str()), ("PATCH", "https://api.myanimelist.net/v2/anime/1/my_list_status"));
         assert_eq!(r.body, Body::Form("status=watching&num_watched_episodes=5".into()));
         assert_eq!(r.header_value("authorization"), Some("Bearer tok"));
-        assert_eq!(lists::update_request(Service::Mal, 1, "tok", 26, true).body, Body::Form("status=completed&num_watched_episodes=26".into()));
-        let r = lists::update_request(Service::Anilist, 7, "tok", 26, true);
-        assert_eq!(r.url, "https://graphql.anilist.co");
-        let Body::Json(v) = &r.body else { panic!() };
-        assert!(v["query"].as_str().unwrap().contains("SaveMediaListEntry"));
-        assert_eq!(v["variables"], json!({ "id": 7, "progress": 26, "status": "COMPLETED" }));
-        assert_eq!(lists::snapshot_request(Service::Mal, 1, "t").url, "https://api.myanimelist.net/v2/anime/1?fields=num_episodes,my_list_status");
+        assert_eq!(lists::update_request(1, "tok", 26, true).body, Body::Form("status=completed&num_watched_episodes=26".into()));
+        assert_eq!(lists::snapshot_request(1, "t").url, "https://api.myanimelist.net/v2/anime/1?fields=num_episodes,my_list_status");
 
-        let mal = lists::parse_snapshot(Service::Mal, &json!({ "num_episodes": 26, "my_list_status": { "status": "watching", "num_episodes_watched": 4, "is_rewatching": false } })).unwrap();
+        let mal = lists::parse_snapshot(&json!({ "num_episodes": 26, "my_list_status": { "status": "watching", "num_episodes_watched": 4, "is_rewatching": false } })).unwrap();
         assert_eq!(mal, lists::Snapshot { total: 26, progress: 4, locked: false });
-        let fresh = lists::parse_snapshot(Service::Mal, &json!({ "id": 1, "num_episodes": 0 })).unwrap();
+        let fresh = lists::parse_snapshot(&json!({ "id": 1, "num_episodes": 0 })).unwrap();
         assert_eq!(fresh, lists::Snapshot { total: 0, progress: 0, locked: false });
-        let done = lists::parse_snapshot(Service::Anilist, &json!({ "data": { "Media": { "episodes": 12, "mediaListEntry": { "status": "COMPLETED", "progress": 12 } } } })).unwrap();
+        let done = lists::parse_snapshot(&json!({ "num_episodes": 12, "my_list_status": { "status": "completed", "num_episodes_watched": 12 } })).unwrap();
         assert!(done.locked);
-        let none = lists::parse_snapshot(Service::Anilist, &json!({ "data": { "Media": { "episodes": 12, "mediaListEntry": null } } })).unwrap();
-        assert_eq!(none, lists::Snapshot { total: 12, progress: 0, locked: false });
-        assert!(lists::parse_snapshot(Service::Anilist, &json!({ "data": { "Media": null } })).is_none());
+        assert!(lists::parse_snapshot(&json!({ "error": "not_found" })).is_none());
 
         assert_eq!(lists::decide(&mal, 5, false), Some((5, false)));
         assert_eq!(lists::decide(&mal, 4, false), None);
@@ -854,7 +842,7 @@ mod tests {
     #[test]
     fn on_progress_dispatch() {
         let dir = std::env::temp_dir().join(format!("plaivo-trackers-dispatch-{}", std::process::id()));
-        let (t, rx) = Trackers::detached(dir.clone(), [true; 3]);
+        let (t, rx) = Trackers::detached(dir.clone(), [true; 2]);
         let drain = || rx.try_iter().collect::<Vec<_>>();
         let a = episode();
         let b = Media { episode: Some(4), ..episode() };
@@ -885,7 +873,7 @@ mod tests {
         t.on_progress(&a, PlayState::Playing, 92, 100);
         assert_eq!(drain(), vec![w(Service::Trakt, &a, 92.0)]);
 
-        let (u, rx) = Trackers::detached(dir.clone(), [false; 3]);
+        let (u, rx) = Trackers::detached(dir.clone(), [false; 2]);
         assert!(!u.status(Service::Trakt).configured && !u.status(Service::Trakt).signed_in);
         u.on_progress(&b, PlayState::Playing, 1, 100);
         u.on_progress(&b, PlayState::Playing, 95, 100);

@@ -219,7 +219,6 @@ pub struct SignIn {
 pub enum Service {
     Trakt,
     Mal,
-    Anilist,
 }
 
 #[uniffi::remote(Record)]
