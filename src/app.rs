@@ -870,21 +870,27 @@ impl Plaivo {
     fn check_splash(&mut self, cx: &mut Context<Self>) {
         let Some(sp) = &self.splash else { return };
         if !sp.probes_done {
-            return;
+            return log::debug!("splash: waiting for server probes");
         }
         if self.home_server().is_some_and(|s| plex::is_down(&s.id)) {
             return self.finish_splash(cx);
         }
         if !self.home_ready {
-            return;
+            return log::debug!("splash: waiting for home");
         }
-        let hero_ready = self.hero.first().is_none_or(|c| self.image_settled(&c.thumb, Shape::Backdrop));
-        let row_ready = self.hubs.first().is_none_or(|h| {
+        let mut wanted: Vec<_> = self.hero.first().map(|c| (c.thumb.clone(), Shape::Backdrop)).into_iter().collect();
+        if let Some(h) = self.hubs.first() {
             let shape = if h.wide { Shape::Wide } else { Shape::Poster };
-            h.items.iter().take(FIRST_ROW_IMAGES).all(|c| self.image_settled(&c.thumb, shape))
-        });
-        if hero_ready && row_ready {
-            self.finish_splash(cx);
+            wanted.extend(h.items.iter().take(FIRST_ROW_IMAGES).map(|c| (c.thumb.clone(), shape)));
+        }
+        wanted.retain(|(thumb, shape)| !self.image_settled(thumb, *shape));
+        if wanted.is_empty() {
+            return self.finish_splash(cx);
+        }
+        log::debug!("splash: waiting for {} home image(s)", wanted.len());
+        // Home isn't rendered behind the splash, so re-queue anything dropped since build_home (e.g. by discovery clearing `failed`).
+        for (thumb, shape) in &wanted {
+            self.image(thumb, *shape);
         }
     }
 
