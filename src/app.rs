@@ -56,6 +56,7 @@ pub enum Nav {
     Library(String, String),
     Collection(String, String, String),
     Hub(String, String, String, bool),
+    Watchlist,
     Search,
     Detail(String, String, Option<String>),
     Settings(Option<Category>),
@@ -154,6 +155,7 @@ pub enum Listing {
     Items,
     Collections,
     Collection,
+    Watchlist,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -312,6 +314,7 @@ pub struct Plaivo {
     pub library: Option<Library>,
     library_cache: Vec<Library>,
     pub lib_tab: LibTab,
+    pub watchlist_shows: bool,
     pub lib_hubs: Option<Vec<Hub>>,
     lib_hubs_for: (String, String),
     pub lib_hubs_scroll: ScrollHandle,
@@ -328,6 +331,7 @@ pub struct Plaivo {
     pub dialog: Option<crate::ui::item_menu::Dialog>,
     pub rule_draft: Option<crate::ui::language_rules::RuleDraft>,
     pub detail_id: (String, String),
+    owned_check: Option<String>,
     pub seasons: Vec<Choice>,
     pub season_items: Vec<Item>,
     pub season: Option<String>,
@@ -617,6 +621,7 @@ impl Plaivo {
             library: None,
             library_cache: Vec::new(),
             lib_tab: LibTab::Recommended,
+            watchlist_shows: false,
             lib_hubs: None,
             lib_hubs_for: Default::default(),
             lib_hubs_scroll: ScrollHandle::new(),
@@ -633,6 +638,7 @@ impl Plaivo {
             dialog: None,
             rule_draft: None,
             detail_id: Default::default(),
+            owned_check: None,
             seasons: Vec::new(),
             season_items: Vec::new(),
             season: None,
@@ -1068,6 +1074,7 @@ impl Plaivo {
         let stale_page = match self.page {
             Page::Library => match self.nav.last() {
                 Some(Nav::Library(server, _) | Nav::Collection(server, _, _)) => !known.contains(server),
+                Some(Nav::Watchlist) => !known.contains(DISCOVER_ID),
                 _ => true,
             },
             Page::HubList => self.hub_list.as_ref().is_none_or(|l| !known.contains(&l.server)),
@@ -1076,6 +1083,7 @@ impl Plaivo {
         };
         self.nav.retain(|n| match n {
             Nav::Library(server, _) | Nav::Collection(server, _, _) | Nav::Hub(server, _, _, _) | Nav::Detail(server, _, _) => known.contains(server),
+            Nav::Watchlist => known.contains(DISCOVER_ID),
             _ => true,
         });
         self.library_cache.retain(|l| known.contains(&l.key.server));
@@ -1306,6 +1314,12 @@ impl Plaivo {
                 self.offline_view = view;
             }
             Nav::Watch => self.page = Page::Watch,
+            Nav::Watchlist => {
+                self.page = Page::Library;
+                let section = if self.watchlist_shows { "2" } else { "1" };
+                let sort = self.library.iter().chain(&self.library_cache).find(|l| l.key.listing == Listing::Watchlist && l.key.section == section).map(|l| l.key.sort.clone());
+                self.show_library(LibKey { server: DISCOVER_ID.to_owned(), section: section.to_owned(), sort: sort.unwrap_or_else(|| "addedAt:desc".to_owned()), listing: Listing::Watchlist }, SharedString::default(), cx);
+            }
             Nav::Library(server, section) => {
                 self.page = Page::Library;
                 match self.lib_tab {
@@ -1464,6 +1478,11 @@ impl Plaivo {
         }
     }
 
+    pub fn set_watchlist_tab(&mut self, shows: bool, cx: &mut Context<Self>) {
+        self.watchlist_shows = shows;
+        self.navigate(Nav::Watchlist, false, cx);
+    }
+
     pub fn set_lib_tab(&mut self, tab: LibTab, cx: &mut Context<Self>) {
         self.lib_tab = tab;
         if let Some(nav @ Nav::Library(..)) = self.nav.last().cloned() {
@@ -1572,6 +1591,7 @@ impl Plaivo {
             Listing::Items => srv.section_items(c, &k.section, page * PAGE, PAGE, &k.sort, summaries),
             Listing::Collections => srv.collections(c, &k.section, page * PAGE, PAGE),
             Listing::Collection => srv.collection_items(c, &k.section, page * PAGE, PAGE, summaries),
+            Listing::Watchlist => srv.watchlist(c, &k.section, page * PAGE, PAGE, &k.sort),
         };
         self.load(cx, fetch, move |this, r, cx| match r {
             Ok((items, total)) => {
@@ -1670,6 +1690,7 @@ impl Plaivo {
             self.episode_items.clear();
             self.season = None;
             self.detail_scroll = ScrollHandle::new();
+            self.owned_check = (server == DISCOVER_ID).then(|| key.clone());
         }
         if season.is_some() {
             self.season = season;
@@ -1771,8 +1792,29 @@ impl Plaivo {
         cx.notify();
     }
 
+    fn open_owned_copy(&mut self, it: &Item, cx: &mut Context<Self>) {
+        let home = self.home_server().map(|h| h.id).unwrap_or_default();
+        let mut servers: Vec<Server> = self.servers.iter().filter(|s| !plex::is_down(&s.id)).cloned().collect();
+        servers.sort_by_key(|s| s.id != home);
+        let (client, key, it) = (self.client.clone(), it.rating_key.clone(), it.clone());
+        Self::bg(cx, move || plaivo_core::watch_together::find_owned(&it, &servers, &client), move |this, found, cx| {
+            let Some((server, local)) = found else { return };
+            if this.page != Page::Detail || this.detail_id != (DISCOVER_ID.to_owned(), key) {
+                return;
+            }
+            let nav = Nav::Detail(server, local.rating_key, None);
+            if let Some(last) = this.nav.last_mut() {
+                *last = nav.clone();
+            }
+            this.navigate(nav, false, cx);
+        });
+    }
+
     fn load_related(&mut self, server: &str, it: &Item, cx: &mut Context<Self>) {
         self.fetch_watchlisted(it, cx);
+        if self.owned_check.take_if(|k| *k == it.rating_key).is_some() {
+            self.open_owned_copy(it, cx);
+        }
         let Some(srv) = self.server(server).filter(|_| server != DISCOVER_ID && matches!(it.kind.as_str(), "movie" | "show")) else { return };
         let (server, key) = (server.to_owned(), it.rating_key.clone());
         let k = key.clone();

@@ -99,15 +99,18 @@ pub fn pick_episode<'a>(episodes: &'a [Item], m: &Media) -> Option<&'a Item> {
     })
 }
 
-fn find_on(srv: &Server, cx: &Ctx, target: &Target, media: &Media) -> Option<Item> {
-    let hits = srv.search(cx, target.title).inspect_err(|e| log::warn!("watch together: search on {}: {e}", srv.name)).ok()?;
+fn find_title(srv: &Server, cx: &Ctx, target: &Target) -> Option<Item> {
+    let hits = srv.search(cx, target.title).inspect_err(|e| log::warn!("search on {}: {e}", srv.name)).ok()?;
     let mut seen = HashSet::new();
-    let found = hits
-        .into_iter()
+    hits.into_iter()
         .map(|(it, _)| it.as_show())
         .filter(|it| it.kind == target.kind && seen.insert(it.rating_key.clone()))
         .take(CANDIDATES)
-        .find_map(|it| srv.metadata(cx, &it.rating_key).ok().filter(|full| target.matches(full)))?;
+        .find_map(|it| srv.metadata(cx, &it.rating_key).ok().filter(|full| target.matches(full)))
+}
+
+fn find_on(srv: &Server, cx: &Ctx, target: &Target, media: &Media) -> Option<Item> {
+    let found = find_title(srv, cx, target)?;
     match media.kind {
         MediaKind::Episode => pick_episode(&srv.all_episodes(cx, &found.rating_key).ok()?, media).cloned(),
         _ => Some(found),
@@ -123,9 +126,25 @@ pub fn find_copy(media: &Media, servers: &[Server], client: &Client) -> Option<(
         return Some((srv.id.clone(), it));
     }
     let target = Target::of(media)?;
+    first_on(servers, |srv| find_on(srv, &cx, &target, media))
+}
+
+pub fn find_owned(it: &Item, servers: &[Server], client: &Client) -> Option<(String, Item)> {
+    let kind = match it.kind.as_str() {
+        "movie" => "movie",
+        "show" => "show",
+        _ => return None,
+    };
+    let ids = item_ids(it);
+    let target = Target { kind, title: &it.title, year: it.year, ids: &ids };
+    let cx = Ctx::new(client.clone(), Source::Live);
+    first_on(servers, |srv| find_title(srv, &cx, &target))
+}
+
+fn first_on(servers: &[Server], find: impl Fn(&Server) -> Option<Item> + Sync) -> Option<(String, Item)> {
     servers.chunks(PARALLEL).find_map(|chunk| {
         std::thread::scope(|s| {
-            let jobs: Vec<_> = chunk.iter().map(|srv| s.spawn(|| find_on(srv, &cx, &target, media).map(|it| (srv.id.clone(), it)))).collect();
+            let jobs: Vec<_> = chunk.iter().map(|srv| s.spawn(|| find(srv).map(|it| (srv.id.clone(), it)))).collect();
             jobs.into_iter().filter_map(|job| job.join().ok().flatten()).next()
         })
     })

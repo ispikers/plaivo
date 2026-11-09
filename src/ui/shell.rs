@@ -234,6 +234,10 @@ impl Plaivo {
                 let focus = this.search.read(cx).focus.clone();
                 window.focus(&focus, cx);
             })))
+            .when(self.account.token.is_some(), |d| {
+                let on = self.page == Page::Library && self.nav.last() == Some(&Nav::Watchlist);
+                d.child(item("watchlist".into(), Icon::Bookmark, "Watchlist".into(), on).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Watchlist, true, cx))))
+            })
             .child(item("downloads".into(), Icon::Download, "Downloads".into(), self.page == Page::Downloads).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Downloads(None), true, cx))))
             .child(item("watch".into(), Icon::Group, "Watch Together".into(), self.page == Page::Watch).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Watch, true, cx))))
             .child(
@@ -245,7 +249,6 @@ impl Plaivo {
                     .child(div().absolute().bottom(px(12.)).left(px(12.)).w(px(24.)).h(px(1.)).opacity(1. - label_alpha).bg(theme::outline())),
             )
             .child(libs)
-            .child(item("add-library".into(), Icon::Add, "Add Library".into(), self.page == Page::AddServer).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::AddServer, true, cx))))
             .child(
                 item("fullscreen".into(), if fullscreen { Icon::FullscreenExit } else { Icon::Fullscreen }, if fullscreen { "Exit fullscreen" } else { "Fullscreen" }.into(), false)
                     .on_click(|_, window, _| window.toggle_fullscreen()),

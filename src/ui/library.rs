@@ -148,9 +148,22 @@ impl Plaivo {
         let cw = content_width(self, window);
         let tabbed = matches!(self.nav.last(), Some(Nav::Library(..)));
         let tab = self.lib_tab;
-        let header = div().h(px(64.)).flex_none().px(px(16.)).flex().items_center().gap(px(12.)).when(tabbed, |d| {
-            d.child(div().flex().gap(px(8.)).children(LIB_TABS.iter().enumerate().map(|(i, &(t, label))| chip(("lib-tab", i), label, t == tab).on_click(cx.listener(move |this, _, _, cx| this.set_lib_tab(t, cx))))))
-        });
+        let shows = self.watchlist_shows;
+        let header = div()
+            .h(px(64.))
+            .flex_none()
+            .px(px(16.))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .when(tabbed, |d| {
+                d.child(div().flex().gap(px(8.)).children(LIB_TABS.iter().enumerate().map(|(i, &(t, label))| chip(("lib-tab", i), label, t == tab).on_click(cx.listener(move |this, _, _, cx| this.set_lib_tab(t, cx))))))
+            })
+            .when(self.nav.last() == Some(&Nav::Watchlist), |d| {
+                d.child(div().flex().gap(px(8.)).children([(false, "Movies"), (true, "TV Shows")].into_iter().map(|(s, label)| {
+                    chip(SharedString::from(format!("watchlist-{label}")), label, s == shows).on_click(cx.listener(move |this, _, _, cx| this.set_watchlist_tab(s, cx)))
+                })))
+            });
         if tabbed && tab == LibTab::Recommended {
             let body = self.render_lib_hubs(cw, window, cx);
             return div().size_full().flex().flex_col().child(header).child(body).into_any_element();
@@ -158,9 +171,13 @@ impl Plaivo {
         let Some(lib) = &self.library else { return div().size_full().flex().flex_col().child(header).into_any_element() };
         let (title, count, scroll, sort, listing) = (lib.title.clone(), lib.items.len(), lib.scroll.clone(), lib.key.sort.clone(), lib.key.listing);
         let loaded = lib.items.iter().any(Option::is_some);
-        let browse = listing == Listing::Items;
+        let browse = matches!(listing, Listing::Items | Listing::Watchlist);
         let body = if lib.items.is_empty() {
-            message(if listing == Listing::Collections { "No collections" } else { "Nothing here" })
+            message(match listing {
+                Listing::Collections => "No collections",
+                Listing::Watchlist => "Nothing on your watchlist",
+                _ => "Nothing here",
+            })
         } else {
             self.grid(Grid::Library, cw, scroll, cx)
         };

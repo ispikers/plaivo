@@ -883,6 +883,23 @@ impl Server {
         }
     }
 
+    pub fn watchlist(&self, c: &Ctx, kind: &str, start: usize, size: usize, sort: &str) -> R<(Vec<Item>, usize)> {
+        let sort = if sort == "addedAt:desc" { "watchlistedAt:desc" } else { sort };
+        let path = format!("/library/sections/watchlist/all?type={kind}&sort={sort}&includeGuids=1");
+        let (mut items, mut total) = (Vec::new(), 0);
+        while items.len() < size {
+            // Discover rejects large container sizes, so page it in small chunks like plezy does.
+            let (page, t) = self.paged(c, &path, start + items.len(), (size - items.len()).min(25))?;
+            total = t;
+            let done = page.is_empty() || start + items.len() + page.len() >= t;
+            items.extend(page);
+            if done {
+                break;
+            }
+        }
+        Ok((items, total))
+    }
+
     fn paged(&self, c: &Ctx, path: &str, start: usize, size: usize) -> R<(Vec<Item>, usize)> {
         let sep = if path.contains('?') { '&' } else { '?' };
         let ct: Container = self.get(c, &format!("{path}{sep}X-Plex-Container-Start={start}&X-Plex-Container-Size={size}"))?;
