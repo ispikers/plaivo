@@ -4,7 +4,9 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 pub const PLAIVO_EXT: &str = "app.plaivo";
-const NAMESPACES: [&str; 8] = ["imdb", "tmdb", "tvdb", "plex", "anilist", "anidb", "kitsu", "mal"];
+const NAMESPACES: [&str; 8] = [
+    "imdb", "tmdb", "tvdb", "plex", "anilist", "anidb", "kitsu", "mal",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -65,7 +67,9 @@ pub struct PlaivoExt {
 impl Media {
     pub fn parse(mut v: Value) -> Option<Self> {
         normalize_ints(&mut v);
-        serde_json::from_value::<Media>(v).ok().filter(|m| m.check(false).is_ok())
+        serde_json::from_value::<Media>(v)
+            .ok()
+            .filter(|m| m.check(false).is_ok())
     }
 
     pub fn check(&self, sending: bool) -> Result<(), &'static str> {
@@ -91,13 +95,25 @@ impl Media {
             return Err("durationMs");
         }
         if let Some(f) = &self.file {
-            let oshash = f.oshash.as_deref().is_none_or(|h| h.len() == 16 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
-            let name = f.name.as_deref().is_none_or(|n| text(n) && !n.contains(['/', '\\']) && n != "." && n != "..");
+            let oshash = f.oshash.as_deref().is_none_or(|h| {
+                h.len() == 16 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            });
+            let name = f
+                .name
+                .as_deref()
+                .is_none_or(|n| text(n) && !n.contains(['/', '\\']) && n != "." && n != "..");
             if !count(f.size_bytes) || !oshash || !name {
                 return Err("file");
             }
         }
-        let ext_name = |n: &str| n.contains('.') && n.split('.').all(|l| !l.is_empty() && l.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')));
+        let ext_name = |n: &str| {
+            n.contains('.')
+                && n.split('.').all(|l| {
+                    !l.is_empty()
+                        && l.bytes()
+                            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+                })
+        };
         if !self.ext.keys().all(|k| ext_name(k)) {
             return Err("ext");
         }
@@ -117,7 +133,10 @@ impl Media {
     }
 
     pub fn set_plaivo(&mut self, ext: &PlaivoExt) {
-        self.ext.insert(PLAIVO_EXT.into(), serde_json::to_value(ext).unwrap_or_default());
+        self.ext.insert(
+            PLAIVO_EXT.into(),
+            serde_json::to_value(ext).unwrap_or_default(),
+        );
     }
 }
 
@@ -145,12 +164,22 @@ mod tests {
             kind: MediaKind::Movie,
             title: "Arrival".into(),
             year: Some(2016),
-            ids: ids_from_guids(["imdb://tt2543164", "tmdb://329865", "tvdb://123", "plex://movie/5d776", "local://9"]),
+            ids: ids_from_guids([
+                "imdb://tt2543164",
+                "tmdb://329865",
+                "tvdb://123",
+                "plex://movie/5d776",
+                "local://9",
+            ]),
             series: None,
             season: None,
             episode: None,
             duration_ms: 6_960_000,
-            file: Some(MediaFile { size_bytes: Some(1 << 31), oshash: None, name: Some("Arrival.mkv".into()) }),
+            file: Some(MediaFile {
+                size_bytes: Some(1 << 31),
+                oshash: None,
+                name: Some("Arrival.mkv".into()),
+            }),
             ext: Map::new(),
         }
     }
@@ -167,9 +196,15 @@ mod tests {
     #[test]
     fn descriptor_round_trips_with_plaivo_hint() {
         let mut m = movie();
-        m.set_plaivo(&PlaivoExt { server: "abc123".into(), item: "4711".into() });
+        m.set_plaivo(&PlaivoExt {
+            server: "abc123".into(),
+            item: "4711".into(),
+        });
         let json = serde_json::to_string(&m).unwrap();
-        assert_eq!(serde_json::to_value(&m).unwrap()["ext"], serde_json::json!({"app.plaivo": {"server": "abc123", "item": "4711"}}));
+        assert_eq!(
+            serde_json::to_value(&m).unwrap()["ext"],
+            serde_json::json!({"app.plaivo": {"server": "abc123", "item": "4711"}})
+        );
         assert!(json.contains(r#""durationMs":6960000"#));
         let back = Media::parse(serde_json::from_str(&json).unwrap()).unwrap();
         assert_eq!(back, m);
@@ -192,10 +227,19 @@ mod tests {
         m.ext.insert("Plaivo".into(), Value::Null);
         assert_eq!(m.check(true), Err("ext"));
         let mut m = movie();
-        m.ext.insert("app.big".into(), Value::String("x".repeat(1100)));
+        m.ext
+            .insert("app.big".into(), Value::String("x".repeat(1100)));
         assert_eq!(m.check(false), Ok(()));
         assert_eq!(m.check(true), Err("ext size"));
-        assert!(Media::parse(serde_json::json!({"kind": "show", "title": "x", "durationMs": 1})).is_none());
-        assert!(Media::parse(serde_json::json!({"kind": "video", "title": "x", "durationMs": 1.0, "extra": 1})).is_some());
+        assert!(
+            Media::parse(serde_json::json!({"kind": "show", "title": "x", "durationMs": 1}))
+                .is_none()
+        );
+        assert!(
+            Media::parse(
+                serde_json::json!({"kind": "video", "title": "x", "durationMs": 1.0, "extra": 1})
+            )
+            .is_some()
+        );
     }
 }

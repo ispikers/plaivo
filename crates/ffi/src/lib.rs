@@ -1,8 +1,13 @@
 use plaivo_core::downloads::{Downloads, State};
 use plaivo_core::menu::{self, Action};
-use plaivo_core::plex::{self, Client, Ctx, Hub, Item, QUALITIES, SORTS, Server, Source, fmt_bitrate, resolve_playable};
+use plaivo_core::plex::{
+    self, Client, Ctx, Hub, Item, QUALITIES, SORTS, Server, Source, fmt_bitrate, resolve_playable,
+};
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
-use plaivo_core::settings::{BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key};
+use plaivo_core::settings::{
+    BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, SUBTITLE_COLORS, Scale, Settings, SkipMode,
+    Theme, ViewMode, library_key,
+};
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
 use plaivo_core::{Account, detail, first, jellyfin, join, store};
 use qrcodegen::{QrCode, QrCodeEcc};
@@ -317,7 +322,9 @@ impl TrackerSession {
     pub fn poll(&self) -> TrackerPoll {
         let mut s = self.sign_in.lock().unwrap();
         match self.trackers.poll_sign_in(&mut s) {
-            Poll::Pending => TrackerPoll::Pending { interval_secs: s.interval_secs },
+            Poll::Pending => TrackerPoll::Pending {
+                interval_secs: s.interval_secs,
+            },
             Poll::Done => TrackerPoll::Done,
             Poll::Failed(reason) => TrackerPoll::Failed { reason },
         }
@@ -363,7 +370,12 @@ pub struct QuickConnectCode {
 
 impl From<JellyfinProbe> for jellyfin::ServerInfo {
     fn from(p: JellyfinProbe) -> Self {
-        Self { uri: p.uri, name: p.name, id: p.id, version: p.version }
+        Self {
+            uri: p.uri,
+            name: p.name,
+            id: p.id,
+            version: p.version,
+        }
     }
 }
 
@@ -553,14 +565,24 @@ fn file_url(path: &Path) -> String {
 
 fn card(srv: &Server, it: &Item, wide: bool, prefs: &CardPrefs) -> Card {
     let blur = prefs.blur(it, prefs.art(it, wide));
-    card_with(&srv.id, it, wide, prefs, |path, w, h| Some(srv.image_url(path, w, h) + if blur && w < 1920 { BLUR_PARAM } else { "" }))
+    card_with(&srv.id, it, wide, prefs, |path, w, h| {
+        Some(srv.image_url(path, w, h) + if blur && w < 1920 { BLUR_PARAM } else { "" })
+    })
 }
 
 fn offline_card(d: &Downloads, server: &str, it: &Item, wide: bool, prefs: &CardPrefs) -> Card {
-    card_with(server, it, wide, prefs, |path, _, _| d.image(server, path).map(|p| file_url(&p)))
+    card_with(server, it, wide, prefs, |path, _, _| {
+        d.image(server, path).map(|p| file_url(&p))
+    })
 }
 
-fn card_with(server: &str, it: &Item, wide: bool, prefs: &CardPrefs, image: impl Fn(&str, u32, u32) -> Option<String>) -> Card {
+fn card_with(
+    server: &str,
+    it: &Item,
+    wide: bool,
+    prefs: &CardPrefs,
+    image: impl Fn(&str, u32, u32) -> Option<String>,
+) -> Card {
     let (title, subtitle) = prefs.text(it);
     let art = prefs.art(it, wide);
     let (w, h) = if wide { (480, 270) } else { (300, 450) };
@@ -577,14 +599,22 @@ fn card_with(server: &str, it: &Item, wide: bool, prefs: &CardPrefs, image: impl
         title,
         subtitle,
         image: (!art.is_empty()).then(|| image(art, w, h)).flatten(),
-        backdrop: (!backdrop.is_empty()).then(|| image(backdrop, 1920, 1080)).flatten(),
+        backdrop: (!backdrop.is_empty())
+            .then(|| image(backdrop, 1920, 1080))
+            .flatten(),
         meta: join(&[
             kind.into(),
-            it.audience_rating.map(|r| format!("★ {r:.1}")).unwrap_or_default(),
+            it.audience_rating
+                .map(|r| format!("★ {r:.1}"))
+                .unwrap_or_default(),
             it.content_rating.clone(),
             it.year.map(|y| y.to_string()).unwrap_or_default(),
         ]),
-        summary: if prefs.spoiler(it) { String::new() } else { it.summary.clone() },
+        summary: if prefs.spoiler(it) {
+            String::new()
+        } else {
+            it.summary.clone()
+        },
         progress: it.progress(),
         watched: it.watched(),
         unwatched: it.unwatched(),
@@ -623,11 +653,19 @@ impl Plaivo {
     pub fn start_sign_in(&self) -> R<SignIn> {
         let pin = self.client.create_pin(false)?;
         let (qr_size, qr) = qr(&self.client.link_url(&pin.code))?;
-        Ok(SignIn { id: pin.id, code: pin.code, qr_size, qr, expires_in_s: pin.expires_in.unwrap_or(900) })
+        Ok(SignIn {
+            id: pin.id,
+            code: pin.code,
+            qr_size,
+            qr,
+            expires_in_s: pin.expires_in.unwrap_or(900),
+        })
     }
 
     pub fn finish_sign_in(&self, id: u64) -> R<bool> {
-        let Some(token) = self.client.check_pin(id)? else { return Ok(false) };
+        let Some(token) = self.client.check_pin(id)? else {
+            return Ok(false);
+        };
         let mut account = self.account.lock().unwrap();
         account.token = Some(token);
         account.save();
@@ -635,7 +673,10 @@ impl Plaivo {
     }
 
     pub fn sign_out(&self) {
-        plaivo_core::sign_out(&mut self.account.lock().unwrap(), &mut self.settings.lock().unwrap());
+        plaivo_core::sign_out(
+            &mut self.account.lock().unwrap(),
+            &mut self.settings.lock().unwrap(),
+        );
         self.tracked.lock().unwrap().clear();
         self.watch_leave();
         self.sync_download_servers();
@@ -643,7 +684,16 @@ impl Plaivo {
 
     pub fn jellyfin_servers(&self) -> Vec<JellyfinServer> {
         let account = self.account.lock().unwrap();
-        account.jellyfin.iter().map(|s| JellyfinServer { id: s.id.clone(), name: s.name.clone(), user: s.user.clone(), address: s.uri.clone() }).collect()
+        account
+            .jellyfin
+            .iter()
+            .map(|s| JellyfinServer {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                user: s.user.clone(),
+                address: s.uri.clone(),
+            })
+            .collect()
     }
 
     pub fn remove_jellyfin(&self, id: String) {
@@ -655,11 +705,22 @@ impl Plaivo {
     }
 
     pub fn jellyfin_probe(&self, address: String) -> R<JellyfinProbe> {
-        let i = jellyfin::probe(&self.client, &address).map_err(|e| format!("Could not connect: {e}"))?;
-        Ok(JellyfinProbe { uri: i.uri, name: i.name, id: i.id, version: i.version })
+        let i = jellyfin::probe(&self.client, &address)
+            .map_err(|e| format!("Could not connect: {e}"))?;
+        Ok(JellyfinProbe {
+            uri: i.uri,
+            name: i.name,
+            id: i.id,
+            version: i.version,
+        })
     }
 
-    pub fn jellyfin_sign_in(&self, server: JellyfinProbe, username: String, password: String) -> R<()> {
+    pub fn jellyfin_sign_in(
+        &self,
+        server: JellyfinProbe,
+        username: String,
+        password: String,
+    ) -> R<()> {
         let srv = jellyfin::sign_in(&self.client, &server.into(), username.trim(), &password)?;
         self.add_jellyfin(srv);
         Ok(())
@@ -667,7 +728,10 @@ impl Plaivo {
 
     pub fn jellyfin_quick_connect(&self, server: JellyfinProbe) -> R<QuickConnectCode> {
         let qc = jellyfin::quick_connect_start(&self.client, &server.into())?;
-        Ok(QuickConnectCode { code: qc.code, secret: qc.secret })
+        Ok(QuickConnectCode {
+            code: qc.code,
+            secret: qc.secret,
+        })
     }
 
     pub fn jellyfin_quick_connect_poll(&self, server: JellyfinProbe, secret: String) -> R<bool> {
@@ -675,7 +739,11 @@ impl Plaivo {
         if !jellyfin::quick_connect_ready(&self.client, &info, &secret)? {
             return Ok(false);
         }
-        self.add_jellyfin(jellyfin::quick_connect_finish(&self.client, &info, &secret)?);
+        self.add_jellyfin(jellyfin::quick_connect_finish(
+            &self.client,
+            &info,
+            &secret,
+        )?);
         Ok(true)
     }
 
@@ -687,7 +755,9 @@ impl Plaivo {
         settings.save();
         apply_log_level(&settings);
         let auto_remove = settings.auto_remove_watched;
-        let changed = std::mem::replace(&mut *self.settings.lock().unwrap(), settings).auto_remove_watched != auto_remove;
+        let changed = std::mem::replace(&mut *self.settings.lock().unwrap(), settings)
+            .auto_remove_watched
+            != auto_remove;
         if changed {
             self.with_downloads(|d| d.set_auto_remove_watched(auto_remove));
         }
@@ -699,18 +769,38 @@ impl Plaivo {
         sections
     }
 
-    pub fn up_next_in(&self, time_ms: u64, duration_ms: u64, credits_ms: Option<u64>, anchor_ms: Option<u64>) -> Option<UpNext> {
+    pub fn up_next_in(
+        &self,
+        time_ms: u64,
+        duration_ms: u64,
+        credits_ms: Option<u64>,
+        anchor_ms: Option<u64>,
+    ) -> Option<UpNext> {
         let s = |ms: u64| ms as f64 / 1000.0;
         let mut anchor = anchor_ms.map(s);
-        let left_s = self.settings.lock().unwrap().up_next_in(s(time_ms), s(duration_ms), credits_ms.map(s), &mut anchor)?;
-        Some(UpNext { left_s, anchor_ms: anchor.map_or(time_ms, |a| (a * 1000.0) as u64) })
+        let left_s = self.settings.lock().unwrap().up_next_in(
+            s(time_ms),
+            s(duration_ms),
+            credits_ms.map(s),
+            &mut anchor,
+        )?;
+        Some(UpNext {
+            left_s,
+            anchor_ms: anchor.map_or(time_ms, |a| (a * 1000.0) as u64),
+        })
     }
 
     pub fn clear_cache(&self) {
         store::clear_cache();
     }
 
-    pub fn migrate_android_prefs(&self, sidebar_compact: Option<bool>, home_server: Option<String>, quality: Option<i32>, scale: Option<String>) -> bool {
+    pub fn migrate_android_prefs(
+        &self,
+        sidebar_compact: Option<bool>,
+        home_server: Option<String>,
+        quality: Option<i32>,
+        scale: Option<String>,
+    ) -> bool {
         let mut settings = self.settings.lock().unwrap();
         settings.migrate_android(sidebar_compact, home_server, quality, scale.as_deref());
         settings.save()
@@ -722,15 +812,30 @@ impl Plaivo {
 
     pub fn servers(&self) -> Vec<ServerInfo> {
         let account = self.account.lock().unwrap();
-        account.servers.iter().chain(&account.jellyfin).map(|s| ServerInfo { id: s.id.clone(), name: s.name.clone(), owned: s.owned, jellyfin: s.is_jellyfin() }).collect()
+        account
+            .servers
+            .iter()
+            .chain(&account.jellyfin)
+            .map(|s| ServerInfo {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                owned: s.owned,
+                jellyfin: s.is_jellyfin(),
+            })
+            .collect()
     }
 
     pub fn refresh_servers(&self) -> R<Vec<ServerInfo>> {
-        let Some(token) = self.account.lock().unwrap().token.clone() else { return Ok(self.servers()) };
+        let Some(token) = self.account.lock().unwrap().token.clone() else {
+            return Ok(self.servers());
+        };
         let resources = self.client.servers(&token)?;
         let previous = self.account.lock().unwrap().servers.clone();
         let connected: Vec<Server> = std::thread::scope(|s| {
-            let probes: Vec<_> = resources.iter().map(|r| (r, s.spawn(|| self.client.connect(r, &token)))).collect();
+            let probes: Vec<_> = resources
+                .iter()
+                .map(|r| (r, s.spawn(|| self.client.connect(r, &token))))
+                .collect();
             probes
                 .into_iter()
                 .filter_map(|(r, p)| {
@@ -739,7 +844,12 @@ impl Plaivo {
                         Ok(srv) => log::info!("discovery: {} reachable at {}", srv.name, srv.uri),
                         Err(e) => log::warn!("discovery: {e}, keeping the last known address"),
                     }
-                    probed.ok().or_else(|| previous.iter().find(|s| s.id == r.client_identifier).cloned())
+                    probed.ok().or_else(|| {
+                        previous
+                            .iter()
+                            .find(|s| s.id == r.client_identifier)
+                            .cloned()
+                    })
                 })
                 .collect()
         });
@@ -753,38 +863,101 @@ impl Plaivo {
 
     pub fn home(&self, server_id: String, cached: bool) -> R<Vec<Row>> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
+        let ctx = Ctx::new(
+            self.client.clone(),
+            if cached {
+                Source::Cache
+            } else {
+                Source::Network
+            },
+        );
         Ok(rows(&srv, &srv.hubs(&ctx)?, &self.card_prefs()))
     }
 
-    pub fn library_hubs(&self, server_id: String, key: String, movies: bool, cached: bool) -> R<Vec<Row>> {
+    pub fn library_hubs(
+        &self,
+        server_id: String,
+        key: String,
+        movies: bool,
+        cached: bool,
+    ) -> R<Vec<Row>> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
-        Ok(rows(&srv, &srv.section_hubs(&ctx, &key, if movies { "movie" } else { "show" })?, &self.card_prefs()))
+        let ctx = Ctx::new(
+            self.client.clone(),
+            if cached {
+                Source::Cache
+            } else {
+                Source::Network
+            },
+        );
+        Ok(rows(
+            &srv,
+            &srv.section_hubs(&ctx, &key, if movies { "movie" } else { "show" })?,
+            &self.card_prefs(),
+        ))
     }
 
     pub fn hub_list(&self, server_id: String, key: String) -> R<HubList> {
         let srv = self.server(&server_id)?;
         let items = srv.hub_items(&Ctx::new(self.client.clone(), Source::Live), &key)?;
         let prefs = self.card_prefs();
-        Ok(HubList { cards: items.iter().map(|it| card(&srv, it, false, &prefs)).collect(), sorts: hub_sorts(&items, &key), initial: plex::initial_sort(&key) })
+        Ok(HubList {
+            cards: items
+                .iter()
+                .map(|it| card(&srv, it, false, &prefs))
+                .collect(),
+            sorts: hub_sorts(&items, &key),
+            initial: plex::initial_sort(&key),
+        })
     }
 
     pub fn libraries(&self, cached: bool) -> Vec<Section> {
         let servers = self.account.lock().unwrap().all_servers();
-        let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
+        let ctx = Ctx::new(
+            self.client.clone(),
+            if cached {
+                Source::Cache
+            } else {
+                Source::Network
+            },
+        );
         std::thread::scope(|s| {
-            let jobs: Vec<_> = servers.iter().map(|srv| (srv, s.spawn(|| srv.sections(&ctx)))).collect();
+            let jobs: Vec<_> = servers
+                .iter()
+                .map(|srv| (srv, s.spawn(|| srv.sections(&ctx))))
+                .collect();
             jobs.into_iter()
-                .filter_map(|(srv, job)| Some((srv, job.join().ok()?.inspect_err(|e| log::warn!("sections for {}: {e}", srv.name)).ok()?)))
+                .filter_map(|(srv, job)| {
+                    Some((
+                        srv,
+                        job.join()
+                            .ok()?
+                            .inspect_err(|e| log::warn!("sections for {}: {e}", srv.name))
+                            .ok()?,
+                    ))
+                })
                 .flat_map(|(srv, dirs)| {
-                    dirs.into_iter().map(|d| Section { id: library_key(&srv.id, &d.key), server: srv.id.clone(), server_name: srv.name.clone(), movies: d.kind == "movie", key: d.key, title: d.title })
+                    dirs.into_iter().map(|d| Section {
+                        id: library_key(&srv.id, &d.key),
+                        server: srv.id.clone(),
+                        server_name: srv.name.clone(),
+                        movies: d.kind == "movie",
+                        key: d.key,
+                        title: d.title,
+                    })
                 })
                 .collect()
         })
     }
 
-    pub fn library_page(&self, server_id: String, key: String, listing: Listing, start: u64, size: u64) -> R<LibraryPage> {
+    pub fn library_page(
+        &self,
+        server_id: String,
+        key: String,
+        listing: Listing,
+        start: u64,
+        size: u64,
+    ) -> R<LibraryPage> {
         let srv = self.server(&server_id)?;
         let (prefs, list) = {
             let s = self.settings.lock().unwrap();
@@ -797,22 +970,40 @@ impl Plaivo {
             Listing::Collections => srv.collections(&ctx, &key, start, size)?,
             Listing::CollectionItems => srv.collection_items(&ctx, &key, start, size, list)?,
         };
-        Ok(LibraryPage { cards: items.iter().map(|it| card(&srv, it, false, &prefs)).collect(), total: total as u64 })
+        Ok(LibraryPage {
+            cards: items
+                .iter()
+                .map(|it| card(&srv, it, false, &prefs))
+                .collect(),
+            total: total as u64,
+        })
     }
 
     pub fn detail(&self, server_id: String, key: String, cached: bool) -> R<Detail> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
+        let ctx = Ctx::new(
+            self.client.clone(),
+            if cached {
+                Source::Cache
+            } else {
+                Source::Network
+            },
+        );
         let mut it = srv.metadata(&ctx, &key)?;
         let mut wanted = None;
         if it.kind == "season" && !it.parent_rating_key.is_empty() {
             let show = srv.metadata(&ctx, &it.parent_rating_key)?;
             wanted = Some(std::mem::replace(&mut it, show).rating_key);
         }
-        let seasons = if it.kind == "show" { srv.children(&ctx, &it.rating_key)? } else { Vec::new() };
+        let seasons = if it.kind == "show" {
+            srv.children(&ctx, &it.rating_key)?
+        } else {
+            Vec::new()
+        };
         let summary = detail::summary(&it, true);
         let prefs = self.card_prefs();
-        let image = |path: &str, w: u32, h: u32| (!path.is_empty()).then(|| srv.image_url(path, w, h));
+        let image =
+            |path: &str, w: u32, h: u32| (!path.is_empty()).then(|| srv.image_url(path, w, h));
         Ok(Detail {
             server: server_id,
             key: it.rating_key.clone(),
@@ -822,18 +1013,59 @@ impl Plaivo {
             logo: image(it.logo(), 880, 300),
             backdrop: image(first(&[&it.art, &it.grandparent_art]), 1920, 1080),
             chips: summary.chips,
-            ratings: it.rating_labels().into_iter().map(|(source, value)| Rating { source: source.into(), value }).collect(),
+            ratings: it
+                .rating_labels()
+                .into_iter()
+                .map(|(source, value)| Rating {
+                    source: source.into(),
+                    value,
+                })
+                .collect(),
             genres: it.genre.iter().take(4).map(|t| t.tag.clone()).collect(),
             summary: it.summary.clone(),
             play_key: summary.play_key,
             play_label: summary.play_label,
             progress: summary.progress,
-            media_line: if it.kind == "show" { String::new() } else { it.media_line(0) },
-            info: summary.info.into_iter().map(|(label, value)| InfoLine { label: label.into(), value }).collect(),
-            cast: it.role.iter().take(40).map(|p| CastMember { name: p.tag.clone(), role: p.role.clone(), image: image(&p.thumb, 300, 300) }).collect(),
-            extras: it.extras().iter().map(|x| Card { subtitle: x.duration.map(plex::fmt_duration).unwrap_or_default(), ..card(&srv, x, true, &prefs) }).collect(),
+            media_line: if it.kind == "show" {
+                String::new()
+            } else {
+                it.media_line(0)
+            },
+            info: summary
+                .info
+                .into_iter()
+                .map(|(label, value)| InfoLine {
+                    label: label.into(),
+                    value,
+                })
+                .collect(),
+            cast: it
+                .role
+                .iter()
+                .take(40)
+                .map(|p| CastMember {
+                    name: p.tag.clone(),
+                    role: p.role.clone(),
+                    image: image(&p.thumb, 300, 300),
+                })
+                .collect(),
+            extras: it
+                .extras()
+                .iter()
+                .map(|x| Card {
+                    subtitle: x.duration.map(plex::fmt_duration).unwrap_or_default(),
+                    ..card(&srv, x, true, &prefs)
+                })
+                .collect(),
             season: detail::pick_season(&it, &seasons, wanted.as_deref()),
-            seasons: seasons.iter().map(|x| Season { key: x.rating_key.clone(), title: x.title.clone(), image: image(&x.thumb, 300, 450) }).collect(),
+            seasons: seasons
+                .iter()
+                .map(|x| Season {
+                    key: x.rating_key.clone(),
+                    title: x.title.clone(),
+                    image: image(&x.thumb, 300, 450),
+                })
+                .collect(),
             watched: it.watched(),
             trailer_key: it.trailer().map(|t| t.rating_key.clone()),
         })
@@ -841,14 +1073,24 @@ impl Plaivo {
 
     pub fn episodes(&self, server_id: String, season_key: String, cached: bool) -> R<Vec<Card>> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
+        let ctx = Ctx::new(
+            self.client.clone(),
+            if cached {
+                Source::Cache
+            } else {
+                Source::Network
+            },
+        );
         let prefs = self.card_prefs();
         Ok(srv
             .children(&ctx, &season_key)?
             .iter()
             .map(|e| Card {
                 title: format!("{}. {}", e.index.unwrap_or(0), e.title),
-                meta: join(&[e.duration.map(plex::fmt_duration).unwrap_or_default(), e.originally_available_at.clone()]),
+                meta: join(&[
+                    e.duration.map(plex::fmt_duration).unwrap_or_default(),
+                    e.originally_available_at.clone(),
+                ]),
                 ..card(&srv, e, true, &prefs)
             })
             .collect())
@@ -865,16 +1107,28 @@ impl Plaivo {
         let it = srv.metadata(&Ctx::new(self.client.clone(), Source::Network), &key)?;
         let token = self.account.lock().unwrap().token.clone();
         let watchlisted = match (&token, it.plex_guid()) {
-            (Some(t), Some(guid)) if matches!(it.kind.as_str(), "movie" | "show") => self.client.watchlisted(t, guid).ok(),
+            (Some(t), Some(guid)) if matches!(it.kind.as_str(), "movie" | "show") => {
+                self.client.watchlisted(t, guid).ok()
+            }
             _ => None,
         };
-        let ctx = menu::Context { local: true, details: false, can_rate: srv.can_rate(), can_download: self.downloads.get().is_some(), signed_in: token.is_some(), watchlisted };
+        let ctx = menu::Context {
+            local: true,
+            details: false,
+            can_rate: srv.can_rate(),
+            can_download: self.downloads.get().is_some(),
+            signed_in: token.is_some(),
+            watchlisted,
+        };
         Ok(ItemMenu {
             actions: menu::actions(&it, &ctx),
             trailer_key: it.trailer().map(|t| t.rating_key.clone()),
             stars: menu::stars(&it),
             versions: it.media.iter().map(menu::version_label).collect(),
-            file_info: menu::file_info(&it).into_iter().map(|(label, value)| InfoLine { label, value }).collect(),
+            file_info: menu::file_info(&it)
+                .into_iter()
+                .map(|(label, value)| InfoLine { label, value })
+                .collect(),
         })
     }
 
@@ -884,7 +1138,12 @@ impl Plaivo {
             Action::MarkWatched | Action::MarkUnwatched => {
                 let on = action == Action::MarkWatched;
                 srv.set_watched(&self.client, &key, on)?;
-                if on { "Marked as watched" } else { "Marked as unwatched" }.into()
+                if on {
+                    "Marked as watched"
+                } else {
+                    "Marked as unwatched"
+                }
+                .into()
             }
             Action::ClearProgress => {
                 srv.remove_from_continue_watching(&self.client, &key)?;
@@ -892,12 +1151,31 @@ impl Plaivo {
             }
             Action::AddToWatchlist | Action::RemoveFromWatchlist => {
                 let on = action == Action::AddToWatchlist;
-                let token = self.account.lock().unwrap().token.clone().ok_or("Sign in to Plex to use the watchlist")?;
+                let token = self
+                    .account
+                    .lock()
+                    .unwrap()
+                    .token
+                    .clone()
+                    .ok_or("Sign in to Plex to use the watchlist")?;
                 let it = srv.metadata(&Ctx::new(self.client.clone(), Source::Network), &key)?;
-                self.client.set_watchlisted(&token, it.plex_guid().ok_or("This title has no Plex ID")?, on)?;
-                if on { "Added to watchlist" } else { "Removed from watchlist" }.into()
+                self.client.set_watchlisted(
+                    &token,
+                    it.plex_guid().ok_or("This title has no Plex ID")?,
+                    on,
+                )?;
+                if on {
+                    "Added to watchlist"
+                } else {
+                    "Removed from watchlist"
+                }
+                .into()
             }
-            _ => return Err(PlaivoError::Failed("This action opens on the device".into())),
+            _ => {
+                return Err(PlaivoError::Failed(
+                    "This action opens on the device".into(),
+                ));
+            }
         })
     }
 
@@ -915,10 +1193,26 @@ impl Plaivo {
         let ctx = Ctx::new(self.client.clone(), Source::Live);
         let prefs = self.card_prefs();
         let mut hits: Vec<(f64, Card)> = std::thread::scope(|s| {
-            let jobs: Vec<_> = servers.iter().map(|srv| (srv, s.spawn(|| srv.search(&ctx, &query)))).collect();
+            let jobs: Vec<_> = servers
+                .iter()
+                .map(|srv| (srv, s.spawn(|| srv.search(&ctx, &query))))
+                .collect();
             jobs.into_iter()
-                .filter_map(|(srv, job)| Some((srv, job.join().ok()?.inspect_err(|e| log::warn!("search on {}: {e}", srv.name)).ok()?)))
-                .flat_map(|(srv, found)| found.into_iter().map(|(it, score)| (score, card(srv, &it, false, &prefs))).collect::<Vec<_>>())
+                .filter_map(|(srv, job)| {
+                    Some((
+                        srv,
+                        job.join()
+                            .ok()?
+                            .inspect_err(|e| log::warn!("search on {}: {e}", srv.name))
+                            .ok()?,
+                    ))
+                })
+                .flat_map(|(srv, found)| {
+                    found
+                        .into_iter()
+                        .map(|(it, score)| (score, card(srv, &it, false, &prefs)))
+                        .collect::<Vec<_>>()
+                })
                 .collect()
         });
         hits.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -926,11 +1220,28 @@ impl Plaivo {
     }
 
     pub fn qualities(&self) -> Vec<QualityOption> {
-        QUALITIES.iter().map(|q| QualityOption { kbps: q.kbps, label: q.label.into(), bitrate: fmt_bitrate(q.kbps as u64) }).collect()
+        QUALITIES
+            .iter()
+            .map(|q| QualityOption {
+                kbps: q.kbps,
+                label: q.label.into(),
+                bitrate: fmt_bitrate(q.kbps as u64),
+            })
+            .collect()
     }
 
-    pub fn playback(&self, server_id: String, key: String, quality_kbps: u32, force_transcode: bool, version: u32) -> R<Playback> {
-        if !force_transcode && version == 0 && let Some(p) = self.local_playback(&server_id, &key) {
+    pub fn playback(
+        &self,
+        server_id: String,
+        key: String,
+        quality_kbps: u32,
+        force_transcode: bool,
+        version: u32,
+    ) -> R<Playback> {
+        if !force_transcode
+            && version == 0
+            && let Some(p) = self.local_playback(&server_id, &key)
+        {
             return Ok(p);
         }
         let srv = self.server(&server_id)?;
@@ -938,23 +1249,57 @@ impl Plaivo {
         if (version as usize) < it.media.len() {
             it.media.swap(0, version as usize);
         }
-        let part = it.media.first().and_then(|m| m.part.first()).ok_or("This item has no playable media")?;
+        let part = it
+            .media
+            .first()
+            .and_then(|m| m.part.first())
+            .ok_or("This item has no playable media")?;
         let media = &it.media[0];
-        let (url, transcode) = srv.stream_url(&self.client, &it.rating_key, media, quality_kbps, force_transcode);
+        let (url, transcode) = srv.stream_url(
+            &self.client,
+            &it.rating_key,
+            media,
+            quality_kbps,
+            force_transcode,
+        );
         let subtitles = part
             .stream
             .iter()
             .filter(|st| st.stream_type == 3 && !st.key.is_empty())
-            .map(|st| Subtitle { url: srv.media_url(&st.key), codec: st.codec.clone(), title: st.display_title.clone(), language: st.language_code.clone(), forced: st.forced })
+            .map(|st| Subtitle {
+                url: srv.media_url(&st.key),
+                codec: st.codec.clone(),
+                title: st.display_title.clone(),
+                language: st.language_code.clone(),
+                forced: st.forced,
+            })
             .collect();
         let local = self.settings.lock().unwrap().languages();
         let token = self.account.lock().unwrap().token.clone();
         let languages = prefs::for_server(&self.client, &srv, token.as_deref(), &local);
-        let transcode_label = transcode.as_ref().map(|(q, _)| format!("{} · {}", q.label, fmt_bitrate(q.kbps as u64))).unwrap_or_default();
-        let file = part.file.rsplit(['/', '\\']).next().unwrap_or_default().to_owned();
+        let transcode_label = transcode
+            .as_ref()
+            .map(|(q, _)| format!("{} · {}", q.label, fmt_bitrate(q.kbps as u64)))
+            .unwrap_or_default();
+        let file = part
+            .file
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_owned();
         let rules = self.settings.lock().unwrap().language_rules.clone();
         let rule = prefs::language_rule(&srv.id, &it, &rules);
-        Ok(self.playback_for(&srv.id, &it, url, file, subtitles, transcode.map(|(_, s)| s), transcode_label, languages, rule))
+        Ok(self.playback_for(
+            &srv.id,
+            &it,
+            url,
+            file,
+            subtitles,
+            transcode.map(|(_, s)| s),
+            transcode_label,
+            languages,
+            rule,
+        ))
     }
 
     pub fn account_languages(&self) -> R<Option<LanguagePrefs>> {
@@ -968,16 +1313,38 @@ impl Plaivo {
         let account = self.account.lock().unwrap();
         let (token, jellyfin) = (account.token.clone(), account.jellyfin.clone());
         drop(account);
-        Ok(prefs::save(&self.client, token.as_deref(), &jellyfin, &languages, prefs::next_generation())?)
+        Ok(prefs::save(
+            &self.client,
+            token.as_deref(),
+            &jellyfin,
+            &languages,
+            prefs::next_generation(),
+        )?)
     }
 
     pub fn queue(&self, server_id: String, show_key: String) -> R<Vec<Card>> {
         let prefs = self.card_prefs();
-        let online = self.server(&server_id).and_then(|srv| Ok(srv.all_episodes(&Ctx::new(self.client.clone(), Source::Live), &show_key)?.iter().map(|it| card(&srv, it, true, &prefs)).collect()));
-        let Some(d) = self.downloads.get().filter(|_| online.is_err()) else { return online };
-        let mut episodes: Vec<Item> = d.library().into_iter().filter(|(s, it)| *s == server_id && it.grandparent_rating_key == show_key).map(|(_, it)| it).collect();
+        let online = self.server(&server_id).and_then(|srv| {
+            Ok(srv
+                .all_episodes(&Ctx::new(self.client.clone(), Source::Live), &show_key)?
+                .iter()
+                .map(|it| card(&srv, it, true, &prefs))
+                .collect())
+        });
+        let Some(d) = self.downloads.get().filter(|_| online.is_err()) else {
+            return online;
+        };
+        let mut episodes: Vec<Item> = d
+            .library()
+            .into_iter()
+            .filter(|(s, it)| *s == server_id && it.grandparent_rating_key == show_key)
+            .map(|(_, it)| it)
+            .collect();
         episodes.sort_by_key(|it| (it.parent_index, it.index));
-        Ok(episodes.iter().map(|it| offline_card(d, &server_id, it, true, &prefs)).collect())
+        Ok(episodes
+            .iter()
+            .map(|it| offline_card(d, &server_id, it, true, &prefs))
+            .collect())
     }
 
     pub fn stop_transcode(&self, server_id: String, session: String) {
@@ -986,11 +1353,28 @@ impl Plaivo {
         }
     }
 
-    pub fn report(&self, server_id: String, key: String, state: String, time_ms: u64, duration_ms: u64, transcode_session: Option<String>) {
+    pub fn report(
+        &self,
+        server_id: String,
+        key: String,
+        state: String,
+        time_ms: u64,
+        duration_ms: u64,
+        transcode_session: Option<String>,
+    ) {
         if let Some(state) = PlayState::parse(&state) {
             self.scrobble(&server_id, &key, state, time_ms, duration_ms);
         }
-        let synced = self.server(&server_id).is_ok_and(|srv| srv.timeline(&self.client, &key, &state, time_ms, duration_ms, transcode_session.as_deref()));
+        let synced = self.server(&server_id).is_ok_and(|srv| {
+            srv.timeline(
+                &self.client,
+                &key,
+                &state,
+                time_ms,
+                duration_ms,
+                transcode_session.as_deref(),
+            )
+        });
         if state == "stopped"
             && let Some(d) = self.downloads.get()
             && d.local(&server_id, &key).is_some()
@@ -1029,7 +1413,10 @@ impl Plaivo {
             qr,
             interval_secs: s.interval_secs,
             expires_in_secs: s.expires_in_secs,
-            session: Arc::new(TrackerSession { trackers: self.trackers.clone(), sign_in: Mutex::new(s) }),
+            session: Arc::new(TrackerSession {
+                trackers: self.trackers.clone(),
+                sign_in: Mutex::new(s),
+            }),
         })
     }
 
@@ -1037,7 +1424,15 @@ impl Plaivo {
         if self.downloads.get().is_some() {
             return;
         }
-        if self.downloads.set(Downloads::new(root.into(), self.client.clone(), move || listener.changed())).is_err() {
+        if self
+            .downloads
+            .set(Downloads::new(
+                root.into(),
+                self.client.clone(),
+                move || listener.changed(),
+            ))
+            .is_err()
+        {
             return;
         }
         self.sync_download_servers();
@@ -1046,7 +1441,9 @@ impl Plaivo {
     }
 
     pub fn downloads(&self) -> Vec<Download> {
-        let Some(d) = self.downloads.get() else { return Vec::new() };
+        let Some(d) = self.downloads.get() else {
+            return Vec::new();
+        };
         d.snapshot()
             .into_iter()
             .map(|e| Download {
@@ -1077,7 +1474,9 @@ impl Plaivo {
         let it = srv.metadata(&cx, &key)?;
         let it = match download_parent(&scope, &it) {
             None => it,
-            Some(k) if k.is_empty() => return Err("This item has no season or show to download".into()),
+            Some(k) if k.is_empty() => {
+                return Err("This item has no season or show to download".into());
+            }
             Some(k) => srv.metadata(&cx, k)?,
         };
         d.enqueue(&srv, &it);
@@ -1105,34 +1504,66 @@ impl Plaivo {
     }
 
     pub fn offline_library(&self) -> Vec<Card> {
-        let Some(d) = self.downloads.get() else { return Vec::new() };
+        let Some(d) = self.downloads.get() else {
+            return Vec::new();
+        };
         let mut items = d.library();
-        items.sort_by_cached_key(|(_, it)| (it.card_text().0.to_lowercase(), it.parent_index, it.index));
+        items.sort_by_cached_key(|(_, it)| {
+            (it.card_text().0.to_lowercase(), it.parent_index, it.index)
+        });
         let prefs = self.card_prefs();
-        items.iter().map(|(server, it)| offline_card(d, server, it, false, &prefs)).collect()
+        items
+            .iter()
+            .map(|(server, it)| offline_card(d, server, it, false, &prefs))
+            .collect()
     }
 }
 
 #[uniffi::export]
 pub fn library_sorts() -> Vec<SortOption> {
-    SORTS.iter().map(|(id, label)| SortOption { id: (*id).into(), label: (*label).into() }).collect()
+    SORTS
+        .iter()
+        .map(|(id, label)| SortOption {
+            id: (*id).into(),
+            label: (*label).into(),
+        })
+        .collect()
 }
 
 #[uniffi::export]
-pub fn move_library(mut settings: Settings, arranged: Vec<String>, id: String, step: i32) -> Settings {
+pub fn move_library(
+    mut settings: Settings,
+    arranged: Vec<String>,
+    id: String,
+    step: i32,
+) -> Settings {
     settings.move_library(&arranged, &id, step as isize);
     settings
 }
 
 #[uniffi::export]
-pub fn pick_tracks(audio: Vec<TrackInfo>, text: Vec<TrackInfo>, languages: LanguagePrefs, rule: Option<LanguageRule>) -> TrackPick {
+pub fn pick_tracks(
+    audio: Vec<TrackInfo>,
+    text: Vec<TrackInfo>,
+    languages: LanguagePrefs,
+    rule: Option<LanguageRule>,
+) -> TrackPick {
     let (a, t) = prefs::pick_with(&audio, &text, &languages, rule.as_ref());
-    TrackPick { audio: a.map(|i| i as u32), text: t.map(|i| i as u32) }
+    TrackPick {
+        audio: a.map(|i| i as u32),
+        text: t.map(|i| i as u32),
+    }
 }
 
 #[uniffi::export]
 pub fn languages() -> Vec<Language> {
-    LANGUAGES.iter().map(|(name, codes)| Language { code: codes[0].into(), name: (*name).into() }).collect()
+    LANGUAGES
+        .iter()
+        .map(|(name, codes)| Language {
+            code: codes[0].into(),
+            name: (*name).into(),
+        })
+        .collect()
 }
 
 #[uniffi::export]
@@ -1147,12 +1578,22 @@ pub fn subtitle_mode_label(mode: SubtitleMode) -> String {
 
 #[uniffi::export]
 pub fn subtitle_colors() -> Vec<SubtitleColor> {
-    SUBTITLE_COLORS.iter().map(|(hex, name)| SubtitleColor { hex: (*hex).into(), name: (*name).into() }).collect()
+    SUBTITLE_COLORS
+        .iter()
+        .map(|(hex, name)| SubtitleColor {
+            hex: (*hex).into(),
+            name: (*name).into(),
+        })
+        .collect()
 }
 
 #[uniffi::export]
 pub fn card_scale(density: u32) -> f32 {
-    Settings { density, ..Default::default() }.card_scale()
+    Settings {
+        density,
+        ..Default::default()
+    }
+    .card_scale()
 }
 
 fn hub_sorts(items: &[Item], key: &str) -> Vec<HubSort> {
@@ -1161,8 +1602,20 @@ fn hub_sorts(items: &[Item], key: &str) -> Vec<HubSort> {
         .map(|(id, label)| {
             let mut sorted: Vec<&Item> = items.iter().collect();
             plex::sort_items(&mut sorted, id);
-            let order = sorted.iter().map(|it| items.iter().position(|x| std::ptr::eq(x, *it)).unwrap_or_default() as u32).collect();
-            HubSort { id: id.into(), label: label.into(), order }
+            let order = sorted
+                .iter()
+                .map(|it| {
+                    items
+                        .iter()
+                        .position(|x| std::ptr::eq(x, *it))
+                        .unwrap_or_default() as u32
+                })
+                .collect();
+            HubSort {
+                id: id.into(),
+                label: label.into(),
+                order,
+            }
         })
         .collect()
 }
@@ -1171,14 +1624,26 @@ fn rows(srv: &Server, hubs: &[Hub], prefs: &CardPrefs) -> Vec<Row> {
     hubs.iter()
         .map(|h| {
             let wide = prefs.wide_hub(h);
-            Row { key: h.key.clone(), title: h.title.clone(), resume: h.is_continue(), wide, cards: h.metadata.iter().map(|it| card(srv, it, wide, prefs)).collect() }
+            Row {
+                key: h.key.clone(),
+                title: h.title.clone(),
+                resume: h.is_continue(),
+                wide,
+                cards: h
+                    .metadata
+                    .iter()
+                    .map(|it| card(srv, it, wide, prefs))
+                    .collect(),
+            }
         })
         .collect()
 }
 
 fn download_parent<'a>(scope: &DownloadScope, it: &'a Item) -> Option<&'a String> {
     match (scope, it.kind.as_str()) {
-        (DownloadScope::Item, _) | (DownloadScope::Season, "season") | (DownloadScope::Show, "show") => None,
+        (DownloadScope::Item, _)
+        | (DownloadScope::Season, "season")
+        | (DownloadScope::Show, "show") => None,
         (DownloadScope::Season, _) | (DownloadScope::Show, "season") => Some(&it.parent_rating_key),
         (DownloadScope::Show, _) => Some(&it.grandparent_rating_key),
     }
@@ -1187,11 +1652,21 @@ fn download_parent<'a>(scope: &DownloadScope, it: &'a Item) -> Option<&'a String
 fn qr(text: &str) -> R<(u32, Vec<bool>)> {
     let qr = QrCode::encode_text(text, QrCodeEcc::Medium).map_err(|e| format!("QR code: {e:?}"))?;
     let size = qr.size();
-    Ok((size as u32, (0..size).flat_map(|y| (0..size).map(move |x| (x, y))).map(|(x, y)| qr.get_module(x, y)).collect()))
+    Ok((
+        size as u32,
+        (0..size)
+            .flat_map(|y| (0..size).map(move |x| (x, y)))
+            .map(|(x, y)| qr.get_module(x, y))
+            .collect(),
+    ))
 }
 
 fn apply_log_level(settings: &Settings) {
-    log::set_max_level(if settings.debug_logging { log::LevelFilter::Debug } else { log::LevelFilter::Info });
+    log::set_max_level(if settings.debug_logging {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    });
 }
 
 impl Plaivo {
@@ -1206,20 +1681,35 @@ impl Plaivo {
 
     fn scrobble(&self, server: &str, key: &str, state: PlayState, time_ms: u64, duration_ms: u64) {
         let id = (server.to_owned(), key.to_owned());
-        let active = Service::ALL.into_iter().map(|s| self.trackers.status(s)).any(|s| s.signed_in && s.scrobble);
-        let media = if active { self.tracked_media(&id) } else { None };
+        let active = Service::ALL
+            .into_iter()
+            .map(|s| self.trackers.status(s))
+            .any(|s| s.signed_in && s.scrobble);
+        let media = if active {
+            self.tracked_media(&id)
+        } else {
+            None
+        };
         if state == PlayState::Stopped {
             self.tracked.lock().unwrap().remove(&id);
         }
         if let Some(media) = media {
-            self.trackers.on_progress(&media, state, time_ms, duration_ms);
+            self.trackers
+                .on_progress(&media, state, time_ms, duration_ms);
         }
     }
 
     fn tracked_media(&self, id: &ItemKey) -> Option<Media> {
         let (mut media, show) = self.tracked.lock().unwrap().get(id)?.clone();
         if let Some(show) = show {
-            media.show_ids = self.server(&id.0).ok().and_then(|srv| self.trackers.show_ids(&self.client, &srv, self.downloads.get(), &show)).unwrap_or_default();
+            media.show_ids = self
+                .server(&id.0)
+                .ok()
+                .and_then(|srv| {
+                    self.trackers
+                        .show_ids(&self.client, &srv, self.downloads.get(), &show)
+                })
+                .unwrap_or_default();
             if let Some(entry) = self.tracked.lock().unwrap().get_mut(id) {
                 *entry = (media.clone(), None);
             }
@@ -1245,14 +1735,34 @@ impl Plaivo {
         let subtitles = local
             .subtitles
             .iter()
-            .map(|(path, st)| Subtitle { url: file_url(path), codec: st.codec.clone(), title: st.display_title.clone(), language: st.language_code.clone(), forced: st.forced })
+            .map(|(path, st)| Subtitle {
+                url: file_url(path),
+                codec: st.codec.clone(),
+                title: st.display_title.clone(),
+                language: st.language_code.clone(),
+                forced: st.forced,
+            })
             .collect();
         let languages = self.settings.lock().unwrap().languages();
-        let file = local.file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let file = local
+            .file
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
         log::info!("playing {key} from the downloaded file");
         let rules = self.settings.lock().unwrap().language_rules.clone();
         let rule = prefs::language_rule(server, &it, &rules);
-        Some(self.playback_for(server, &it, file_url(&local.file), file, subtitles, None, String::new(), languages, rule))
+        Some(self.playback_for(
+            server,
+            &it,
+            file_url(&local.file),
+            file,
+            subtitles,
+            None,
+            String::new(),
+            languages,
+            rule,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1269,20 +1779,39 @@ impl Plaivo {
         language_rule: Option<LanguageRule>,
     ) -> Playback {
         let (title, subtitle) = it.card_text();
-        let start_ms = it.view_offset.filter(|&o| o > 5_000 && it.progress() < 0.95).unwrap_or(0);
+        let start_ms = it
+            .view_offset
+            .filter(|&o| o > 5_000 && it.progress() < 0.95)
+            .unwrap_or(0);
         let settings = self.settings.lock().unwrap();
         let markers = it
             .marker
             .iter()
-            .filter_map(|m| Some(SkipMarker { kind: m.kind.clone(), mode: settings.skip_mode(&m.kind), label: m.skip_label()?.into(), start_ms: m.start_time_offset, end_ms: m.end_time_offset }))
+            .filter_map(|m| {
+                Some(SkipMarker {
+                    kind: m.kind.clone(),
+                    mode: settings.skip_mode(&m.kind),
+                    label: m.skip_label()?.into(),
+                    start_ms: m.start_time_offset,
+                    end_ms: m.end_time_offset,
+                })
+            })
             .collect();
         drop(settings);
         if let Some(m) = Media::for_item(it) {
-            let show = (!m.movie && !it.grandparent_rating_key.is_empty()).then(|| it.grandparent_rating_key.clone());
-            self.tracked.lock().unwrap().insert((server.to_owned(), it.rating_key.clone()), (m, show));
+            let show = (!m.movie && !it.grandparent_rating_key.is_empty())
+                .then(|| it.grandparent_rating_key.clone());
+            self.tracked
+                .lock()
+                .unwrap()
+                .insert((server.to_owned(), it.rating_key.clone()), (m, show));
         }
         let media = it.media.first();
-        let resolution = match media.map(|m| m.video_resolution.to_ascii_lowercase()).unwrap_or_default().as_str() {
+        let resolution = match media
+            .map(|m| m.video_resolution.to_ascii_lowercase())
+            .unwrap_or_default()
+            .as_str()
+        {
             "" => String::new(),
             "4k" => "4K".into(),
             "sd" => "SD".into(),
@@ -1299,11 +1828,18 @@ impl Plaivo {
             duration_ms: it.duration.unwrap_or(0),
             subtitles,
             markers,
-            show_key: (it.kind == "episode" && !it.grandparent_rating_key.is_empty()).then(|| it.grandparent_rating_key.clone()),
+            show_key: (it.kind == "episode" && !it.grandparent_rating_key.is_empty())
+                .then(|| it.grandparent_rating_key.clone()),
             file,
             container: media.map(|m| m.container.clone()).unwrap_or_default(),
             bitrate_kbps: media.and_then(|m| m.bitrate).unwrap_or(0),
-            source: join(&[media.and_then(|m| m.bitrate).map(fmt_bitrate).unwrap_or_default(), resolution]),
+            source: join(&[
+                media
+                    .and_then(|m| m.bitrate)
+                    .map(fmt_bitrate)
+                    .unwrap_or_default(),
+                resolution,
+            ]),
             transcode_session,
             transcode_label,
             languages,
@@ -1312,7 +1848,12 @@ impl Plaivo {
     }
 
     fn server(&self, id: &str) -> R<Server> {
-        self.account.lock().unwrap().server(id).cloned().ok_or_else(|| "Unknown server".into())
+        self.account
+            .lock()
+            .unwrap()
+            .server(id)
+            .cloned()
+            .ok_or_else(|| "Unknown server".into())
     }
 }
 
@@ -1369,12 +1910,22 @@ pub struct RustLicense {
 
 #[uniffi::export]
 pub fn rust_licenses() -> Vec<RustLicense> {
-    licenses::LICENSES.iter().map(|l| RustLicense { name: l.name.into(), version: l.version.into(), license: l.license.into() }).collect()
+    licenses::LICENSES
+        .iter()
+        .map(|l| RustLicense {
+            name: l.name.into(),
+            version: l.version.into(),
+            license: l.license.into(),
+        })
+        .collect()
 }
 
 #[uniffi::export]
 pub fn rust_license_text(index: u32) -> String {
-    licenses::LICENSES.get(index as usize).map(|l| l.parts().collect::<Vec<_>>().join("\n\n")).unwrap_or_default()
+    licenses::LICENSES
+        .get(index as usize)
+        .map(|l| l.parts().collect::<Vec<_>>().join("\n\n"))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1382,45 +1933,94 @@ mod tests {
     #[test]
     fn download_scope_picks_the_season_or_show() {
         use super::{DownloadScope as S, Item, download_parent};
-        let episode = Item { kind: "episode".into(), parent_rating_key: "s".into(), grandparent_rating_key: "g".into(), ..Default::default() };
-        let season = Item { kind: "season".into(), parent_rating_key: "g".into(), ..Default::default() };
+        let episode = Item {
+            kind: "episode".into(),
+            parent_rating_key: "s".into(),
+            grandparent_rating_key: "g".into(),
+            ..Default::default()
+        };
+        let season = Item {
+            kind: "season".into(),
+            parent_rating_key: "g".into(),
+            ..Default::default()
+        };
         assert_eq!(download_parent(&S::Item, &episode), None);
-        assert_eq!(download_parent(&S::Season, &episode).map(String::as_str), Some("s"));
-        assert_eq!(download_parent(&S::Show, &episode).map(String::as_str), Some("g"));
+        assert_eq!(
+            download_parent(&S::Season, &episode).map(String::as_str),
+            Some("s")
+        );
+        assert_eq!(
+            download_parent(&S::Show, &episode).map(String::as_str),
+            Some("g")
+        );
         assert_eq!(download_parent(&S::Season, &season), None);
-        assert_eq!(download_parent(&S::Show, &season).map(String::as_str), Some("g"));
+        assert_eq!(
+            download_parent(&S::Show, &season).map(String::as_str),
+            Some("g")
+        );
     }
 
     #[test]
     fn show_ids_fall_back_once_then_track_until_stopped_and_sign_out_forgets() {
-        use super::{Media, PlayState, Plaivo};
+        use super::{Media, Plaivo, PlayState};
         let dir = std::env::temp_dir().join(format!("plaivo-ffi-shows-{}", std::process::id()));
-        let core = Plaivo::new(dir.join("config").display().to_string(), dir.join("cache").display().to_string());
+        let core = Plaivo::new(
+            dir.join("config").display().to_string(),
+            dir.join("cache").display().to_string(),
+        );
         let id = ("nowhere".to_owned(), "1".to_owned());
-        let episode = Media { season: Some(1), episode: Some(2), ..Default::default() };
-        core.tracked.lock().unwrap().insert(id.clone(), (episode.clone(), Some("show".into())));
+        let episode = Media {
+            season: Some(1),
+            episode: Some(2),
+            ..Default::default()
+        };
+        core.tracked
+            .lock()
+            .unwrap()
+            .insert(id.clone(), (episode.clone(), Some("show".into())));
         assert_eq!(core.tracked_media(&id), Some(episode.clone()));
         assert_eq!(core.tracked.lock().unwrap().get(&id).unwrap().1, None);
         core.scrobble("nowhere", "1", PlayState::Stopped, 0, 1000);
         assert!(core.tracked.lock().unwrap().is_empty());
-        core.tracked.lock().unwrap().insert(id.clone(), (episode, None));
+        core.tracked
+            .lock()
+            .unwrap()
+            .insert(id.clone(), (episode, None));
         core.account.lock().unwrap().token = Some("t".into());
         core.settings.lock().unwrap().home_server = "p1".into();
         core.sign_out();
-        assert!(!core.signed_in() && core.settings().home_server.is_empty() && core.tracked.lock().unwrap().is_empty());
+        assert!(
+            !core.signed_in()
+                && core.settings().home_server.is_empty()
+                && core.tracked.lock().unwrap().is_empty()
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn hub_sorts_give_card_orders() {
         use super::{Item, hub_sorts};
-        let items = [Item { title: "b".into(), ..Default::default() }, Item { title: "a".into(), added_at: Some(1), ..Default::default() }];
+        let items = [
+            Item {
+                title: "b".into(),
+                ..Default::default()
+            },
+            Item {
+                title: "a".into(),
+                added_at: Some(1),
+                ..Default::default()
+            },
+        ];
         let sorts = hub_sorts(&items, "/hubs/x");
         let order = |id: &str| sorts.iter().find(|s| s.id == id).map(|s| s.order.clone());
         assert_eq!(order(""), Some(vec![0, 1]));
         assert_eq!(order("titleSort"), Some(vec![1, 0]));
         assert_eq!(order("addedAt:desc"), Some(vec![1, 0]));
-        assert!(hub_sorts(&items[..1], "/hubs/x").iter().all(|s| s.id != "addedAt:desc"));
+        assert!(
+            hub_sorts(&items[..1], "/hubs/x")
+                .iter()
+                .all(|s| s.id != "addedAt:desc")
+        );
     }
 
     #[test]

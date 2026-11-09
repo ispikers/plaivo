@@ -39,7 +39,9 @@ mod imp {
 
     impl VideoHost {
         pub fn new(raw: RawWindowHandle) -> Result<Self, String> {
-            let RawWindowHandle::Win32(h) = raw else { return Err("not a Win32 window".into()) };
+            let RawWindowHandle::Win32(h) = raw else {
+                return Err("not a Win32 window".into());
+            };
             let app = h.hwnd.get() as HWND;
             unsafe {
                 let class: Vec<u16> = "PlaivoVideoHost\0".encode_utf16().collect();
@@ -103,33 +105,59 @@ mod imp {
 
         pub fn set_cursor_hidden(&self, hidden: bool) {
             CURSOR_HIDDEN.store(hidden, Ordering::Relaxed);
-            unsafe { SetCursor(if hidden { std::ptr::null_mut() } else { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) }) };
+            unsafe {
+                SetCursor(if hidden {
+                    std::ptr::null_mut()
+                } else {
+                    LoadCursorW(std::ptr::null_mut(), IDC_ARROW)
+                })
+            };
         }
     }
 
     unsafe fn place(app: HWND, host: HWND) {
         unsafe {
-            let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            let mut rc = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
             GetClientRect(app, &mut rc);
             let (x, y, w, h) = match *REGION.lock().unwrap() {
                 None => (0, 0, rc.right, rc.bottom),
                 Some(r) => {
                     let k = GetDpiForWindow(app) as f32 / 96.0;
                     let px = |v: f32| (v * k).round() as i32;
-                    (px(r.x), rc.bottom - px(r.bottom) - px(r.h), px(r.w), px(r.h))
+                    (
+                        px(r.x),
+                        rc.bottom - px(r.bottom) - px(r.h),
+                        px(r.w),
+                        px(r.h),
+                    )
                 }
             };
             SetWindowPos(host, HWND_BOTTOM, x, y, w.max(1), h.max(1), SWP_NOACTIVATE);
         }
     }
 
-    unsafe extern "system" fn follow(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, data: usize) -> LRESULT {
+    unsafe extern "system" fn follow(
+        hwnd: HWND,
+        msg: u32,
+        wp: WPARAM,
+        lp: LPARAM,
+        _id: usize,
+        data: usize,
+    ) -> LRESULT {
         unsafe {
             if msg == WM_SIZE && SHOWN.load(Ordering::Relaxed) {
                 place(hwnd, data as HWND);
             }
             // GPUI sets the cursor on every WM_SETCURSOR; while the player has hidden it, answer first.
-            if msg == WM_SETCURSOR && (lp & 0xffff) as u32 == HTCLIENT && CURSOR_HIDDEN.load(Ordering::Relaxed) {
+            if msg == WM_SETCURSOR
+                && (lp & 0xffff) as u32 == HTCLIENT
+                && CURSOR_HIDDEN.load(Ordering::Relaxed)
+            {
                 SetCursor(std::ptr::null_mut());
                 return 1;
             }
@@ -142,10 +170,12 @@ mod imp {
 mod imp {
     use super::{RawWindowHandle, Region};
     use objc2::MainThreadMarker;
+    use objc2::rc::Retained;
+    use objc2_app_kit::{
+        NSBackingStoreType, NSColor, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use std::cell::Cell;
-    use objc2::rc::Retained;
-    use objc2_app_kit::{NSBackingStoreType, NSColor, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
 
     pub struct VideoHost {
         parent: Retained<NSWindow>,
@@ -156,8 +186,11 @@ mod imp {
 
     impl VideoHost {
         pub fn new(raw: RawWindowHandle) -> Result<Self, String> {
-            let RawWindowHandle::AppKit(h) = raw else { return Err("not an AppKit window".into()) };
-            let mtm = MainThreadMarker::new().ok_or("video host must be created on the main thread")?;
+            let RawWindowHandle::AppKit(h) = raw else {
+                return Err("not an AppKit window".into());
+            };
+            let mtm =
+                MainThreadMarker::new().ok_or("video host must be created on the main thread")?;
             unsafe {
                 let ns_view: &NSView = h.ns_view.cast::<NSView>().as_ref();
                 let parent = ns_view.window().ok_or("view has no window")?;
@@ -173,8 +206,15 @@ mod imp {
                 child.setBackgroundColor(Some(&NSColor::blackColor()));
                 child.setIgnoresMouseEvents(true);
                 child.setHasShadow(false);
-                let view = child.contentView().ok_or("child window has no content view")?;
-                Ok(Self { parent, child, view, region: Cell::new(None) })
+                let view = child
+                    .contentView()
+                    .ok_or("child window has no content view")?;
+                Ok(Self {
+                    parent,
+                    child,
+                    view,
+                    region: Cell::new(None),
+                })
             }
         }
 
@@ -187,7 +227,8 @@ mod imp {
                 if on {
                     self.sync();
                     // A child window ordered below its parent moves with it and stays directly underneath the UI.
-                    self.parent.addChildWindow_ordered(&self.child, NSWindowOrderingMode::Below);
+                    self.parent
+                        .addChildWindow_ordered(&self.child, NSWindowOrderingMode::Below);
                 } else {
                     self.parent.removeChildWindow(&self.child);
                     self.child.orderOut(None);
@@ -200,7 +241,10 @@ mod imp {
             let frame = match self.region.get() {
                 None => content,
                 Some(r) => NSRect::new(
-                    NSPoint::new(content.origin.x + r.x as f64, content.origin.y + r.bottom as f64),
+                    NSPoint::new(
+                        content.origin.x + r.x as f64,
+                        content.origin.y + r.bottom as f64,
+                    ),
                     NSSize::new(r.w as f64, r.h as f64),
                 ),
             };

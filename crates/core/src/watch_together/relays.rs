@@ -22,7 +22,10 @@ pub struct Relays {
 impl Relays {
     pub fn public() -> Self {
         let embedded = serde_json::from_str(include_str!("relays.json")).ok();
-        Self { list: embedded.as_ref().and_then(parse_list).unwrap_or_default(), custom: false }
+        Self {
+            list: embedded.as_ref().and_then(parse_list).unwrap_or_default(),
+            custom: false,
+        }
     }
 
     pub fn custom(base: &str) -> Option<Self> {
@@ -36,7 +39,12 @@ impl Relays {
         }
         let url = format!("{scheme}{rest}/v1/ws");
         valid_url(&url, true).then(|| Self {
-            list: vec![Relay { id: "custom".into(), name: base.into(), url, prefixes: ALPHABET.into() }],
+            list: vec![Relay {
+                id: "custom".into(),
+                name: base.into(),
+                url,
+                prefixes: ALPHABET.into(),
+            }],
             custom: true,
         })
     }
@@ -48,8 +56,18 @@ impl Relays {
 }
 
 pub fn normalize_code(code: &str) -> Option<String> {
-    let separator = |c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{A0}' | '\u{2007}' | '\u{202F}' | '-' | '\u{2010}'..='\u{2014}' | '\u{2212}');
-    let code: String = code.chars().filter(|c| !separator(*c)).map(|c| c.to_ascii_uppercase()).collect();
+    let separator = |c: char| {
+        matches!(
+            c,
+            ' ' | '\t' | '\n' | '\r' | '\u{A0}' | '\u{2007}' | '\u{202F}' | '-' | '\u{2010}'
+                ..='\u{2014}' | '\u{2212}'
+        )
+    };
+    let code: String = code
+        .chars()
+        .filter(|c| !separator(*c))
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
     valid_code(&code).then_some(code)
 }
 
@@ -67,13 +85,23 @@ pub fn parse_list(doc: &Value) -> Option<Vec<Relay>> {
     let mut owned = String::new();
     for e in entries {
         let field = |k: &str| e.get(k).and_then(Value::as_str).map(str::to_owned);
-        let relay = Relay { id: field("id")?, name: field("name")?, url: field("url")?, prefixes: field("prefixes")? };
+        let relay = Relay {
+            id: field("id")?,
+            name: field("name")?,
+            url: field("url")?,
+            prefixes: field("prefixes")?,
+        };
         let id_ok = (1..=32).contains(&relay.id.len())
             && !relay.id.starts_with('-')
-            && relay.id.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+            && relay
+                .id
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
             && list.iter().all(|r| r.id != relay.id);
         let prefixes_ok = !relay.prefixes.is_empty()
-            && relay.prefixes.chars().all(|c| ALPHABET.contains(c) && !owned.contains(c) && relay.prefixes.matches(c).count() == 1);
+            && relay.prefixes.chars().all(|c| {
+                ALPHABET.contains(c) && !owned.contains(c) && relay.prefixes.matches(c).count() == 1
+            });
         if !id_ok || !prefixes_ok || !valid_text(&relay.name, 64) || !valid_url(&relay.url, false) {
             return None;
         }
@@ -84,15 +112,37 @@ pub fn parse_list(doc: &Value) -> Option<Vec<Relay>> {
 }
 
 fn valid_url(url: &str, allow_ws: bool) -> bool {
-    let rest = url.strip_prefix("wss://").or_else(|| url.strip_prefix("ws://").filter(|_| allow_ws));
-    rest.is_some_and(|r| !r.starts_with('/') && r.ends_with("/v1/ws") && r.bytes().all(|b| (0x21..=0x7E).contains(&b) && b != b'?' && b != b'#'))
+    let rest = url
+        .strip_prefix("wss://")
+        .or_else(|| url.strip_prefix("ws://").filter(|_| allow_ws));
+    rest.is_some_and(|r| {
+        !r.starts_with('/')
+            && r.ends_with("/v1/ws")
+            && r.bytes()
+                .all(|b| (0x21..=0x7E).contains(&b) && b != b'?' && b != b'#')
+    })
 }
 
 pub fn fetch_list() -> Option<Vec<Relay>> {
     static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
-    let agent = AGENT.get_or_init(|| crate::http().timeout_global(Some(std::time::Duration::from_secs(5))).max_redirects(0).build().into());
-    let mut resp = agent.get(LIST_URL).call().ok().filter(|r| r.status() == 200)?;
-    let text = resp.body_mut().with_config().limit(65536).read_to_string().ok()?;
+    let agent = AGENT.get_or_init(|| {
+        crate::http()
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .max_redirects(0)
+            .build()
+            .into()
+    });
+    let mut resp = agent
+        .get(LIST_URL)
+        .call()
+        .ok()
+        .filter(|r| r.status() == 200)?;
+    let text = resp
+        .body_mut()
+        .with_config()
+        .limit(65536)
+        .read_to_string()
+        .ok()?;
     parse_list(&serde_json::from_str(&text).ok()?)
 }
 
@@ -110,14 +160,21 @@ mod tests {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .map(|r| Relay { id: r["id"].as_str().unwrap().into(), name: "x".into(), url: "wss://x/v1/ws".into(), prefixes: r["prefixes"].as_str().unwrap().into() })
+                    .map(|r| Relay {
+                        id: r["id"].as_str().unwrap().into(),
+                        name: "x".into(),
+                        url: "wss://x/v1/ws".into(),
+                        prefixes: r["prefixes"].as_str().unwrap().into(),
+                    })
                     .collect(),
                 custom: false,
             };
             let code = i["code"].as_str().unwrap_or("");
             let got = match normalize_code(code) {
                 None => serde_json::json!({"error": "invalid_code"}),
-                Some(c) => serde_json::json!({"code": c, "relay": relays.relay_for(code).map(|r| r.id.clone())}),
+                Some(c) => {
+                    serde_json::json!({"code": c, "relay": relays.relay_for(code).map(|r| r.id.clone())})
+                }
             };
             assert_eq!(got, case["expect"], "{}", case["name"]);
         }
@@ -149,7 +206,10 @@ mod tests {
         let r = Relays::custom(" https://relay.example.com/owp/ ").unwrap();
         assert_eq!(r.list[0].url, "wss://relay.example.com/owp/v1/ws");
         assert_eq!(r.relay_for("QABCDE").unwrap().id, "custom");
-        assert_eq!(Relays::custom("http://192.168.1.5:8080").unwrap().list[0].url, "ws://192.168.1.5:8080/v1/ws");
+        assert_eq!(
+            Relays::custom("http://192.168.1.5:8080").unwrap().list[0].url,
+            "ws://192.168.1.5:8080/v1/ws"
+        );
         assert!(Relays::custom("ftp://x").is_none());
         assert!(Relays::custom("https://").is_none());
         assert!(Relays::custom("https://a b").is_none());

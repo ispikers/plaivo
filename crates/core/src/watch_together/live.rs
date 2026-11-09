@@ -14,7 +14,11 @@ struct Sim {
 
 impl Sim {
     fn position(&self) -> i64 {
-        let moving = if self.paused { 0.0 } else { self.since.elapsed().as_millis() as f64 * self.rate };
+        let moving = if self.paused {
+            0.0
+        } else {
+            self.since.elapsed().as_millis() as f64 * self.rate
+        };
         (self.base + moving) as i64
     }
 
@@ -28,7 +32,9 @@ impl Sim {
         match c {
             PlayerCommand::Pause => self.paused = true,
             PlayerCommand::Play => {
-                let blocked = self.play_blocked_until.get_or_insert_with(|| Instant::now() + Duration::from_millis(2500));
+                let blocked = self
+                    .play_blocked_until
+                    .get_or_insert_with(|| Instant::now() + Duration::from_millis(2500));
                 if Instant::now() >= *blocked {
                     self.paused = false;
                 }
@@ -56,8 +62,21 @@ impl Peer {
         })
         .unwrap();
         let blocked = (!late_start).then(Instant::now);
-        let sim = Sim { base: 0.0, since: Instant::now(), paused: true, rate: 1.0, play_blocked_until: blocked };
-        Self { wt, rx, state: PartyState::default(), sim, attached: false, log: Vec::new() }
+        let sim = Sim {
+            base: 0.0,
+            since: Instant::now(),
+            paused: true,
+            rate: 1.0,
+            play_blocked_until: blocked,
+        };
+        Self {
+            wt,
+            rx,
+            state: PartyState::default(),
+            sim,
+            attached: false,
+            log: Vec::new(),
+        }
     }
 
     fn pump(&mut self) {
@@ -74,15 +93,18 @@ impl Peer {
         if self.attached
             && let Some(room) = &self.state.room
         {
-            self.wt.update_player(room.epoch, PlayerFeed {
-                position_ms: self.sim.position(),
-                duration_ms: Some(DURATION),
-                paused: self.sim.paused,
-                buffering: false,
-                loading: false,
-                can_set_rate: true,
-                seek_accuracy_ms: 0,
-            });
+            self.wt.update_player(
+                room.epoch,
+                PlayerFeed {
+                    position_ms: self.sim.position(),
+                    duration_ms: Some(DURATION),
+                    paused: self.sim.paused,
+                    buffering: false,
+                    loading: false,
+                    can_set_rate: true,
+                    seek_accuracy_ms: 0,
+                },
+            );
         }
     }
 
@@ -91,7 +113,12 @@ impl Peer {
     }
 }
 
-fn wait(peers: &mut [&mut Peer], what: &str, timeout_s: u64, done: impl Fn(&[&mut Peer]) -> bool) -> Duration {
+fn wait(
+    peers: &mut [&mut Peer],
+    what: &str,
+    timeout_s: u64,
+    done: impl Fn(&[&mut Peer]) -> bool,
+) -> Duration {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(timeout_s) {
         for p in peers.iter_mut() {
@@ -104,7 +131,12 @@ fn wait(peers: &mut [&mut Peer], what: &str, timeout_s: u64, done: impl Fn(&[&mu
         std::thread::sleep(Duration::from_millis(100));
     }
     for p in peers.iter() {
-        println!("{:?}\n{:?}\n{}", p.state.room, p.sim.position(), p.log.join("\n"));
+        println!(
+            "{:?}\n{:?}\n{}",
+            p.state.room,
+            p.sim.position(),
+            p.log.join("\n")
+        );
     }
     panic!("timed out waiting for {what}");
 }
@@ -125,12 +157,25 @@ fn two_clients_sync_on_the_public_relay() {
     let mut a = Peer::new("Alice", false);
     let mut b = Peer::new("Bob", true);
     a.wt.create();
-    wait(&mut [&mut a], "create", 20, |p| p[0].state.connection == Connection::Connected);
+    wait(&mut [&mut a], "create", 20, |p| {
+        p[0].state.connection == Connection::Connected
+    });
     let code = a.state.room.as_ref().unwrap().code.clone();
-    println!("room {} on {}", format_code(&code).unwrap(), Relays::public().relay_for(&code).unwrap().id);
+    println!(
+        "room {} on {}",
+        format_code(&code).unwrap(),
+        Relays::public().relay_for(&code).unwrap().id
+    );
 
     b.wt.join(&code.to_lowercase(), false);
-    wait(&mut [&mut a, &mut b], "join", 20, |p| p[1].state.connection == Connection::Connected && p[0].state.room.as_ref().is_some_and(|r| r.participants.len() == 2));
+    wait(&mut [&mut a, &mut b], "join", 20, |p| {
+        p[1].state.connection == Connection::Connected
+            && p[0]
+                .state
+                .room
+                .as_ref()
+                .is_some_and(|r| r.participants.len() == 2)
+    });
 
     let mut media = Media {
         kind: MediaKind::Movie,
@@ -144,46 +189,98 @@ fn two_clients_sync_on_the_public_relay() {
         file: None,
         ext: Default::default(),
     };
-    media.set_plaivo(&PlaivoExt { server: "test".into(), item: "1".into() });
+    media.set_plaivo(&PlaivoExt {
+        server: "test".into(),
+        item: "1".into(),
+    });
     a.wt.set_media(media.clone(), 0);
     a.attached = true;
-    wait(&mut [&mut a, &mut b], "media", 20, |p| p[1].state.media.is_some());
+    wait(&mut [&mut a, &mut b], "media", 20, |p| {
+        p[1].state.media.is_some()
+    });
     assert_eq!(b.state.media.as_ref(), Some(&media));
     assert_eq!(a.state.match_.unwrap().state, MatchState::Matched);
-    b.wt.set_match(b.state.room.as_ref().unwrap().epoch, Match { state: MatchState::Matched, delta_ms: Some(0) });
+    b.wt.set_match(
+        b.state.room.as_ref().unwrap().epoch,
+        Match {
+            state: MatchState::Matched,
+            delta_ms: Some(0),
+        },
+    );
     b.attached = true;
 
-    wait(&mut [&mut a, &mut b], "playing", 40, |p| p.iter().all(|p| p.phase() == Some(Phase::Playing) && !p.sim.paused));
-    let converge = wait(&mut [&mut a, &mut b], "converge after late start", 20, |p| (p[0].sim.position() - p[1].sim.position()).abs() <= 350);
+    wait(&mut [&mut a, &mut b], "playing", 40, |p| {
+        p.iter()
+            .all(|p| p.phase() == Some(Phase::Playing) && !p.sim.paused)
+    });
+    let converge = wait(
+        &mut [&mut a, &mut b],
+        "converge after late start",
+        20,
+        |p| (p[0].sim.position() - p[1].sim.position()).abs() <= 350,
+    );
     soak(&mut [&mut a, &mut b], 4000);
     let drift = (a.sim.position() - b.sim.position()).abs();
-    println!("playing drift after soak: {drift} ms (positions {} / {})", a.sim.position(), b.sim.position());
+    println!(
+        "playing drift after soak: {drift} ms (positions {} / {})",
+        a.sim.position(),
+        b.sim.position()
+    );
     assert!(drift <= 350, "drift {drift}");
-    assert!(b.log.iter().any(|l| l.starts_with("Seek")), "late start caught up by seek: {:?}", b.log);
-    println!("converged {} ms after both were playing", converge.as_millis());
+    assert!(
+        b.log.iter().any(|l| l.starts_with("Seek")),
+        "late start caught up by seek: {:?}",
+        b.log
+    );
+    println!(
+        "converged {} ms after both were playing",
+        converge.as_millis()
+    );
 
     a.wt.pause();
     wait(&mut [&mut a, &mut b], "pause", 10, |p| {
-        p.iter().all(|p| p.phase() == Some(Phase::Paused) && p.sim.paused && (p.sim.position() - p.state.room.as_ref().unwrap().position_ms).abs() <= 500)
+        p.iter().all(|p| {
+            p.phase() == Some(Phase::Paused)
+                && p.sim.paused
+                && (p.sim.position() - p.state.room.as_ref().unwrap().position_ms).abs() <= 500
+        })
     });
     let paused_at = a.state.room.as_ref().unwrap().position_ms;
-    println!("paused at {paused_at}: {} / {}", a.sim.position(), b.sim.position());
+    println!(
+        "paused at {paused_at}: {} / {}",
+        a.sim.position(),
+        b.sim.position()
+    );
 
     a.wt.seek(1_800_000);
     wait(&mut [&mut a, &mut b], "seek", 10, |p| {
-        p.iter().all(|p| p.state.room.as_ref().unwrap().position_ms == 1_800_000 && p.sim.paused && (p.sim.position() - 1_800_000).abs() <= 500)
+        p.iter().all(|p| {
+            p.state.room.as_ref().unwrap().position_ms == 1_800_000
+                && p.sim.paused
+                && (p.sim.position() - 1_800_000).abs() <= 500
+        })
     });
 
     a.wt.play();
-    wait(&mut [&mut a, &mut b], "play again", 20, |p| p.iter().all(|p| p.phase() == Some(Phase::Playing) && !p.sim.paused));
+    wait(&mut [&mut a, &mut b], "play again", 20, |p| {
+        p.iter()
+            .all(|p| p.phase() == Some(Phase::Playing) && !p.sim.paused)
+    });
     soak(&mut [&mut a, &mut b], 3000);
     let drift = (a.sim.position() - b.sim.position()).abs();
-    println!("drift after play: {drift} ms (positions {} / {})", a.sim.position(), b.sim.position());
+    println!(
+        "drift after play: {drift} ms (positions {} / {})",
+        a.sim.position(),
+        b.sim.position()
+    );
     assert!(drift <= 350, "drift {drift}");
     assert!(a.sim.position() > 1_800_000);
 
     a.wt.leave();
     b.wt.leave();
-    wait(&mut [&mut a, &mut b], "leave", 10, |p| p.iter().all(|p| p.state.end_reason == Some(EndReason::Left)));
+    wait(&mut [&mut a, &mut b], "leave", 10, |p| {
+        p.iter()
+            .all(|p| p.state.end_reason == Some(EndReason::Left))
+    });
     println!("total {} ms", started.elapsed().as_millis());
 }

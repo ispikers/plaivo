@@ -16,7 +16,11 @@ pub(crate) enum Fail {
 }
 
 pub(crate) fn disk(e: std::io::Error) -> Fail {
-    Fail::Fatal(if e.kind() == ErrorKind::StorageFull { "The disk is full".into() } else { e.to_string() })
+    Fail::Fatal(if e.kind() == ErrorKind::StorageFull {
+        "The disk is full".into()
+    } else {
+        e.to_string()
+    })
 }
 
 pub(crate) fn request(agent: &ureq::Agent, url: &str, from: u64) -> Result<Response, ureq::Error> {
@@ -33,7 +37,13 @@ pub(crate) fn request(agent: &ureq::Agent, url: &str, from: u64) -> Result<Respo
 }
 
 fn content_range(resp: &Response) -> Option<(&str, Option<u64>)> {
-    let (range, total) = resp.headers().get("content-range")?.to_str().ok()?.strip_prefix("bytes ")?.split_once('/')?;
+    let (range, total) = resp
+        .headers()
+        .get("content-range")?
+        .to_str()
+        .ok()?
+        .strip_prefix("bytes ")?
+        .split_once('/')?;
     Some((range, total.parse().ok()))
 }
 
@@ -62,12 +72,22 @@ pub(crate) fn fetch(
     let resp = request(agent, url, have).map_err(|e| Fail::Net(e.to_string()))?;
     match resp.status().as_u16() {
         200 | 206 => {}
-        416 if have > 0 && content_range(&resp).and_then(|r| r.1) == Some(have) && (expected == 0 || expected == have) => return Ok(have),
+        416 if have > 0
+            && content_range(&resp).and_then(|r| r.1) == Some(have)
+            && (expected == 0 || expected == have) =>
+        {
+            return Ok(have);
+        }
         416 => return Err(restart(part, "The server rejected the resume position")),
         c @ (408 | 429 | 500..) => return Err(Fail::Net(format!("The server answered {c}"))),
-        c => return Err(Fail::Fatal(format!("The server refused the download ({c})"))),
+        c => {
+            return Err(Fail::Fatal(format!(
+                "The server refused the download ({c})"
+            )));
+        }
     }
-    let (start, total) = range_of(&resp).ok_or_else(|| Fail::Net("The server sent an invalid Content-Range".into()))?;
+    let (start, total) = range_of(&resp)
+        .ok_or_else(|| Fail::Net("The server sent an invalid Content-Range".into()))?;
     if start != 0 && start != have {
         return Err(restart(part, "The server resumed at the wrong position"));
     }
@@ -77,9 +97,16 @@ pub(crate) fn fetch(
     if let (Some(total), Some(free)) = (total, free_space(part.parent().unwrap_or(Path::new("."))))
         && free < total.saturating_sub(start) + RESERVE
     {
-        return Err(Fail::Fatal("Not enough free space for this download".into()));
+        return Err(Fail::Fatal(
+            "Not enough free space for this download".into(),
+        ));
     }
-    let mut file = if start > 0 { OpenOptions::new().append(true).open(part) } else { File::create(part) }.map_err(disk)?;
+    let mut file = if start > 0 {
+        OpenOptions::new().append(true).open(part)
+    } else {
+        File::create(part)
+    }
+    .map_err(disk)?;
     let mut body = resp.into_body().into_reader();
     let mut buf = vec![0; 256 << 10];
     let mut done = start;
@@ -108,11 +135,23 @@ pub(crate) fn free_space(dir: &Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn GetDiskFreeSpaceExW(dir: *const u16, available: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+        fn GetDiskFreeSpaceExW(
+            dir: *const u16,
+            available: *mut u64,
+            total: *mut u64,
+            free: *mut u64,
+        ) -> i32;
     }
     let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
     let mut available = 0u64;
-    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) };
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
     (ok != 0).then_some(available)
 }
 
@@ -122,7 +161,8 @@ pub(crate) fn free_space(dir: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-    (unsafe { libc::statvfs(path.as_ptr(), &mut st) } == 0).then(|| st.f_bavail as u64 * st.f_frsize as u64)
+    (unsafe { libc::statvfs(path.as_ptr(), &mut st) } == 0)
+        .then(|| st.f_bavail as u64 * st.f_frsize as u64)
 }
 
 #[cfg(not(any(windows, unix)))]

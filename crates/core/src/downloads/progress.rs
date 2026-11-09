@@ -29,7 +29,10 @@ pub(crate) fn watched(time_ms: u64, duration_ms: u64) -> bool {
 }
 
 pub(crate) fn coalesce(list: &mut Vec<Pending>, mut p: Pending) {
-    p.watched |= watched(p.time_ms, p.duration_ms) || list.iter().any(|q| q.server == p.server && q.key == p.key && q.watched);
+    p.watched |= watched(p.time_ms, p.duration_ms)
+        || list
+            .iter()
+            .any(|q| q.server == p.server && q.key == p.key && q.watched);
     list.retain(|q| q.server != p.server || q.key != p.key);
     list.push(p);
 }
@@ -39,7 +42,10 @@ pub(crate) fn requests(srv: &Server, p: &Pending) -> Vec<Replay> {
     let finished = watched(p.time_ms, p.duration_ms);
     match srv.backend {
         Backend::Plex => {
-            let scrobble = p.watched.then(|| Replay { path: format!("/:/scrobble?identifier=com.plexapp.plugins.library&key={key}"), body: None });
+            let scrobble = p.watched.then(|| Replay {
+                path: format!("/:/scrobble?identifier=com.plexapp.plugins.library&key={key}"),
+                body: None,
+            });
             let timeline = (!finished).then(|| Replay {
                 path: format!(
                     "/:/timeline?ratingKey={key}&key=%2Flibrary%2Fmetadata%2F{key}&state=stopped&time={}&duration={}&offline=1&updated={}",
@@ -57,28 +63,44 @@ pub(crate) fn requests(srv: &Server, p: &Pending) -> Vec<Replay> {
             if p.watched {
                 body["Played"] = json!(true);
             }
-            vec![Replay { path: format!("/UserItems/{key}/UserData?userId={}", encode(&srv.user_id)), body: Some(body) }]
+            vec![Replay {
+                path: format!("/UserItems/{key}/UserData?userId={}", encode(&srv.user_id)),
+                body: Some(body),
+            }]
         }
     }
 }
 
 fn server_is_newer(current: &Value, ours: &Value) -> bool {
-    let date = |v: &Value| v["LastPlayedDate"].as_str().and_then(|d| d.get(..19)).map(str::to_owned);
+    let date = |v: &Value| {
+        v["LastPlayedDate"]
+            .as_str()
+            .and_then(|d| d.get(..19))
+            .map(str::to_owned)
+    };
     matches!((date(current), date(ours)), (Some(theirs), Some(ours)) if theirs > ours)
 }
 
 pub(crate) fn send(c: &Client, srv: &Server, r: &Replay) -> Result<(), ureq::Error> {
     let url = format!("{}{}", srv.uri, r.path);
     let Some(body) = &r.body else {
-        return c.headers(c.agent.get(&url), Some(&srv.token)).call().map(drop);
+        return c
+            .headers(c.agent.get(&url), Some(&srv.token))
+            .call()
+            .map(drop);
     };
-    let current: Value = jellyfin::authed(c.agent.get(&url), c, Some(&srv.token)).call()?.body_mut().read_json()?;
+    let current: Value = jellyfin::authed(c.agent.get(&url), c, Some(&srv.token))
+        .call()?
+        .body_mut()
+        .read_json()?;
     let body = match server_is_newer(&current, body) {
         false => body.clone(),
         true if body["Played"] == json!(true) => json!({ "Played": true }),
         true => return Ok(()),
     };
-    jellyfin::authed(c.agent.post(&url), c, Some(&srv.token)).send_json(&body).map(drop)
+    jellyfin::authed(c.agent.post(&url), c, Some(&srv.token))
+        .send_json(&body)
+        .map(drop)
 }
 
 pub(crate) fn iso(secs: u64) -> String {
@@ -91,5 +113,10 @@ pub(crate) fn iso(secs: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem / 60 % 60, rem % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+        rem / 3600,
+        rem / 60 % 60,
+        rem % 60
+    )
 }

@@ -4,7 +4,10 @@ use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::settings::note;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, nav_row, pill, round_button, row, section};
-use gpui::{AnyElement, AppContext, Context, Div, Entity, FocusHandle, FontWeight, SharedString, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, AppContext, Context, Div, Entity, FocusHandle, FontWeight, SharedString, Window,
+    div, prelude::*, px,
+};
 use plaivo_core::jellyfin::{self, ServerInfo};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,15 +33,18 @@ impl AddServer {
         let address = cx.new(|cx| TextInput::new("Server address, like 192.168.1.10:8096", cx));
         let username = cx.new(|cx| TextInput::new("Username", cx));
         let password = cx.new(|cx| TextInput::new("Password", cx).masked());
-        cx.subscribe(&address, |this: &mut Plaivo, _, ev: &InputEvent, cx| match ev {
-            InputEvent::Submit(_) => this.probe_jellyfin(cx),
-            InputEvent::Changed(_) => {
-                this.add_server.cancel();
-                this.add_server.found = None;
-                this.add_server.code = None;
-                cx.notify();
-            }
-        })
+        cx.subscribe(
+            &address,
+            |this: &mut Plaivo, _, ev: &InputEvent, cx| match ev {
+                InputEvent::Submit(_) => this.probe_jellyfin(cx),
+                InputEvent::Changed(_) => {
+                    this.add_server.cancel();
+                    this.add_server.found = None;
+                    this.add_server.code = None;
+                    cx.notify();
+                }
+            },
+        )
         .detach();
         for input in [&username, &password] {
             cx.subscribe(input, |this: &mut Plaivo, _, ev: &InputEvent, cx| {
@@ -48,7 +54,17 @@ impl AddServer {
             })
             .detach();
         }
-        Self { address, username, password, found: None, code: None, busy: false, error: None, focus_next: None, attempt: Arc::new(AtomicU64::new(0)) }
+        Self {
+            address,
+            username,
+            password,
+            found: None,
+            code: None,
+            busy: false,
+            error: None,
+            focus_next: None,
+            attempt: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     pub fn cancel(&mut self) {
@@ -92,26 +108,37 @@ impl Plaivo {
         let attempt = self.add_server.start();
         self.add_server.found = None;
         let c = self.client.clone();
-        Self::bg(cx, move || jellyfin::probe(&c, &address), move |this, r, cx| {
-            let a = &mut this.add_server;
-            if !a.current(attempt) {
-                return;
-            }
-            a.busy = false;
-            match r {
-                Ok(info) => {
-                    log::info!("jellyfin: found {} {} at {}", info.name, info.version, info.uri);
-                    a.focus_next = Some(a.username.read(cx).focus.clone());
-                    a.found = Some(info);
+        Self::bg(
+            cx,
+            move || jellyfin::probe(&c, &address),
+            move |this, r, cx| {
+                let a = &mut this.add_server;
+                if !a.current(attempt) {
+                    return;
                 }
-                Err(e) => a.error = Some(format!("Could not connect: {e}").into()),
-            }
-        });
+                a.busy = false;
+                match r {
+                    Ok(info) => {
+                        log::info!(
+                            "jellyfin: found {} {} at {}",
+                            info.name,
+                            info.version,
+                            info.uri
+                        );
+                        a.focus_next = Some(a.username.read(cx).focus.clone());
+                        a.found = Some(info);
+                    }
+                    Err(e) => a.error = Some(format!("Could not connect: {e}").into()),
+                }
+            },
+        );
         cx.notify();
     }
 
     pub fn sign_in_jellyfin(&mut self, cx: &mut Context<Self>) {
-        let Some(info) = self.add_server.found.clone() else { return self.probe_jellyfin(cx) };
+        let Some(info) = self.add_server.found.clone() else {
+            return self.probe_jellyfin(cx);
+        };
         let user = self.add_server.username.read(cx).text().trim().to_owned();
         let password = self.add_server.password.read(cx).text().to_owned();
         if user.is_empty() {
@@ -120,31 +147,47 @@ impl Plaivo {
         }
         let attempt = self.add_server.start();
         let c = self.client.clone();
-        Self::bg(cx, move || jellyfin::sign_in(&c, &info, &user, &password), move |this, r, cx| this.jellyfin_signed_in(attempt, r, cx));
+        Self::bg(
+            cx,
+            move || jellyfin::sign_in(&c, &info, &user, &password),
+            move |this, r, cx| this.jellyfin_signed_in(attempt, r, cx),
+        );
         cx.notify();
     }
 
     fn quick_connect(&mut self, cx: &mut Context<Self>) {
-        let Some(info) = self.add_server.found.clone() else { return };
+        let Some(info) = self.add_server.found.clone() else {
+            return;
+        };
         let attempt = self.add_server.start();
         let c = self.client.clone();
-        Self::bg(cx, move || jellyfin::quick_connect_start(&c, &info).map(|qc| (qc, info)), move |this, r, cx| {
-            if !this.add_server.current(attempt) {
-                return;
-            }
-            match r {
-                Ok((qc, info)) => {
-                    this.add_server.busy = false;
-                    this.add_server.code = Some(qc.code.into());
-                    this.poll_quick_connect(attempt, info, qc.secret, cx);
+        Self::bg(
+            cx,
+            move || jellyfin::quick_connect_start(&c, &info).map(|qc| (qc, info)),
+            move |this, r, cx| {
+                if !this.add_server.current(attempt) {
+                    return;
                 }
-                Err(e) => this.jellyfin_signed_in(attempt, Err(e), cx),
-            }
-        });
+                match r {
+                    Ok((qc, info)) => {
+                        this.add_server.busy = false;
+                        this.add_server.code = Some(qc.code.into());
+                        this.poll_quick_connect(attempt, info, qc.secret, cx);
+                    }
+                    Err(e) => this.jellyfin_signed_in(attempt, Err(e), cx),
+                }
+            },
+        );
         cx.notify();
     }
 
-    fn poll_quick_connect(&mut self, attempt: u64, info: ServerInfo, secret: String, cx: &mut Context<Self>) {
+    fn poll_quick_connect(
+        &mut self,
+        attempt: u64,
+        info: ServerInfo,
+        secret: String,
+        cx: &mut Context<Self>,
+    ) {
         let (c, flag) = (self.client.clone(), self.add_server.attempt.clone());
         Self::bg(
             cx,
@@ -154,7 +197,14 @@ impl Plaivo {
                     Ok(true) => Some(jellyfin::quick_connect_finish(&c, &info, &secret)),
                     Err(e) => Some(Err(e)),
                 };
-                poll_until(&flag, attempt, QUICK_CONNECT_POLL, Instant::now() + QUICK_CONNECT_FOR, ready).unwrap_or_else(|| Err("Quick Connect timed out. Try again.".into()))
+                poll_until(
+                    &flag,
+                    attempt,
+                    QUICK_CONNECT_POLL,
+                    Instant::now() + QUICK_CONNECT_FOR,
+                    ready,
+                )
+                .unwrap_or_else(|| Err("Quick Connect timed out. Try again.".into()))
             },
             move |this, r, cx| this.jellyfin_signed_in(attempt, r, cx),
         );
@@ -198,7 +248,13 @@ impl Plaivo {
         self.page == Page::AddServer && !self.account.has_servers()
     }
 
-    pub fn field(&self, id: &'static str, input: &Entity<TextInput>, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+    pub fn field(
+        &self,
+        id: &'static str,
+        input: &Entity<TextInput>,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let focused = input.read(cx).focus.is_focused(window);
         div()
             .id(id)
@@ -223,29 +279,62 @@ impl Plaivo {
             .items_center()
             .gap(px(12.))
             .when(standalone || self.nav.len() > 1, |d| {
-                d.child(round_button("add-server-back", Icon::Back, 40., 22., theme::black(0.), theme::tint(0.08), theme::text()).on_click(cx.listener(|this, _, _, cx| {
-                    if this.add_server_standalone() {
-                        this.add_server.leave(cx);
-                        this.page = Page::Auth;
-                        cx.notify();
-                    } else {
-                        this.back(cx);
-                    }
-                })))
+                d.child(
+                    round_button(
+                        "add-server-back",
+                        Icon::Back,
+                        40.,
+                        22.,
+                        theme::black(0.),
+                        theme::tint(0.08),
+                        theme::text(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.add_server_standalone() {
+                            this.add_server.leave(cx);
+                            this.page = Page::Auth;
+                            cx.notify();
+                        } else {
+                            this.back(cx);
+                        }
+                    })),
+                )
             })
-            .child(div().text_size(px(28.)).font_weight(FontWeight::BOLD).child("Add Library"));
+            .child(
+                div()
+                    .text_size(px(28.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("Add Library"),
+            );
         let server = section("Jellyfin server")
-            .child(note("Enter the address you open Jellyfin with in a browser."))
+            .child(note(
+                "Enter the address you open Jellyfin with in a browser.",
+            ))
             .child(
                 div()
                     .flex()
                     .gap(px(12.))
                     .items_center()
-                    .child(div().flex_1().child(self.field("jf-address", &a.address, window, cx)))
-                    .child(pill("jf-connect", "Connect", None, a.found.is_none()).on_click(cx.listener(|this, _, _, cx| this.probe_jellyfin(cx)))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(self.field("jf-address", &a.address, window, cx)),
+                    )
+                    .child(
+                        pill("jf-connect", "Connect", None, a.found.is_none())
+                            .on_click(cx.listener(|this, _, _, cx| this.probe_jellyfin(cx))),
+                    ),
             )
             .when_some(a.found.as_ref(), |d, info| {
-                d.child(row("jf-found", Some(Icon::Server), info.name.clone(), join(&[format!("Jellyfin {}", info.version), info.uri.clone()])).child(icon(Icon::Check, 22., theme::accent())))
+                d.child(
+                    row(
+                        "jf-found",
+                        Some(Icon::Server),
+                        info.name.clone(),
+                        join(&[format!("Jellyfin {}", info.version), info.uri.clone()]),
+                    )
+                    .child(icon(Icon::Check, 22., theme::accent())),
+                )
             });
         let sign_in = a.found.as_ref().map(|info| {
             let quick = match &a.code {
@@ -272,8 +361,14 @@ impl Plaivo {
                 .child(quick)
         });
         let status = div()
-            .when(a.busy, |d| d.text_size(px(13.)).text_color(theme::muted()).child("Connecting…"))
-            .when_some(a.error.clone(), |d, e| d.text_size(px(13.)).text_color(theme::error()).child(e));
+            .when(a.busy, |d| {
+                d.text_size(px(13.))
+                    .text_color(theme::muted())
+                    .child("Connecting…")
+            })
+            .when_some(a.error.clone(), |d, e| {
+                d.text_size(px(13.)).text_color(theme::error()).child(e)
+            });
         div()
             .id("add-server")
             .size_full()
@@ -297,12 +392,28 @@ impl Plaivo {
 
     pub fn render_connections(&mut self, cx: &mut Context<Self>) -> Div {
         let plex = match self.account.token {
-            Some(_) => row("plex-account", Some(Icon::Person), "Plex account", "Signed in")
-                .child(pill("sign-out", "Sign out", Some(Icon::Logout), false).on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))),
-            None => row("plex-account", Some(Icon::Person), "Plex account", "Not signed in").child(pill("sign-in", "Sign in", None, false).on_click(cx.listener(|this, _, _, cx| {
-                this.page = Page::Auth;
-                this.sign_in(cx);
-            }))),
+            Some(_) => row(
+                "plex-account",
+                Some(Icon::Person),
+                "Plex account",
+                "Signed in",
+            )
+            .child(
+                pill("sign-out", "Sign out", Some(Icon::Logout), false)
+                    .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx))),
+            ),
+            None => row(
+                "plex-account",
+                Some(Icon::Person),
+                "Plex account",
+                "Not signed in",
+            )
+            .child(
+                pill("sign-in", "Sign in", None, false).on_click(cx.listener(|this, _, _, cx| {
+                    this.page = Page::Auth;
+                    this.sign_in(cx);
+                })),
+            ),
         };
         let jellyfin: Vec<_> = self
             .account
@@ -310,14 +421,40 @@ impl Plaivo {
             .iter()
             .map(|s| {
                 let id = s.id.clone();
-                row(SharedString::from(format!("jf-{id}")), Some(Icon::Server), s.name.clone(), join(&[s.user.clone(), s.uri.clone()]))
-                    .child(pill(SharedString::from(format!("jf-remove-{id}")), "Remove", None, false).on_click(cx.listener(move |this, _, _, cx| this.remove_jellyfin(&id, cx))))
+                row(
+                    SharedString::from(format!("jf-{id}")),
+                    Some(Icon::Server),
+                    s.name.clone(),
+                    join(&[s.user.clone(), s.uri.clone()]),
+                )
+                .child(
+                    pill(
+                        SharedString::from(format!("jf-remove-{id}")),
+                        "Remove",
+                        None,
+                        false,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.remove_jellyfin(&id, cx))),
+                )
             })
             .collect();
-        div().flex().flex_col().gap(px(28.)).child(section("Plex").child(plex)).child(
-            section("Jellyfin").children(jellyfin).child(
-                nav_row("add-jellyfin", Icon::Add, "Add server", "Sign in with a username and password, or Quick Connect").on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::AddServer, true, cx))),
-            ),
-        )
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(28.))
+            .child(section("Plex").child(plex))
+            .child(
+                section("Jellyfin").children(jellyfin).child(
+                    nav_row(
+                        "add-jellyfin",
+                        Icon::Add,
+                        "Add server",
+                        "Sign in with a username and password, or Quick Connect",
+                    )
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.navigate(Nav::AddServer, true, cx)),
+                    ),
+                ),
+            )
     }
 }

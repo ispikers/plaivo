@@ -66,7 +66,12 @@ pub struct WatchTogether {
 }
 
 impl WatchTogether {
-    pub fn new(name: &str, client: &str, relays: Relays, mut notify: impl FnMut(Update) + Send + 'static) -> Result<Self, PartyError> {
+    pub fn new(
+        name: &str,
+        client: &str,
+        relays: Relays,
+        mut notify: impl FnMut(Update) + Send + 'static,
+    ) -> Result<Self, PartyError> {
         let party = Party::new(name, client, RandomState::new().hash_one(0u8))?;
         let alive = Arc::new(AtomicBool::new(true));
         let gate = alive.clone();
@@ -78,8 +83,18 @@ impl WatchTogether {
         let base = Instant::now();
         let (tx, rx) = mpsc::channel();
         let opener = tx.clone();
-        let open = move |url, generation, race| spawn_open(url, generation, race, base, opener.clone());
-        let io = Io::new(party, relays, rx, tx.clone(), base, Box::new(notify), Box::new(open), fetch_list);
+        let open =
+            move |url, generation, race| spawn_open(url, generation, race, base, opener.clone());
+        let io = Io::new(
+            party,
+            relays,
+            rx,
+            tx.clone(),
+            base,
+            Box::new(notify),
+            Box::new(open),
+            fetch_list,
+        );
         let (done_tx, done) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("watch-together".into())
@@ -88,7 +103,12 @@ impl WatchTogether {
                 drop(done_tx);
             })
             .map_err(|_| PartyError::local("unreachable"))?;
-        Ok(Self { tx, alive, done, thread: Some(thread) })
+        Ok(Self {
+            tx,
+            alive,
+            done,
+            thread: Some(thread),
+        })
     }
 
     fn send(&self, cmd: Cmd) {
@@ -200,7 +220,16 @@ struct Io {
 
 impl Io {
     #[allow(clippy::too_many_arguments)]
-    fn new(party: Party, relays: Relays, rx: Receiver<Cmd>, tx: Sender<Cmd>, base: Instant, notify: Box<dyn FnMut(Update) + Send>, open: Opener, fetch: fn() -> Option<Vec<Relay>>) -> Self {
+    fn new(
+        party: Party,
+        relays: Relays,
+        rx: Receiver<Cmd>,
+        tx: Sender<Cmd>,
+        base: Instant,
+        notify: Box<dyn FnMut(Update) + Send>,
+        open: Opener,
+        fetch: fn() -> Option<Vec<Relay>>,
+    ) -> Self {
         Self {
             party,
             relays,
@@ -245,7 +274,10 @@ impl Io {
             }
             let first = match (self.ws.is_some(), self.party.next_deadline()) {
                 (true, _) => self.rx.try_recv().ok(),
-                (false, Some(t)) => self.rx.recv_timeout(Duration::from_millis((t - self.now()).max(0) as u64)).ok(),
+                (false, Some(t)) => self
+                    .rx
+                    .recv_timeout(Duration::from_millis((t - self.now()).max(0) as u64))
+                    .ok(),
                 (false, None) => self.rx.recv().ok(),
             };
             let mut cmds: Vec<Cmd> = first.into_iter().collect();
@@ -270,10 +302,14 @@ impl Io {
                 let race = urls.len() > 1;
                 self.connect(urls, race);
             }),
-            Cmd::Join(code, create) => self.party.start(Request::Join { code, create }, now).map(|_| {
-                self.refreshed = false;
-                self.route_join();
-            }),
+            Cmd::Join(code, create) => {
+                self.party
+                    .start(Request::Join { code, create }, now)
+                    .map(|_| {
+                        self.refreshed = false;
+                        self.route_join();
+                    })
+            }
             Cmd::Leave => {
                 self.party.leave();
                 Ok(())
@@ -340,7 +376,11 @@ impl Io {
             }
         };
         if let Err(e) = result {
-            let event = if matches!(e.code.as_str(), "invalid_code" | "already_in_room") { Event::Failed(e) } else { Event::Error(e) };
+            let event = if matches!(e.code.as_str(), "invalid_code" | "already_in_room") {
+                Event::Failed(e)
+            } else {
+                Event::Error(e)
+            };
             (self.notify)(Update::Event(event));
         }
         true
@@ -379,7 +419,8 @@ impl Io {
             (self.notify)(Update::Event(event));
         }
         if self.party.state() != &self.published {
-            let joined = self.party.state().connection == Connection::Connected && self.published.connection != Connection::Connected;
+            let joined = self.party.state().connection == Connection::Connected
+                && self.published.connection != Connection::Connected;
             self.published = self.party.state().clone();
             (self.notify)(Update::State(Box::new(self.published.clone())));
             if joined {
@@ -401,7 +442,9 @@ impl Io {
     }
 
     fn route_join(&mut self) {
-        let Some(Request::Join { code, .. }) = self.party.request().cloned() else { return };
+        let Some(Request::Join { code, .. }) = self.party.request().cloned() else {
+            return;
+        };
         if self.relays.relay_for(&code).is_none() {
             self.refresh_now();
         }
@@ -413,10 +456,18 @@ impl Io {
 
     fn refused(&mut self, err: PartyError) {
         let next = match (self.party.request().cloned(), err.code.as_str()) {
-            (Some(Request::Create), "relay_full") => self.relays.list.iter().map(|r| r.url.clone()).find(|u| !self.party.tried().contains(u)),
+            (Some(Request::Create), "relay_full") => self
+                .relays
+                .list
+                .iter()
+                .map(|r| r.url.clone())
+                .find(|u| !self.party.tried().contains(u)),
             (Some(Request::Join { code, .. }), "room_not_found") if !self.refreshed => {
                 self.refresh_now();
-                self.relays.relay_for(&code).map(|r| r.url.clone()).filter(|u| !self.party.tried().contains(u))
+                self.relays
+                    .relay_for(&code)
+                    .map(|r| r.url.clone())
+                    .filter(|u| !self.party.tried().contains(u))
             }
             _ => None,
         };
@@ -443,7 +494,10 @@ impl Io {
 
     fn background_refresh(&mut self) {
         let now = self.now();
-        if self.relays.custom || self.refreshing || self.last_refresh.is_some_and(|t| now - t < REFRESH_MS) {
+        if self.relays.custom
+            || self.refreshing
+            || self.last_refresh.is_some_and(|t| now - t < REFRESH_MS)
+        {
             return;
         }
         self.refreshing = true;
@@ -458,7 +512,11 @@ fn spawn_open(url: String, generation: u64, race: bool, base: Instant, tx: Sende
     std::thread::spawn(move || {
         let deadline = base.elapsed().as_millis() as i64 + OPEN_TIMEOUT.as_millis() as i64;
         let opened = open(&url).and_then(|mut ws| {
-            let clock = if race { Some(first_sample(&mut ws, base, deadline)?) } else { None };
+            let clock = if race {
+                Some(first_sample(&mut ws, base, deadline)?)
+            } else {
+                None
+            };
             Some((ws, clock))
         });
         let _ = tx.send(match opened {
@@ -469,7 +527,10 @@ fn spawn_open(url: String, generation: u64, race: bool, base: Instant, tx: Sende
 }
 
 fn close(ws: &mut Socket, code: u16) {
-    let _ = ws.close(Some(CloseFrame { code: code.into(), reason: "".into() }));
+    let _ = ws.close(Some(CloseFrame {
+        code: code.into(),
+        reason: "".into(),
+    }));
     let _ = ws.flush();
 }
 
@@ -479,16 +540,31 @@ fn would_block(e: &tungstenite::Error) -> bool {
 
 fn open(url: &str) -> Option<Socket> {
     let authority = url.split_once("://")?.1.split('/').next()?;
-    let has_port = authority.rfind(':').is_some_and(|i| !authority[i..].contains(']'));
+    let has_port = authority
+        .rfind(':')
+        .is_some_and(|i| !authority[i..].contains(']'));
     let port = if url.starts_with("wss://") { 443 } else { 80 };
-    let address = if has_port { authority.to_owned() } else { format!("{authority}:{port}") };
+    let address = if has_port {
+        authority.to_owned()
+    } else {
+        format!("{authority}:{port}")
+    };
     let deadline = Instant::now() + OPEN_TIMEOUT;
-    let remaining = || deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero());
-    let tcp = address.to_socket_addrs().ok()?.find_map(|a| TcpStream::connect_timeout(&a, remaining()?).ok())?;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+    };
+    let tcp = address
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|a| TcpStream::connect_timeout(&a, remaining()?).ok())?;
     tcp.set_read_timeout(Some(remaining()?)).ok()?;
     tcp.set_write_timeout(Some(OPEN_TIMEOUT)).ok()?;
     let _ = tcp.set_nodelay(true);
-    let config = WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE_BYTES)).max_frame_size(Some(MAX_MESSAGE_BYTES));
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_MESSAGE_BYTES));
     let (mut ws, _) = tungstenite::client_tls_with_config(url, tcp, Some(config), None).ok()?;
     let tcp = match ws.get_mut() {
         MaybeTlsStream::Plain(s) => s,
@@ -504,7 +580,8 @@ fn first_sample(ws: &mut Socket, base: Instant, deadline: i64) -> Option<Clock> 
     let mut clock = Clock::new(now());
     while now() < deadline {
         if let Some(id) = clock.due_ping(now()) {
-            ws.send(Message::text(ClientMsg::Ping { id: id.into() }.to_json())).ok()?;
+            ws.send(Message::text(ClientMsg::Ping { id: id.into() }.to_json()))
+                .ok()?;
         }
         match ws.read() {
             Ok(Message::Text(text)) => {
@@ -531,7 +608,12 @@ mod tests {
     use tungstenite::protocol::Role;
 
     fn relay(id: &str, prefixes: &str) -> Relay {
-        Relay { id: id.into(), name: id.into(), url: url(id), prefixes: prefixes.into() }
+        Relay {
+            id: id.into(),
+            name: id.into(),
+            url: url(id),
+            prefixes: prefixes.into(),
+        }
     }
 
     fn url(id: &str) -> String {
@@ -539,7 +621,12 @@ mod tests {
     }
 
     fn moved() -> Option<Vec<Relay>> {
-        Some(vec![relay("a", "2345678"), relay("b", "ABCDEF"), relay("c", "9GHJKMNP"), relay("d", "Q")])
+        Some(vec![
+            relay("a", "2345678"),
+            relay("b", "ABCDEF"),
+            relay("c", "9GHJKMNP"),
+            relay("d", "Q"),
+        ])
     }
 
     fn offline() -> Option<Vec<Relay>> {
@@ -555,7 +642,14 @@ mod tests {
 
     impl Harness {
         fn new(fetch: fn() -> Option<Vec<Relay>>) -> Self {
-            let relays = Relays { list: vec![relay("a", "2345678"), relay("b", "9ABCDEF"), relay("c", "GHJKMNP")], custom: false };
+            let relays = Relays {
+                list: vec![
+                    relay("a", "2345678"),
+                    relay("b", "9ABCDEF"),
+                    relay("c", "GHJKMNP"),
+                ],
+                custom: false,
+            };
             let (tx, rx) = mpsc::channel();
             let opens = Arc::new(Mutex::new(Vec::new()));
             let updates = Arc::new(Mutex::new(Vec::new()));
@@ -563,7 +657,12 @@ mod tests {
             let party = Party::new("Tester", "Plaivo/0.1.0", 1).unwrap();
             let open: Opener = Box::new(move |url, _, race| o.lock().unwrap().push((url, race)));
             let notify = Box::new(move |update| u.lock().unwrap().push(update));
-            Self { io: Io::new(party, relays, rx, tx, Instant::now(), notify, open, fetch), opens, updates, servers: Vec::new() }
+            Self {
+                io: Io::new(party, relays, rx, tx, Instant::now(), notify, open, fetch),
+                opens,
+                updates,
+                servers: Vec::new(),
+            }
         }
 
         fn cmd(&mut self, cmd: Cmd) {
@@ -586,15 +685,23 @@ mod tests {
 
         fn refuse(&mut self, code: &str, re: &str) {
             let now = self.io.now();
-            self.io.party.on_text(now, &format!(r#"{{"type":"error","code":"{code}","message":"","re":"{re}"}}"#));
+            self.io.party.on_text(
+                now,
+                &format!(r#"{{"type":"error","code":"{code}","message":"","re":"{re}"}}"#),
+            );
             self.io.flush();
         }
 
         fn failure(&self) -> Option<String> {
-            self.updates.lock().unwrap().iter().rev().find_map(|u| match u {
-                Update::Event(Event::Failed(e)) => Some(e.code.clone()),
-                _ => None,
-            })
+            self.updates
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|u| match u {
+                    Update::Event(Event::Failed(e)) => Some(e.code.clone()),
+                    _ => None,
+                })
         }
     }
 
@@ -602,7 +709,10 @@ mod tests {
     fn create_races_every_relay_and_falls_back_on_relay_full() {
         let mut h = Harness::new(moved);
         h.cmd(Cmd::Create);
-        assert_eq!(h.opens(), [(url("a"), true), (url("b"), true), (url("c"), true)]);
+        assert_eq!(
+            h.opens(),
+            [(url("a"), true), (url("b"), true), (url("c"), true)]
+        );
         assert_eq!(h.io.pending, 3);
         h.accept("a");
         assert_eq!(h.io.pending, 0);
@@ -624,7 +734,11 @@ mod tests {
         assert_eq!(h.opens(), [(url("b"), false)]);
         h.accept("b");
         h.refuse("room_not_found", "join");
-        assert_eq!(h.opens(), [(url("c"), false)], "a relay tried by the earlier create stays usable");
+        assert_eq!(
+            h.opens(),
+            [(url("c"), false)],
+            "a relay tried by the earlier create stays usable"
+        );
         h.accept("c");
         h.refuse("room_not_found", "join");
         assert!(h.opens().is_empty());

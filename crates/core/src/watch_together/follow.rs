@@ -44,13 +44,22 @@ pub fn round_rate(rate: f64) -> f64 {
     (rate * 1e6).round() / 1e6
 }
 
-pub fn hold_at(room: &Room, relay_now: i64, offset_ms: i64, player_duration: Option<i64>) -> Option<(i64, Option<i64>)> {
+pub fn hold_at(
+    room: &Room,
+    relay_now: i64,
+    offset_ms: i64,
+    player_duration: Option<i64>,
+) -> Option<(i64, Option<i64>)> {
     let anchor = room.position_ms + offset_ms;
     let play_in = match room.phase {
         Phase::Idle => return None,
         Phase::Paused | Phase::Waiting => None,
         Phase::Playing => {
-            let lead = if anchor < 0 { -anchor as f64 / room.rate } else { 0.0 };
+            let lead = if anchor < 0 {
+                -anchor as f64 / room.rate
+            } else {
+                0.0
+            };
             let start_at = room.at_ms as f64 + lead;
             if (relay_now as f64) >= start_at {
                 return None;
@@ -123,10 +132,15 @@ pub fn step(s: &StepIn) -> Step {
     } else if drift.abs() > accuracy.max(1000) {
         seek = cooled;
     }
-    let want = if nudging { room.rate * if drift > 0 { 0.96 } else { 1.04 } } else { room.rate };
+    let want = if nudging {
+        room.rate * if drift > 0 { 0.96 } else { 1.04 }
+    } else {
+        room.rate
+    };
     set_rate(&mut out.actions, want);
     if seek {
-        out.actions.push(PlayerCommand::Seek(clamp(target + 250, end)));
+        out.actions
+            .push(PlayerCommand::Seek(clamp(target + 250, end)));
     }
     if p.paused {
         out.actions.push(PlayerCommand::Play);
@@ -189,7 +203,12 @@ mod tests {
                     a["rate"] = json!(round_rate(r));
                 }
             }
-            assert_eq!(json!({"actions": actions, "nudging": got.nudging, "playInMs": got.play_in_ms}), expect, "{}", case["name"]);
+            assert_eq!(
+                json!({"actions": actions, "nudging": got.nudging, "playInMs": got.play_in_ms}),
+                expect,
+                "{}",
+                case["name"]
+            );
         }
     }
 

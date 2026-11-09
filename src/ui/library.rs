@@ -4,7 +4,10 @@ use crate::settings::{DENSITY_MAX, ViewMode};
 use crate::ui::home::{card_height, card_width, content_width};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{backdrop, chip, floating, icon, round_button, scrollbar, shadow};
-use gpui::{AnyElement, Context, Div, FontWeight, MouseButton, MouseDownEvent, ObjectFit, SharedString, Stateful, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list};
+use gpui::{
+    AnyElement, Context, Div, FontWeight, MouseButton, MouseDownEvent, ObjectFit, SharedString,
+    Stateful, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Grid {
@@ -28,7 +31,10 @@ impl Plaivo {
 
     fn grid_item(&self, g: Grid, i: usize) -> Card {
         match g {
-            Grid::Library => self.library.as_ref().and_then(|l| l.items.get(i).cloned().flatten()),
+            Grid::Library => self
+                .library
+                .as_ref()
+                .and_then(|l| l.items.get(i).cloned().flatten()),
             Grid::HubList => self.hub_list.as_ref().and_then(|l| l.cards.get(i).cloned()),
             Grid::Results => self.results.get(i).cloned(),
             Grid::Suggestions => self.suggestions.get(i).cloned(),
@@ -37,7 +43,13 @@ impl Plaivo {
         .unwrap_or_default()
     }
 
-    pub fn grid(&mut self, g: Grid, cw: f32, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
+    pub fn grid(
+        &mut self,
+        g: Grid,
+        cw: f32,
+        scroll: UniformListScrollHandle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if g == Grid::Library && self.settings.view_mode == ViewMode::List {
             return self.list(scroll, cx);
         }
@@ -65,7 +77,13 @@ impl Plaivo {
                         let cards: Vec<AnyElement> = (r * cols..((r + 1) * cols).min(count))
                             .map(|i| {
                                 let card = this.grid_item(g, i);
-                                this.media_card(SharedString::from(format!("{tag}-{i}")), &card, w, false, cx)
+                                this.media_card(
+                                    SharedString::from(format!("{tag}-{i}")),
+                                    &card,
+                                    w,
+                                    false,
+                                    cx,
+                                )
                             })
                             .collect();
                         div().h(px(row_h)).px(px(8.)).flex().children(cards)
@@ -95,7 +113,8 @@ impl Plaivo {
                         let card = this.grid_item(Grid::Library, i);
                         let image = this.picture(&card.thumb, Shape::Poster);
                         let check = card.watched && this.settings.watched_indicators;
-                        let (open, server, key) = (card.clone(), card.server.to_string(), card.key.to_string());
+                        let (open, server, key) =
+                            (card.clone(), card.server.to_string(), card.key.to_string());
                         div()
                             .id(SharedString::from(format!("lib-row-{i}")))
                             .h(px(row_h))
@@ -107,8 +126,20 @@ impl Plaivo {
                             .when(!card.key.is_empty(), |d| {
                                 d.cursor_pointer()
                                     .hover(|s| s.bg(theme::tint(0.05)))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.open(&open, cx)))
-                                    .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.open_item_menu(server.clone(), key.clone(), ev.position, cx)))
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| this.open(&open, cx)),
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                            this.open_item_menu(
+                                                server.clone(),
+                                                key.clone(),
+                                                ev.position,
+                                                cx,
+                                            )
+                                        }),
+                                    )
                             })
                             .child(
                                 div()
@@ -119,9 +150,27 @@ impl Plaivo {
                                     .rounded(px(8.))
                                     .overflow_hidden()
                                     .bg(theme::surface())
-                                    .when_some(image, |d, im| d.child(im.size_full().rounded(px(8.)).object_fit(ObjectFit::Cover)))
+                                    .when_some(image, |d, im| {
+                                        d.child(
+                                            im.size_full()
+                                                .rounded(px(8.))
+                                                .object_fit(ObjectFit::Cover),
+                                        )
+                                    })
                                     .when(check, |d| {
-                                        d.child(div().absolute().top(px(4.)).right(px(4.)).size(px(20.)).rounded_full().bg(theme::text()).flex().items_center().justify_center().child(icon(Icon::Check, 14., theme::bg())))
+                                        d.child(
+                                            div()
+                                                .absolute()
+                                                .top(px(4.))
+                                                .right(px(4.))
+                                                .size(px(20.))
+                                                .rounded_full()
+                                                .bg(theme::text())
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(icon(Icon::Check, 14., theme::bg())),
+                                        )
                                     }),
                             )
                             .child(
@@ -131,9 +180,28 @@ impl Plaivo {
                                     .flex()
                                     .flex_col()
                                     .gap(px(4.))
-                                    .child(div().text_size(px(13. + 3. * f)).font_weight(FontWeight::SEMIBOLD).line_clamp(2).child(card.title.clone()))
-                                    .child(div().text_size(px(10. + 3. * f)).text_color(theme::muted()).truncate().child(card.meta.clone()))
-                                    .child(div().text_size(px(10. + 3. * f)).line_height(px((10. + 3. * f) * 1.3)).text_color(theme::tint(0.5)).line_clamp(summary_lines).child(card.summary.clone())),
+                                    .child(
+                                        div()
+                                            .text_size(px(13. + 3. * f))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .line_clamp(2)
+                                            .child(card.title.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10. + 3. * f))
+                                            .text_color(theme::muted())
+                                            .truncate()
+                                            .child(card.meta.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(10. + 3. * f))
+                                            .line_height(px((10. + 3. * f) * 1.3))
+                                            .text_color(theme::tint(0.5))
+                                            .line_clamp(summary_lines)
+                                            .child(card.summary.clone()),
+                                    ),
                             )
                     })
                     .collect()
@@ -149,27 +217,69 @@ impl Plaivo {
         let tabbed = matches!(self.nav.last(), Some(Nav::Library(..)));
         let tab = self.lib_tab;
         let shows = self.watchlist_shows;
-        let header = div()
-            .h(px(64.))
-            .flex_none()
-            .px(px(16.))
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .when(tabbed, |d| {
-                d.child(div().flex().gap(px(8.)).children(LIB_TABS.iter().enumerate().map(|(i, &(t, label))| chip(("lib-tab", i), label, t == tab).on_click(cx.listener(move |this, _, _, cx| this.set_lib_tab(t, cx))))))
-            })
-            .when(self.nav.last() == Some(&Nav::Watchlist), |d| {
-                d.child(div().flex().gap(px(8.)).children([(false, "Movies"), (true, "TV Shows")].into_iter().map(|(s, label)| {
-                    chip(SharedString::from(format!("watchlist-{label}")), label, s == shows).on_click(cx.listener(move |this, _, _, cx| this.set_watchlist_tab(s, cx)))
-                })))
-            });
+        let header =
+            div()
+                .h(px(64.))
+                .flex_none()
+                .px(px(16.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .when(tabbed, |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .children(LIB_TABS.iter().enumerate().map(|(i, &(t, label))| {
+                                chip(("lib-tab", i), label, t == tab).on_click(
+                                    cx.listener(move |this, _, _, cx| this.set_lib_tab(t, cx)),
+                                )
+                            })),
+                    )
+                })
+                .when(self.nav.last() == Some(&Nav::Watchlist), |d| {
+                    d.child(
+                        div().flex().gap(px(8.)).children(
+                            [(false, "Movies"), (true, "TV Shows")].into_iter().map(
+                                |(s, label)| {
+                                    chip(
+                                        SharedString::from(format!("watchlist-{label}")),
+                                        label,
+                                        s == shows,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| this.set_watchlist_tab(s, cx),
+                                    ))
+                                },
+                            ),
+                        ),
+                    )
+                });
         if tabbed && tab == LibTab::Recommended {
             let body = self.render_lib_hubs(cw, window, cx);
-            return div().size_full().flex().flex_col().child(header).child(body).into_any_element();
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(body)
+                .into_any_element();
         }
-        let Some(lib) = &self.library else { return div().size_full().flex().flex_col().child(header).into_any_element() };
-        let (title, count, scroll, sort, listing) = (lib.title.clone(), lib.items.len(), lib.scroll.clone(), lib.key.sort.clone(), lib.key.listing);
+        let Some(lib) = &self.library else {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(header)
+                .into_any_element();
+        };
+        let (title, count, scroll, sort, listing) = (
+            lib.title.clone(),
+            lib.items.len(),
+            lib.scroll.clone(),
+            lib.key.sort.clone(),
+            lib.key.listing,
+        );
         let loaded = lib.items.iter().any(Option::is_some);
         let browse = matches!(listing, Listing::Items | Listing::Watchlist);
         let body = if lib.items.is_empty() {
@@ -188,17 +298,38 @@ impl Plaivo {
             .flex_col()
             .child(
                 header
-                    .when(listing == Listing::Collection, |d| d.child(back_button("collection-back", cx)).child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(title)))
-                    .when(loaded, |d| d.child(div().text_size(px(13.)).text_color(theme::muted()).child(format!("{count} items"))))
+                    .when(listing == Listing::Collection, |d| {
+                        d.child(back_button("collection-back", cx)).child(
+                            div()
+                                .text_size(px(22.))
+                                .font_weight(FontWeight::BOLD)
+                                .child(title),
+                        )
+                    })
+                    .when(loaded, |d| {
+                        d.child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(theme::muted())
+                                .child(format!("{count} items")),
+                        )
+                    })
                     .child(div().flex_1())
                     .when(browse, |d| d.child(self.sort_chip(cx))),
             )
             .child(body)
-            .when(self.sort_open && browse, |d| d.children(self.sort_menu(&sort, SORTS.to_vec(), false, cx)))
+            .when(self.sort_open && browse, |d| {
+                d.children(self.sort_menu(&sort, SORTS.to_vec(), false, cx))
+            })
             .into_any_element()
     }
 
-    fn render_lib_hubs(&mut self, cw: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_lib_hubs(
+        &mut self,
+        cw: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let rows = match self.lib_hubs.as_ref().map(Vec::len) {
             None => (0..3).map(|i| self.render_hub_skeleton(i, cw)).collect(),
             Some(0) => vec![message("Nothing to recommend yet")],
@@ -208,14 +339,37 @@ impl Plaivo {
             .flex_1()
             .min_h_0()
             .relative()
-            .child(div().id("lib-hubs").size_full().overflow_y_scroll().restrict_scroll_to_axis().track_scroll(&self.lib_hubs_scroll).child(div().flex().flex_col().gap(px(16.)).pb(px(24.)).children(rows)))
+            .child(
+                div()
+                    .id("lib-hubs")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&self.lib_hubs_scroll)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.))
+                            .pb(px(24.))
+                            .children(rows),
+                    ),
+            )
             .child(scrollbar(&self.lib_hubs_scroll))
             .into_any_element()
     }
 
     pub fn render_hub_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(l) = &self.hub_list else { return div().into_any_element() };
-        let (title, sort, scroll, loaded, empty) = (l.title.clone(), l.sort.clone(), l.scroll.clone(), l.loaded, l.cards.is_empty());
+        let Some(l) = &self.hub_list else {
+            return div().into_any_element();
+        };
+        let (title, sort, scroll, loaded, empty) = (
+            l.title.clone(),
+            l.sort.clone(),
+            l.scroll.clone(),
+            l.loaded,
+            l.cards.is_empty(),
+        );
         let options = l.sorts();
         let cw = content_width(self, window);
         let body = if empty {
@@ -237,23 +391,39 @@ impl Plaivo {
                     .items_center()
                     .gap(px(12.))
                     .child(back_button("hub-back", cx))
-                    .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child(title))
+                    .child(
+                        div()
+                            .text_size(px(22.))
+                            .font_weight(FontWeight::BOLD)
+                            .child(title),
+                    )
                     .child(div().flex_1())
                     .child(self.sort_chip(cx)),
             )
             .child(body)
-            .when(self.sort_open, |d| d.children(self.sort_menu(&sort, options, true, cx)))
+            .when(self.sort_open, |d| {
+                d.children(self.sort_menu(&sort, options, true, cx))
+            })
             .into_any_element()
     }
 
     fn sort_chip(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        chip("sort", "Sort", false).gap(px(6.)).child(icon(Icon::Sort, 16., theme::text())).on_click(cx.listener(|this, _, _, cx| {
-            this.sort_open = !this.sort_open;
-            cx.notify();
-        }))
+        chip("sort", "Sort", false)
+            .gap(px(6.))
+            .child(icon(Icon::Sort, 16., theme::text()))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.sort_open = !this.sort_open;
+                cx.notify();
+            }))
     }
 
-    fn sort_menu(&self, sort: &str, options: Vec<(&'static str, &'static str)>, hub: bool, cx: &mut Context<Self>) -> [AnyElement; 2] {
+    fn sort_menu(
+        &self,
+        sort: &str,
+        options: Vec<(&'static str, &'static str)>,
+        hub: bool,
+        cx: &mut Context<Self>,
+    ) -> [AnyElement; 2] {
         let close = backdrop(
             "sort-backdrop",
             cx.listener(|this, _, _, cx| {
@@ -284,9 +454,29 @@ impl Plaivo {
                     .items_center()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::tint(0.06)))
-                    .child(div().flex_1().font_weight(if selected { FontWeight::SEMIBOLD } else { FontWeight::NORMAL }).text_color(if selected { theme::text().into() } else { theme::muted() }).child(label))
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(if selected {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(if selected {
+                                theme::text().into()
+                            } else {
+                                theme::muted()
+                            })
+                            .child(label),
+                    )
                     .when(selected, |d| d.child(icon(Icon::Check, 18., theme::text())))
-                    .on_click(cx.listener(move |this, _, _, cx| if hub { this.set_hub_sort(id, cx) } else { this.set_sort(id, cx) }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if hub {
+                            this.set_hub_sort(id, cx)
+                        } else {
+                            this.set_sort(id, cx)
+                        }
+                    }))
             }))
             .into_any_element();
         [close, menu]
@@ -312,44 +502,103 @@ impl Plaivo {
         let body: Vec<AnyElement> = if query.trim().is_empty() {
             let mut out = Vec::new();
             if !self.settings.recent_searches.is_empty() {
-                out.push(div().px(px(16.)).text_size(px(18.)).font_weight(FontWeight::BOLD).child("Recent searches").into_any_element());
+                out.push(
+                    div()
+                        .px(px(16.))
+                        .text_size(px(18.))
+                        .font_weight(FontWeight::BOLD)
+                        .child("Recent searches")
+                        .into_any_element(),
+                );
                 out.push(
                     div()
                         .px(px(16.))
                         .flex()
                         .flex_wrap()
                         .gap(px(8.))
-                        .children(self.settings.recent_searches.clone().into_iter().enumerate().map(|(i, q)| {
-                            let q2 = q.clone();
-                            chip(("recent", i), q, false).on_click(cx.listener(move |this, _, _, cx| {
-                                this.search.update(cx, |input, cx| input.set_text(&q2, cx));
-                                this.search(q2.clone(), cx);
-                            }))
-                        }))
+                        .children(
+                            self.settings
+                                .recent_searches
+                                .clone()
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, q)| {
+                                    let q2 = q.clone();
+                                    chip(("recent", i), q, false).on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.search
+                                                .update(cx, |input, cx| input.set_text(&q2, cx));
+                                            this.search(q2.clone(), cx);
+                                        },
+                                    ))
+                                }),
+                        )
                         .into_any_element(),
                 );
             }
             if !self.suggestions.is_empty() {
-                out.push(div().px(px(16.)).text_size(px(18.)).font_weight(FontWeight::BOLD).child("Suggested for you").into_any_element());
+                out.push(
+                    div()
+                        .px(px(16.))
+                        .text_size(px(18.))
+                        .font_weight(FontWeight::BOLD)
+                        .child("Suggested for you")
+                        .into_any_element(),
+                );
                 let scroll = self.grid_scroll.clone();
                 out.push(self.grid(Grid::Suggestions, cw, scroll, cx));
             }
             out
         } else if self.results.is_empty() {
-            let msg = if self.searching { "Searching…".to_owned() } else { format!("No results for “{}”", query.trim()) };
-            vec![div().pt(px(24.)).flex().justify_center().text_color(theme::muted()).child(msg).into_any_element()]
+            let msg = if self.searching {
+                "Searching…".to_owned()
+            } else {
+                format!("No results for “{}”", query.trim())
+            };
+            vec![
+                div()
+                    .pt(px(24.))
+                    .flex()
+                    .justify_center()
+                    .text_color(theme::muted())
+                    .child(msg)
+                    .into_any_element(),
+            ]
         } else {
             let scroll = self.grid_scroll.clone();
             vec![self.grid(Grid::Results, cw, scroll, cx)]
         };
-        div().size_full().flex().flex_col().pt(px(16.)).gap(px(12.)).child(field).children(body).into_any_element()
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .pt(px(16.))
+            .gap(px(12.))
+            .child(field)
+            .children(body)
+            .into_any_element()
     }
 }
 
 fn message(text: &'static str) -> AnyElement {
-    div().pt(px(24.)).flex().justify_center().text_color(theme::muted()).child(text).into_any_element()
+    div()
+        .pt(px(24.))
+        .flex()
+        .justify_center()
+        .text_color(theme::muted())
+        .child(text)
+        .into_any_element()
 }
 
 fn back_button(id: &'static str, cx: &mut Context<Plaivo>) -> Stateful<Div> {
-    round_button(id, Icon::Back, 40., 22., theme::black(0.), theme::tint(0.08), theme::text()).on_click(cx.listener(|this, _, _, cx| this.back(cx)))
+    round_button(
+        id,
+        Icon::Back,
+        40.,
+        22.,
+        theme::black(0.),
+        theme::tint(0.08),
+        theme::text(),
+    )
+    .on_click(cx.listener(|this, _, _, cx| this.back(cx)))
 }

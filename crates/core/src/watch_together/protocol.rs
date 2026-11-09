@@ -103,14 +103,19 @@ impl Room {
         let int = |v: i64| (0..=MAX_INT).contains(&v);
         let mut seen = HashSet::with_capacity(self.waiting_on.len());
         let waiting = (self.phase == Phase::Waiting || self.waiting_on.is_empty())
-            && self.waiting_on.iter().all(|p| valid_peer_id(p) && seen.insert(p.as_str()));
+            && self
+                .waiting_on
+                .iter()
+                .all(|p| valid_peer_id(p) && seen.insert(p.as_str()));
         let participants = self.participants.iter().filter(|p| p.host).count() == 1
             && self.participants.iter().all(|p| {
                 valid_peer_id(&p.peer_id)
                     && valid_text(&p.name, 32)
                     && valid_client(&p.client)
                     && (-MAX_DURATION_MS..=MAX_DURATION_MS).contains(&p.offset_ms)
-                    && p.match_.is_none_or(|m| m.delta_ms.is_none_or(|d| (-MAX_INT..=MAX_INT).contains(&d)))
+                    && p.match_.is_none_or(|m| {
+                        m.delta_ms.is_none_or(|d| (-MAX_INT..=MAX_INT).contains(&d))
+                    })
             });
         self.rev >= 1
             && int(self.rev)
@@ -161,8 +166,15 @@ pub struct WireError {
 #[derive(Debug, PartialEq)]
 pub enum ServerMsg {
     Joined(Box<Joined>),
-    Room { room: Box<Room>, action: Option<Action>, media: Option<Value> },
-    Pong { id: Value, server_time: i64 },
+    Room {
+        room: Box<Room>,
+        action: Option<Action>,
+        media: Option<Value>,
+    },
+    Pong {
+        id: Value,
+        server_time: i64,
+    },
     Error(WireError),
     Closed(String),
     Malformed(String),
@@ -170,19 +182,29 @@ pub enum ServerMsg {
 }
 
 pub fn parse(text: &str) -> ServerMsg {
-    let Ok(mut v) = serde_json::from_str::<Value>(text) else { return ServerMsg::Ignored };
+    let Ok(mut v) = serde_json::from_str::<Value>(text) else {
+        return ServerMsg::Ignored;
+    };
     normalize_ints(&mut v);
-    let Some(kind) = v.get("type").and_then(Value::as_str).map(str::to_owned) else { return ServerMsg::Ignored };
+    let Some(kind) = v.get("type").and_then(Value::as_str).map(str::to_owned) else {
+        return ServerMsg::Ignored;
+    };
     let msg = match kind.as_str() {
-        "joined" => serde_json::from_value::<Joined>(v).ok().filter(|j| {
-            valid_code(&j.code)
-                && valid_peer_id(&j.you.peer_id)
-                && j.you.token.len() == 43
-                && j.you.token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                && int_ok(j.server_time)
-                && j.room.valid()
-                && j.media.as_ref().is_none_or(|m| m.check(false).is_ok())
-        }).map(|j| ServerMsg::Joined(Box::new(j))),
+        "joined" => serde_json::from_value::<Joined>(v)
+            .ok()
+            .filter(|j| {
+                valid_code(&j.code)
+                    && valid_peer_id(&j.you.peer_id)
+                    && j.you.token.len() == 43
+                    && j.you
+                        .token
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                    && int_ok(j.server_time)
+                    && j.room.valid()
+                    && j.media.as_ref().is_none_or(|m| m.check(false).is_ok())
+            })
+            .map(|j| ServerMsg::Joined(Box::new(j))),
         "room" => {
             let media = v.as_object_mut().and_then(|o| o.remove("media"));
             let action = match v.get("action") {
@@ -193,23 +215,41 @@ pub fn parse(text: &str) -> ServerMsg {
                     .map(Some),
             };
             match (action, serde_json::from_value::<Room>(v)) {
-                (Some(action), Ok(room)) if room.valid() => Some(ServerMsg::Room { room: Box::new(room), action, media }),
+                (Some(action), Ok(room)) if room.valid() => Some(ServerMsg::Room {
+                    room: Box::new(room),
+                    action,
+                    media,
+                }),
                 _ => None,
             }
         }
         "pong" => match (v.get("id"), v.get("serverTime").and_then(Value::as_i64)) {
-            (Some(id), Some(t)) if int_ok(t) => Some(ServerMsg::Pong { id: id.clone(), server_time: t }),
+            (Some(id), Some(t)) if int_ok(t) => Some(ServerMsg::Pong {
+                id: id.clone(),
+                server_time: t,
+            }),
             _ => None,
         },
-        "error" => serde_json::from_value::<WireError>(v).ok().filter(|e| !e.code.is_empty()).map(ServerMsg::Error),
-        "closed" => v.get("reason").and_then(Value::as_str).filter(|r| !r.is_empty()).map(|r| ServerMsg::Closed(r.to_owned())),
+        "error" => serde_json::from_value::<WireError>(v)
+            .ok()
+            .filter(|e| !e.code.is_empty())
+            .map(ServerMsg::Error),
+        "closed" => v
+            .get("reason")
+            .and_then(Value::as_str)
+            .filter(|r| !r.is_empty())
+            .map(|r| ServerMsg::Closed(r.to_owned())),
         _ => return ServerMsg::Ignored,
     };
     msg.unwrap_or(ServerMsg::Malformed(kind))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ClientMsg {
     Create {
         name: String,
@@ -289,7 +329,10 @@ fn int_ok(v: i64) -> bool {
 pub fn normalize_ints(v: &mut Value) {
     match v {
         Value::Number(n) if !n.is_i64() && !n.is_u64() => {
-            if let Some(f) = n.as_f64().filter(|f| f.fract() == 0.0 && f.abs() <= MAX_INT as f64) {
+            if let Some(f) = n
+                .as_f64()
+                .filter(|f| f.fract() == 0.0 && f.abs() <= MAX_INT as f64)
+            {
                 *v = Value::from(f as i64);
             }
         }
@@ -308,11 +351,15 @@ pub fn valid_text(s: &str, max: usize) -> bool {
 }
 
 pub fn valid_client(s: &str) -> bool {
-    valid_text(s, 64) && s.split_once('/').is_some_and(|(app, version)| !app.is_empty() && !version.is_empty())
+    valid_text(s, 64)
+        && s.split_once('/')
+            .is_some_and(|(app, version)| !app.is_empty() && !version.is_empty())
 }
 
 pub fn valid_peer_id(s: &str) -> bool {
-    (1..=16).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    (1..=16).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 #[cfg(test)]
@@ -326,7 +373,10 @@ pub(crate) mod tests {
             .unwrap()
             .map(|e| {
                 let path = e.unwrap().path();
-                (path.file_stem().unwrap().to_string_lossy().into_owned(), std::fs::read_to_string(&path).unwrap())
+                (
+                    path.file_stem().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read_to_string(&path).unwrap(),
+                )
             })
             .collect();
         all.sort();
@@ -334,9 +384,13 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn vectors(name: &str) -> Vec<Value> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("src/watch_together/vectors/{name}.json"));
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("src/watch_together/vectors/{name}.json"));
         let text = std::fs::read_to_string(path).unwrap();
-        let cases = text.lines().map(|l| l.trim().trim_end_matches(',')).filter(|l| l.starts_with("{\"name\""));
+        let cases = text
+            .lines()
+            .map(|l| l.trim().trim_end_matches(','))
+            .filter(|l| l.starts_with("{\"name\""));
         cases
             .map(|l| {
                 serde_json::from_str(l).unwrap_or_else(|_| {
@@ -355,18 +409,26 @@ pub(crate) mod tests {
             let kind = name.split('.').next().unwrap();
             if server.contains(&kind) {
                 let msg = parse(&text);
-                assert!(!matches!(msg, ServerMsg::Malformed(_) | ServerMsg::Ignored), "{name}: {msg:?}");
+                assert!(
+                    !matches!(msg, ServerMsg::Malformed(_) | ServerMsg::Ignored),
+                    "{name}: {msg:?}"
+                );
             } else if kind == "descriptor" {
                 let mut v: Value = serde_json::from_str(&text).unwrap();
                 normalize_ints(&mut v);
-                let media: Media = serde_json::from_value(v).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let media: Media =
+                    serde_json::from_value(v).unwrap_or_else(|e| panic!("{name}: {e}"));
                 assert_eq!(media.check(false), Ok(()), "{name}");
                 assert_eq!(media.check(true), Ok(()), "{name}");
             } else if kind == "snapshot" {
                 let room: Room = serde_json::from_str(&text).unwrap();
                 assert!(room.valid(), "{name}");
             } else if kind == "relays" {
-                assert!(super::super::relays::parse_list(&serde_json::from_str(&text).unwrap()).is_some(), "{name}");
+                assert!(
+                    super::super::relays::parse_list(&serde_json::from_str(&text).unwrap())
+                        .is_some(),
+                    "{name}"
+                );
             } else if kind == "setMedia" {
                 let v: Value = serde_json::from_str(&text).unwrap();
                 let media = Media::parse(v["media"].clone()).unwrap_or_else(|| panic!("{name}"));
@@ -388,19 +450,51 @@ pub(crate) mod tests {
     fn client_example(name: &str) -> Option<ClientMsg> {
         let s = |v: &str| v.to_owned();
         let token = s("q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E");
-        let matched = Some(Match { state: MatchState::Matched, delta_ms: Some(-120) });
+        let matched = Some(Match {
+            state: MatchState::Matched,
+            delta_ms: Some(-120),
+        });
         Some(match name {
-            "create.basic" => ClientMsg::Create { name: s("Edde"), client: s("Example/1.31.0") },
-            "join.basic" => ClientMsg::Join { code: s("K7MQ2X"), name: s("Anna"), client: s("Sample/1.4.0"), create: false },
-            "join.create" => ClientMsg::Join { code: s("K7MQ2X"), name: s("Anna"), client: s("Sample/1.4.0"), create: true },
-            "resume.basic" => ClientMsg::Resume { code: s("K7MQ2X"), peer_id: s("p3"), token },
+            "create.basic" => ClientMsg::Create {
+                name: s("Edde"),
+                client: s("Example/1.31.0"),
+            },
+            "join.basic" => ClientMsg::Join {
+                code: s("K7MQ2X"),
+                name: s("Anna"),
+                client: s("Sample/1.4.0"),
+                create: false,
+            },
+            "join.create" => ClientMsg::Join {
+                code: s("K7MQ2X"),
+                name: s("Anna"),
+                client: s("Sample/1.4.0"),
+                create: true,
+            },
+            "resume.basic" => ClientMsg::Resume {
+                code: s("K7MQ2X"),
+                peer_id: s("p3"),
+                token,
+            },
             "ping.number" => ClientMsg::Ping { id: 17.into() },
-            "status.matched" => ClientMsg::Status { epoch: 3, player: PlayerState::Ready, match_: matched, offset_ms: 0, rtt_ms: Some(48) },
+            "status.matched" => ClientMsg::Status {
+                epoch: 3,
+                player: PlayerState::Ready,
+                match_: matched,
+                offset_ms: 0,
+                rtt_ms: Some(48),
+            },
             "play.basic" => ClientMsg::Play,
-            "pause.with-position" => ClientMsg::Pause { position_ms: Some(61234) },
-            "seek.basic" => ClientMsg::Seek { position_ms: 120_000 },
+            "pause.with-position" => ClientMsg::Pause {
+                position_ms: Some(61234),
+            },
+            "seek.basic" => ClientMsg::Seek {
+                position_ms: 120_000,
+            },
             "rate.faster" => ClientMsg::Rate { rate: 1.25 },
-            "setControl.everyone" => ClientMsg::SetControl { mode: Control::Everyone },
+            "setControl.everyone" => ClientMsg::SetControl {
+                mode: Control::Everyone,
+            },
             "transferHost.basic" => ClientMsg::TransferHost { peer_id: s("p3") },
             "kick.basic" => ClientMsg::Kick { peer_id: s("p4") },
             "lock.on" => ClientMsg::Lock { locked: true },
@@ -413,12 +507,38 @@ pub(crate) mod tests {
 
     #[test]
     fn client_messages_write_ints_and_omit_absent_members() {
-        let status = ClientMsg::Status { epoch: 3, player: PlayerState::Ready, match_: None, offset_ms: 0, rtt_ms: None };
-        assert_eq!(status.to_json(), r#"{"type":"status","epoch":3,"player":"ready","match":null,"offsetMs":0}"#);
-        let join = ClientMsg::Join { code: "K7MQ2X".into(), name: "A".into(), client: "Plaivo/0.1.0".into(), create: false };
-        assert_eq!(join.to_json(), r#"{"type":"join","code":"K7MQ2X","name":"A","client":"Plaivo/0.1.0"}"#);
-        assert_eq!(ClientMsg::Pause { position_ms: None }.to_json(), r#"{"type":"pause"}"#);
-        assert_eq!(ClientMsg::TransferHost { peer_id: "p2".into() }.to_json(), r#"{"type":"transferHost","peerId":"p2"}"#);
+        let status = ClientMsg::Status {
+            epoch: 3,
+            player: PlayerState::Ready,
+            match_: None,
+            offset_ms: 0,
+            rtt_ms: None,
+        };
+        assert_eq!(
+            status.to_json(),
+            r#"{"type":"status","epoch":3,"player":"ready","match":null,"offsetMs":0}"#
+        );
+        let join = ClientMsg::Join {
+            code: "K7MQ2X".into(),
+            name: "A".into(),
+            client: "Plaivo/0.1.0".into(),
+            create: false,
+        };
+        assert_eq!(
+            join.to_json(),
+            r#"{"type":"join","code":"K7MQ2X","name":"A","client":"Plaivo/0.1.0"}"#
+        );
+        assert_eq!(
+            ClientMsg::Pause { position_ms: None }.to_json(),
+            r#"{"type":"pause"}"#
+        );
+        assert_eq!(
+            ClientMsg::TransferHost {
+                peer_id: "p2".into()
+            }
+            .to_json(),
+            r#"{"type":"transferHost","peerId":"p2"}"#
+        );
     }
 
     #[test]
@@ -429,9 +549,17 @@ pub(crate) mod tests {
             let mut room = case["input"]["room"].clone();
             let valid = room.is_object() && {
                 room["type"] = "room".into();
-                !matches!(parse(&room.to_string()), ServerMsg::Malformed(_) | ServerMsg::Ignored)
+                !matches!(
+                    parse(&room.to_string()),
+                    ServerMsg::Malformed(_) | ServerMsg::Ignored
+                )
             };
-            assert_eq!(valid, case["expect"]["valid"].as_bool().unwrap(), "{}", case["name"]);
+            assert_eq!(
+                valid,
+                case["expect"]["valid"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
         }
     }
 
@@ -442,8 +570,18 @@ pub(crate) mod tests {
             let room = test_room(&i["room"]);
             let now = i["serverNowMs"].as_i64().unwrap();
             let duration = i["durationMs"].as_i64().unwrap();
-            assert_eq!(room.position_at(now, duration), case["expect"]["positionMs"].as_i64().unwrap(), "{}", case["name"]);
-            assert_eq!(room.running(now), case["expect"]["running"].as_bool().unwrap(), "{}", case["name"]);
+            assert_eq!(
+                room.position_at(now, duration),
+                case["expect"]["positionMs"].as_i64().unwrap(),
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                room.running(now),
+                case["expect"]["running"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
         }
     }
 

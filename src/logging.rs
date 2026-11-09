@@ -1,6 +1,6 @@
 use crate::store;
-use plaivo_core::redact;
 use log::{Level, LevelFilter, Log, Metadata, Record};
+use plaivo_core::redact;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -32,7 +32,14 @@ fn parse_level(s: &str) -> Option<LevelFilter> {
 }
 
 fn default_level(debug: bool) -> LevelFilter {
-    std::env::var("PLAIVO_LOG").ok().and_then(|v| parse_level(&v)).unwrap_or(if debug || cfg!(debug_assertions) { LevelFilter::Debug } else { LevelFilter::Info })
+    std::env::var("PLAIVO_LOG")
+        .ok()
+        .and_then(|v| parse_level(&v))
+        .unwrap_or(if debug || cfg!(debug_assertions) {
+            LevelFilter::Debug
+        } else {
+            LevelFilter::Info
+        })
 }
 
 pub fn set_debug(debug: bool) {
@@ -43,30 +50,57 @@ pub fn set_debug(debug: bool) {
 
 pub fn init(debug: bool) {
     let level = default_level(debug);
-    let logger = Logger { console: cfg!(debug_assertions), file: open_log().map(Mutex::new) };
+    let logger = Logger {
+        console: cfg!(debug_assertions),
+        file: open_log().map(Mutex::new),
+    };
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(level);
     }
-    log::info!("Plaivo {} starting, log level {level}, file {}", env!("CARGO_PKG_VERSION"), log_path().display());
+    log::info!(
+        "Plaivo {} starting, log level {level}, file {}",
+        env!("CARGO_PKG_VERSION"),
+        log_path().display()
+    );
 }
 
 fn clock() -> String {
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     let s = ms / 1000;
-    format!("{:02}:{:02}:{:02}.{:03}Z", s / 3600 % 24, s / 60 % 60, s % 60, ms % 1000)
+    format!(
+        "{:02}:{:02}:{:02}.{:03}Z",
+        s / 3600 % 24,
+        s / 60 % 60,
+        s % 60,
+        ms % 1000
+    )
 }
 
 impl Log for Logger {
     fn enabled(&self, m: &Metadata) -> bool {
         let ours = m.target().starts_with("plaivo") || m.target() == "mpv";
-        m.level() <= if ours { log::max_level() } else { log::max_level().min(LevelFilter::Warn) }
+        m.level()
+            <= if ours {
+                log::max_level()
+            } else {
+                log::max_level().min(LevelFilter::Warn)
+            }
     }
 
     fn log(&self, r: &Record) {
         if !self.enabled(r.metadata()) {
             return;
         }
-        let line = redact(&format!("{} {:5} {}: {}", clock(), r.level(), r.target(), r.args()));
+        let line = redact(&format!(
+            "{} {:5} {}: {}",
+            clock(),
+            r.level(),
+            r.target(),
+            r.args()
+        ));
         if self.console {
             let color = match r.level() {
                 Level::Error => "31",

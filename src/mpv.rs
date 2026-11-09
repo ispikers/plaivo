@@ -70,16 +70,29 @@ const LIB_NAMES: &[&str] = &["libmpv.so.2", "libmpv.so"];
 fn api() -> Result<&'static Api, String> {
     static API: OnceLock<Result<Api, String>> = OnceLock::new();
     API.get_or_init(|| unsafe {
-        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_owned()));
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_owned()));
         let lib = LIB_NAMES
             .iter()
-            .flat_map(|n| exe_dir.iter().map(move |d| d.join(n)).chain(std::iter::once(n.into())))
+            .flat_map(|n| {
+                exe_dir
+                    .iter()
+                    .map(move |d| d.join(n))
+                    .chain(std::iter::once(n.into()))
+            })
             .find_map(|p| libloading::Library::new(p).ok())
-            .ok_or_else(|| format!("libmpv not found: put {} next to the Plaivo executable", LIB_NAMES[0]))?;
+            .ok_or_else(|| {
+                format!(
+                    "libmpv not found: put {} next to the Plaivo executable",
+                    LIB_NAMES[0]
+                )
+            })?;
         let lib: &'static libloading::Library = Box::leak(Box::new(lib));
         macro_rules! sym {
             ($n:literal) => {
-                *lib.get(concat!($n, "\0").as_bytes()).map_err(|e| format!("{}: {e}", $n))?
+                *lib.get(concat!($n, "\0").as_bytes())
+                    .map_err(|e| format!("{}: {e}", $n))?
             };
         }
         Ok(Api {
@@ -143,7 +156,10 @@ fn cstr(s: &str) -> CString {
 }
 
 impl Mpv {
-    pub fn new(options: &[(&str, &str)], on_event: impl Fn(Event) + Send + 'static) -> Result<Self, String> {
+    pub fn new(
+        options: &[(&str, &str)],
+        on_event: impl Fn(Event) + Send + 'static,
+    ) -> Result<Self, String> {
         let api = api()?;
         let h = unsafe { (api.create)() };
         if h.is_null() {
@@ -173,7 +189,13 @@ impl Mpv {
     }
 
     pub fn sync_log_level(&self) {
-        let level = if log::log_enabled!(target: "mpv", log::Level::Debug) { "v" } else if log::log_enabled!(target: "mpv", log::Level::Info) { "info" } else { "warn" };
+        let level = if log::log_enabled!(target: "mpv", log::Level::Debug) {
+            "v"
+        } else if log::log_enabled!(target: "mpv", log::Level::Info) {
+            "info"
+        } else {
+            "warn"
+        };
         unsafe { (self.0.api.request_log_messages)(self.0.h, cstr(level).as_ptr()) };
     }
 
@@ -185,7 +207,9 @@ impl Mpv {
     }
 
     pub fn set(&self, name: &str, value: &str) {
-        unsafe { (self.0.api.set_property_string)(self.0.h, cstr(name).as_ptr(), cstr(value).as_ptr()) };
+        unsafe {
+            (self.0.api.set_property_string)(self.0.h, cstr(name).as_ptr(), cstr(value).as_ptr())
+        };
     }
 
     pub fn get(&self, name: &str) -> Option<String> {
@@ -225,7 +249,11 @@ impl Drop for Mpv {
 }
 
 fn error_string(api: &Api, rc: c_int) -> String {
-    unsafe { CStr::from_ptr((api.error_string)(rc)).to_string_lossy().into_owned() }
+    unsafe {
+        CStr::from_ptr((api.error_string)(rc))
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
@@ -242,7 +270,12 @@ fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
                     41..=60 => log::Level::Debug,
                     _ => log::Level::Trace,
                 };
-                let (prefix, text) = unsafe { (CStr::from_ptr(m.prefix).to_string_lossy(), CStr::from_ptr(m.text).to_string_lossy()) };
+                let (prefix, text) = unsafe {
+                    (
+                        CStr::from_ptr(m.prefix).to_string_lossy(),
+                        CStr::from_ptr(m.text).to_string_lossy(),
+                    )
+                };
                 log::log!(target: "mpv", level, "[{prefix}] {}", text.trim_end());
             }
             EVENT_FILE_LOADED => on_event(Event::Loaded),
@@ -250,13 +283,18 @@ fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
             EVENT_END_FILE => {
                 let end = unsafe { &*(e.data as *const RawEndFile) };
                 let error = (end.reason == END_ERROR).then(|| error_string(ctx.api, end.error));
-                on_event(Event::Ended { eof: end.reason == END_EOF, error });
+                on_event(Event::Ended {
+                    eof: end.reason == END_EOF,
+                    error,
+                });
             }
             EVENT_PROPERTY_CHANGE => {
                 let p = unsafe { &*(e.data as *const RawProperty) };
                 let name = unsafe { CStr::from_ptr(p.name) }.to_bytes();
-                let double = || (p.format == FORMAT_DOUBLE).then(|| unsafe { *(p.data as *const f64) });
-                let flag = || (p.format == FORMAT_FLAG).then(|| unsafe { *(p.data as *const c_int) } != 0);
+                let double =
+                    || (p.format == FORMAT_DOUBLE).then(|| unsafe { *(p.data as *const f64) });
+                let flag =
+                    || (p.format == FORMAT_FLAG).then(|| unsafe { *(p.data as *const c_int) } != 0);
                 let ev = match name {
                     b"time-pos" => double().map(Event::Time),
                     b"duration" => double().map(Event::Duration),

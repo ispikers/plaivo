@@ -54,23 +54,64 @@ pub fn write_licenses(manifest: Option<&str>) {
     let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let package = std::env::var("CARGO_PKG_NAME").unwrap();
     let target = std::env::var("TARGET").unwrap();
-    let meta: Value = serde_json::from_slice(&cargo(&dir, &["metadata", "--format-version", "1", "--offline", "--filter-platform", &target])).unwrap();
+    let meta: Value = serde_json::from_slice(&cargo(
+        &dir,
+        &[
+            "metadata",
+            "--format-version",
+            "1",
+            "--offline",
+            "--filter-platform",
+            &target,
+        ],
+    ))
+    .unwrap();
     let workspace = PathBuf::from(s(&meta, "workspace_root"));
     let licenses = workspace.join("licenses");
-    println!("cargo:rerun-if-changed={}", workspace.join("Cargo.lock").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        workspace.join("Cargo.lock").display()
+    );
     println!("cargo:rerun-if-changed={}", licenses.display());
 
-    let member_ids: HashSet<&str> = meta["workspace_members"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    let member_ids: HashSet<&str> = meta["workspace_members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
     let packages = meta["packages"].as_array().unwrap();
-    let members: BTreeSet<&str> = packages.iter().filter(|p| member_ids.contains(s(p, "id"))).map(|p| s(p, "name")).collect();
-    let by_version: HashMap<(&str, &str), &Value> = packages.iter().map(|p| ((s(p, "name"), s(p, "version")), p)).collect();
+    let members: BTreeSet<&str> = packages
+        .iter()
+        .filter(|p| member_ids.contains(s(p, "id")))
+        .map(|p| s(p, "name"))
+        .collect();
+    let by_version: HashMap<(&str, &str), &Value> = packages
+        .iter()
+        .map(|p| ((s(p, "name"), s(p, "version")), p))
+        .collect();
 
-    let mut entries: Vec<(String, String, String, Vec<String>)> = manifest.map(|m| manifest_entries(&licenses, m)).unwrap_or_default();
+    let mut entries: Vec<(String, String, String, Vec<String>)> = manifest
+        .map(|m| manifest_entries(&licenses, m))
+        .unwrap_or_default();
     let manifest_len = entries.len();
-    for (name, version) in runtime_crates(&dir, &package, &target).iter().filter(|(n, _)| !members.contains(n.as_str())) {
-        let p = by_version.get(&(name.as_str(), version.as_str())).unwrap_or_else(|| panic!("cargo metadata has no package {name} {version}"));
-        let license = p["license"].as_str().unwrap_or("see license text").replace('/', " OR ");
-        entries.push((name.clone(), version.clone(), license, license_texts(p, &licenses)));
+    for (name, version) in runtime_crates(&dir, &package, &target)
+        .iter()
+        .filter(|(n, _)| !members.contains(n.as_str()))
+    {
+        let p = by_version
+            .get(&(name.as_str(), version.as_str()))
+            .unwrap_or_else(|| panic!("cargo metadata has no package {name} {version}"));
+        let license = p["license"]
+            .as_str()
+            .unwrap_or("see license text")
+            .replace('/', " OR ");
+        entries.push((
+            name.clone(),
+            version.clone(),
+            license,
+            license_texts(p, &licenses),
+        ));
     }
 
     let mut blob = String::new();
@@ -95,12 +136,21 @@ pub fn write_licenses(manifest: Option<&str>) {
     std::fs::write(out.join("licenses.deflate"), deflate.finish().unwrap()).unwrap();
     let mut src = String::from(RUNTIME);
     writeln!(src, "\n#[cfg(test)]\nconst MEMBERS: [&str; {}] = {:?};\n#[cfg(test)]\nconst MANIFEST: usize = {manifest_len};\n", members.len(), members.iter().collect::<Vec<_>>()).unwrap();
-    writeln!(src, "pub static LICENSES: [License; {}] = [\n{rows}];", entries.len()).unwrap();
+    writeln!(
+        src,
+        "pub static LICENSES: [License; {}] = [\n{rows}];",
+        entries.len()
+    )
+    .unwrap();
     std::fs::write(out.join("licenses.rs"), src).unwrap();
 }
 
 fn cargo(dir: &Path, args: &[&str]) -> Vec<u8> {
-    let output = std::process::Command::new(std::env::var("CARGO").unwrap()).current_dir(dir).args(args).output().expect("run cargo");
+    let output = std::process::Command::new(std::env::var("CARGO").unwrap())
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("run cargo");
     assert!(
         output.status.success(),
         "`cargo {}` failed; the license list needs every workspace dependency on disk, so run `cargo fetch` once:\n{}",
@@ -111,36 +161,72 @@ fn cargo(dir: &Path, args: &[&str]) -> Vec<u8> {
 }
 
 fn runtime_crates(dir: &Path, package: &str, target: &str) -> BTreeSet<(String, String)> {
-    let tree = cargo(dir, &["tree", "--offline", "-p", package, "--target", target, "-e", "normal,no-proc-macro", "--prefix", "none", "-f", "{p}"]);
+    let tree = cargo(
+        dir,
+        &[
+            "tree",
+            "--offline",
+            "-p",
+            package,
+            "--target",
+            target,
+            "-e",
+            "normal,no-proc-macro",
+            "--prefix",
+            "none",
+            "-f",
+            "{p}",
+        ],
+    );
     String::from_utf8(tree)
         .unwrap()
         .lines()
         .filter_map(|l| {
             let mut words = l.split(' ');
-            Some((words.next()?.to_owned(), words.next()?.trim_start_matches('v').to_owned()))
+            Some((
+                words.next()?.to_owned(),
+                words.next()?.trim_start_matches('v').to_owned(),
+            ))
         })
         .collect()
 }
 
 fn manifest_entries(licenses: &Path, manifest: &str) -> Vec<(String, String, String, Vec<String>)> {
     let path = licenses.join(manifest);
-    let list: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let list: Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+    )
+    .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     list.as_array()
         .unwrap_or_else(|| panic!("{} must be a JSON array", path.display()))
         .iter()
         .map(|e| {
-            let files = e["files"].as_array().filter(|f| !f.is_empty()).unwrap_or_else(|| panic!("{manifest}: {} lists no license files", s(e, "name")));
+            let files = e["files"]
+                .as_array()
+                .filter(|f| !f.is_empty())
+                .unwrap_or_else(|| panic!("{manifest}: {} lists no license files", s(e, "name")));
             let texts = files
                 .iter()
                 .map(|f| {
                     let f = f.as_str().unwrap_or_default();
-                    let text = normalize(&std::fs::read_to_string(licenses.join(f)).unwrap_or_else(|err| panic!("licenses/{f}: {err}")));
+                    let text = normalize(
+                        &std::fs::read_to_string(licenses.join(f))
+                            .unwrap_or_else(|err| panic!("licenses/{f}: {err}")),
+                    );
                     assert!(!text.is_empty(), "licenses/{f} is empty");
                     text
                 })
                 .collect();
-            assert!(!s(e, "name").is_empty() && !s(e, "license").is_empty(), "{manifest}: every entry needs a name and a license");
-            (s(e, "name").to_owned(), s(e, "version").to_owned(), s(e, "license").to_owned(), texts)
+            assert!(
+                !s(e, "name").is_empty() && !s(e, "license").is_empty(),
+                "{manifest}: every entry needs a name and a license"
+            );
+            (
+                s(e, "name").to_owned(),
+                s(e, "version").to_owned(),
+                s(e, "license").to_owned(),
+                texts,
+            )
         })
         .collect()
 }
@@ -164,27 +250,64 @@ fn license_texts(p: &Value, licenses: &Path) -> Vec<String> {
         return texts;
     }
     let expr = p["license"].as_str().unwrap_or_default();
-    if let Some(id) = ["Apache-2.0", "MPL-2.0"].into_iter().find(|id| expr.contains(id)) {
-        return vec![normalize(&std::fs::read_to_string(licenses.join(format!("{id}.txt"))).unwrap())];
+    if let Some(id) = ["Apache-2.0", "MPL-2.0"]
+        .into_iter()
+        .find(|id| expr.contains(id))
+    {
+        return vec![normalize(
+            &std::fs::read_to_string(licenses.join(format!("{id}.txt"))).unwrap(),
+        )];
     }
     if expr.contains("MIT") {
-        let authors: Vec<&str> = p["authors"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|a| a.split(" <").next().unwrap_or(a)).collect();
-        let holder = if authors.is_empty() { format!("the {} authors", s(p, "name")) } else { authors.join(", ") };
-        return vec![normalize(&std::fs::read_to_string(licenses.join("MIT.txt")).unwrap().replace("{copyright}", &holder))];
+        let authors: Vec<&str> = p["authors"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|a| a.split(" <").next().unwrap_or(a))
+            .collect();
+        let holder = if authors.is_empty() {
+            format!("the {} authors", s(p, "name"))
+        } else {
+            authors.join(", ")
+        };
+        return vec![normalize(
+            &std::fs::read_to_string(licenses.join("MIT.txt"))
+                .unwrap()
+                .replace("{copyright}", &holder),
+        )];
     }
-    panic!("{} ships no license file and its license ({expr}) has no fallback text in licenses/", s(p, "name"));
+    panic!(
+        "{} ships no license file and its license ({expr}) has no fallback text in licenses/",
+        s(p, "name")
+    );
 }
 
 fn is_license_file(f: &Path) -> bool {
-    let name = f.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-    ["license", "licence", "copying", "copyright", "notice", "unlicense"].iter().any(|p| name.starts_with(p))
+    let name = f
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    [
+        "license",
+        "licence",
+        "copying",
+        "copyright",
+        "notice",
+        "unlicense",
+    ]
+    .iter()
+    .any(|p| name.starts_with(p))
 }
 
 fn read_license(f: &Path) -> Option<String> {
     let text = normalize(&std::fs::read_to_string(f).ok()?);
     // Git checkouts on Windows store symlinks as small files holding the target path.
     if !text.contains('\n') && text.starts_with("..") {
-        return std::fs::read_to_string(f.parent()?.join(&text)).ok().map(|t| normalize(&t));
+        return std::fs::read_to_string(f.parent()?.join(&text))
+            .ok()
+            .map(|t| normalize(&t));
     }
     (!text.is_empty()).then_some(text)
 }

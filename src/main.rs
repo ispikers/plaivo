@@ -11,8 +11,11 @@ mod ui;
 mod video_host;
 mod watch;
 
+use gpui::{
+    App, AppContext, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions, px, size,
+};
 use plaivo_core::{downloads, plex, prefs, settings, store};
-use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, px, size};
 use std::sync::Arc;
 
 fn main() {
@@ -27,26 +30,41 @@ fn main() {
     });
     std::thread::spawn(|| store::prune_cache(plaivo_core::DISK_CACHE_BYTES));
 
-    gpui_platform::application().with_assets(ui::theme::Assets).run(move |cx: &mut App| {
-        ui::input::bind_keys(cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1440.), px(900.)), cx))),
-            titlebar: Some(TitlebarOptions { title: Some("Plaivo".into()), ..Default::default() }),
-            window_background: WindowBackgroundAppearance::Transparent,
-            window_min_size: Some(size(px(720.), px(480.))),
-            draw_above_child_windows: true,
-            ..Default::default()
-        };
-        let window = cx.open_window(options, |window, cx| cx.new(|cx| app::Plaivo::new(window, cx, account, settings, client, queue, rx))).expect("open window");
-        if let Some(target) = std::env::args().nth(1) {
-            window
-                .update(cx, |app, _, cx| {
-                    if let Err(e) = app.launch(&target, "", &target, "", 0.0, None, Vec::new(), cx) {
-                        app.toast(e, cx);
-                    }
+    gpui_platform::application()
+        .with_assets(ui::theme::Assets)
+        .run(move |cx: &mut App| {
+            ui::input::bind_keys(cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1440.), px(900.)),
+                    cx,
+                ))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Plaivo".into()),
+                    ..Default::default()
+                }),
+                window_background: WindowBackgroundAppearance::Transparent,
+                window_min_size: Some(size(px(720.), px(480.))),
+                draw_above_child_windows: true,
+                ..Default::default()
+            };
+            let window = cx
+                .open_window(options, |window, cx| {
+                    cx.new(|cx| app::Plaivo::new(window, cx, account, settings, client, queue, rx))
                 })
-                .ok();
-        }
-        cx.activate(true);
-    });
+                .expect("open window");
+            if let Some(target) = std::env::args().nth(1) {
+                window
+                    .update(cx, |app, _, cx| {
+                        if let Err(e) =
+                            app.launch(&target, "", &target, "", 0.0, None, Vec::new(), cx)
+                        {
+                            app.toast(e, cx);
+                        }
+                    })
+                    .ok();
+            }
+            cx.activate(true);
+        });
 }

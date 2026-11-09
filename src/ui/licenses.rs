@@ -26,7 +26,15 @@ impl Plaivo {
                                 .flex_col()
                                 .gap(px(20.))
                                 .child(header(l.name, subtitle(l), cx))
-                                .children(l.parts().map(|text| div().p(px(20.)).rounded(px(12.)).bg(theme::surface()).text_size(px(13.)).text_color(theme::text()).child(reflow(text)))),
+                                .children(l.parts().map(|text| {
+                                    div()
+                                        .p(px(20.))
+                                        .rounded(px(12.))
+                                        .bg(theme::surface())
+                                        .text_size(px(13.))
+                                        .text_color(theme::text())
+                                        .child(reflow(text))
+                                })),
                         ),
                 )
                 .child(scrollbar(&self.license_scroll))
@@ -44,7 +52,9 @@ impl Plaivo {
                                 .cursor_pointer()
                                 .hover(|s| s.bg(theme::tint(0.12)))
                                 .child(icon(Icon::ChevronRight, 22., theme::muted()))
-                                .on_click(cx.listener(move |this, _, _, cx| this.navigate(Nav::Licenses(Some(i)), true, cx))),
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.navigate(Nav::Licenses(Some(i)), true, cx)
+                                })),
                         )
                     })
                     .collect()
@@ -56,7 +66,11 @@ impl Plaivo {
             .size_full()
             .flex()
             .flex_col()
-            .child(div().px(px(32.)).pt(px(32.)).pb(px(20.)).child(header("Open-source licenses", format!("{} components", LICENSES.len()).into(), cx)))
+            .child(div().px(px(32.)).pt(px(32.)).pb(px(20.)).child(header(
+                "Open-source licenses",
+                format!("{} components", LICENSES.len()).into(),
+                cx,
+            )))
             .child(list)
             .into_any_element()
     }
@@ -67,14 +81,36 @@ fn header(title: &'static str, detail: SharedString, cx: &mut Context<Plaivo>) -
         .flex()
         .items_center()
         .gap(px(12.))
-        .child(round_button("licenses-back", Icon::Back, 40., 22., theme::black(0.), theme::tint(0.08), theme::text()).on_click(cx.listener(|this, _, _, cx| this.back(cx))))
+        .child(
+            round_button(
+                "licenses-back",
+                Icon::Back,
+                40.,
+                22.,
+                theme::black(0.),
+                theme::tint(0.08),
+                theme::text(),
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.back(cx))),
+        )
         .child(
             div()
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .child(div().text_size(px(28.)).font_weight(FontWeight::BOLD).truncate().child(title))
-                .child(div().text_size(px(13.)).text_color(theme::muted()).child(detail)),
+                .child(
+                    div()
+                        .text_size(px(28.))
+                        .font_weight(FontWeight::BOLD)
+                        .truncate()
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(theme::muted())
+                        .child(detail),
+                ),
         )
 }
 
@@ -100,7 +136,11 @@ fn reflow(text: &str) -> String {
 }
 
 fn subtitle(l: &License) -> SharedString {
-    if l.version.is_empty() { l.license.into() } else { format!("{} · {}", l.version, l.license).into() }
+    if l.version.is_empty() {
+        l.license.into()
+    } else {
+        format!("{} · {}", l.version, l.license).into()
+    }
 }
 
 #[cfg(test)]
@@ -123,17 +163,30 @@ mod tests {
 
     #[test]
     fn manifest_entries_lead_the_list_with_their_texts() {
-        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../licenses/desktop.json")).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../licenses/desktop.json")).unwrap();
         let entries = manifest.as_array().unwrap();
         assert!(entries.len() > 50);
         for (e, l) in entries.iter().zip(&LICENSES) {
             assert_eq!(e["name"], l.name);
             assert_eq!(e["license"], l.license);
-            assert_eq!(l.parts().count(), e["files"].as_array().unwrap().len(), "{}", l.name);
+            assert_eq!(
+                l.parts().count(),
+                e["files"].as_array().unwrap().len(),
+                "{}",
+                l.name
+            );
         }
         let text = |i: usize| LICENSES[i].parts().collect::<String>();
         assert!(LICENSES[0].name == "libmpv" && text(0).contains("Version 2.1, February 1999"));
         assert!(LICENSES[1].name == "FFmpeg" && text(1).contains("Version 3, 29 June 2007"));
-        assert!(LICENSES.iter().find(|l| l.name == "FriBidi").unwrap().parts().any(|t| t.contains("Sharif FarsiWeb")));
+        assert!(
+            LICENSES
+                .iter()
+                .find(|l| l.name == "FriBidi")
+                .unwrap()
+                .parts()
+                .any(|t| t.contains("Sharif FarsiWeb"))
+        );
     }
 }

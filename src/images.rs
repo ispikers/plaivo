@@ -42,12 +42,28 @@ impl Queue {
 }
 
 fn fit(img: image::DynamicImage, (w, h): (u32, u32)) -> image::DynamicImage {
-    if img.width() > w && img.height() > h { img.resize_to_fill(w, h, image::imageops::FilterType::Triangle) } else { img }
+    if img.width() > w && img.height() > h {
+        img.resize_to_fill(w, h, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    }
 }
 
-fn load(c: &Client, Job { key, url, local, size }: &Job) -> Option<Arc<RenderImage>> {
+fn load(
+    c: &Client,
+    Job {
+        key,
+        url,
+        local,
+        size,
+    }: &Job,
+) -> Option<Arc<RenderImage>> {
     let local = *local;
-    let file = if local { url.into() } else { store::cache_path("img", key) };
+    let file = if local {
+        url.into()
+    } else {
+        store::cache_path("img", key)
+    };
     let bytes = match std::fs::read(&file) {
         Ok(b) => b,
         Err(e) if local => {
@@ -55,20 +71,31 @@ fn load(c: &Client, Job { key, url, local, size }: &Job) -> Option<Arc<RenderIma
             return None;
         }
         Err(_) => {
-            let b = c.fetch(url).inspect_err(|e| log::warn!("image {key}: {e}")).ok()?;
+            let b = c
+                .fetch(url)
+                .inspect_err(|e| log::warn!("image {key}: {e}"))
+                .ok()?;
             let _ = store::write_atomic(&file, &b);
             b
         }
     };
-    let img = image::load_from_memory(&bytes).inspect_err(|e| log::warn!("image {key}: decode failed: {e}")).ok()?;
+    let img = image::load_from_memory(&bytes)
+        .inspect_err(|e| log::warn!("image {key}: decode failed: {e}"))
+        .ok()?;
     let mut rgba = if local { fit(img, *size) } else { img }.into_rgba8();
     for px in rgba.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
-    Some(Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(rgba)])))
+    Some(Arc::new(RenderImage::new(smallvec::smallvec![
+        image::Frame::new(rgba)
+    ])))
 }
 
-pub fn spawn_workers(q: Arc<Queue>, c: Client, done: impl Fn(String, Option<Arc<RenderImage>>) + Send + Sync + Clone + 'static) {
+pub fn spawn_workers(
+    q: Arc<Queue>,
+    c: Client,
+    done: impl Fn(String, Option<Arc<RenderImage>>) + Send + Sync + Clone + 'static,
+) {
     for _ in 0..WORKERS {
         let (q, c, done) = (q.clone(), c.clone(), done.clone());
         std::thread::spawn(move || {
@@ -91,7 +118,13 @@ pub struct Lru {
 
 impl Lru {
     pub fn new(budget: usize) -> Self {
-        Self { map: HashMap::new(), tick: 0, frame: 0, bytes: 0, budget }
+        Self {
+            map: HashMap::new(),
+            tick: 0,
+            frame: 0,
+            bytes: 0,
+            budget,
+        }
     }
 
     pub fn start_frame(&mut self) {
@@ -133,7 +166,15 @@ impl Lru {
     fn evict(&mut self) -> Vec<Arc<RenderImage>> {
         let mut evicted = Vec::new();
         while self.bytes > self.budget {
-            let Some(oldest) = self.map.iter().filter(|e| e.1.1 <= self.frame).min_by_key(|e| e.1.1).map(|(k, _)| k.clone()) else { break };
+            let Some(oldest) = self
+                .map
+                .iter()
+                .filter(|e| e.1.1 <= self.frame)
+                .min_by_key(|e| e.1.1)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
             let (img, _, cost) = self.map.remove(&oldest).unwrap();
             self.bytes -= cost;
             evicted.push(img);
@@ -152,7 +193,9 @@ mod tests {
     use super::*;
 
     fn img(w: u32) -> Arc<RenderImage> {
-        Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(image::RgbaImage::new(w, 10))]))
+        Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
+            image::RgbaImage::new(w, 10)
+        )]))
     }
 
     #[test]
@@ -195,8 +238,16 @@ mod tests {
     #[test]
     fn queue_drops_oldest_when_full() {
         let q = Queue::default();
-        let job = |i: usize| Job { key: i.to_string(), url: String::new(), local: false, size: (0, 0) };
-        let dropped: Vec<_> = (0..QUEUE_CAP + 2).filter_map(|i| q.push(job(i))).map(|j| j.key).collect();
+        let job = |i: usize| Job {
+            key: i.to_string(),
+            url: String::new(),
+            local: false,
+            size: (0, 0),
+        };
+        let dropped: Vec<_> = (0..QUEUE_CAP + 2)
+            .filter_map(|i| q.push(job(i)))
+            .map(|j| j.key)
+            .collect();
         assert_eq!(dropped, ["0", "1"]);
         assert_eq!(q.pop().key, "2");
     }

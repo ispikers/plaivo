@@ -6,15 +6,28 @@ const API: &str = "https://api.trakt.tv";
 pub(super) const WATCHED_PCT: f64 = 80.0;
 
 fn api(req: Request, client_id: &str) -> Request {
-    req.header("trakt-api-version", "2").header("trakt-api-key", client_id)
+    req.header("trakt-api-version", "2")
+        .header("trakt-api-key", client_id)
 }
 
 pub(super) fn device_code_request(client_id: &str) -> Request {
-    api(Request::post(format!("{API}/oauth/device/code"), json!({ "client_id": client_id })), client_id)
+    api(
+        Request::post(
+            format!("{API}/oauth/device/code"),
+            json!({ "client_id": client_id }),
+        ),
+        client_id,
+    )
 }
 
 pub(super) fn device_token_request(client_id: &str, device_code: &str) -> Request {
-    api(Request::post(format!("{API}/oauth/device/token"), json!({ "code": device_code, "client_id": client_id })), client_id)
+    api(
+        Request::post(
+            format!("{API}/oauth/device/token"),
+            json!({ "code": device_code, "client_id": client_id }),
+        ),
+        client_id,
+    )
 }
 
 pub(super) fn refresh_request(client_id: &str, refresh_token: &str) -> Request {
@@ -28,7 +41,11 @@ pub(super) fn refresh_request(client_id: &str, refresh_token: &str) -> Request {
 }
 
 pub(super) fn scrobble_request(client_id: &str, token: &str, action: &str, body: Value) -> Request {
-    api(Request::post(format!("{API}/scrobble/{action}"), body), client_id).bearer(token)
+    api(
+        Request::post(format!("{API}/scrobble/{action}"), body),
+        client_id,
+    )
+    .bearer(token)
 }
 
 fn trakt_ids(ids: &super::Ids) -> Map<String, Value> {
@@ -52,7 +69,9 @@ pub(super) fn scrobble_body(media: &Media, pct: f64) -> Option<Value> {
     }
     let show = trakt_ids(&media.show_ids);
     if let (false, Some(season), Some(number)) = (show.is_empty(), media.season, media.episode) {
-        return Some(json!({ "show": { "ids": show }, "episode": { "season": season, "number": number }, "progress": progress }));
+        return Some(
+            json!({ "show": { "ids": show }, "episode": { "season": season, "number": number }, "progress": progress }),
+        );
     }
     let ids = trakt_ids(&media.ids);
     (!ids.is_empty()).then(|| json!({ "episode": { "ids": ids }, "progress": progress }))

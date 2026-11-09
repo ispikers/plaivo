@@ -3,8 +3,9 @@ use crate::ui::shell::{ease_out, progress};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, overlay_button, pill, scrollbar, skeleton};
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit, ScrollEvent, SharedString, Window, div, img, linear_color_stop, linear_gradient,
-    point, prelude::*, px, rgb,
+    AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
+    ScrollEvent, SharedString, Window, div, img, linear_color_stop, linear_gradient, point,
+    prelude::*, px, rgb,
 };
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,10 @@ const SWIPE: f32 = 60.;
 const SLIDE_ANIM: Duration = Duration::from_millis(320);
 
 pub fn content_width(this: &Plaivo, window: &Window) -> f32 {
-    let sidebar = if matches!(this.page, crate::app::Page::Detail | crate::app::Page::HubList) {
+    let sidebar = if matches!(
+        this.page,
+        crate::app::Page::Detail | crate::app::Page::HubList
+    ) {
         0.
     } else if this.settings.sidebar_compact {
         theme::SIDEBAR_COMPACT
@@ -36,7 +40,10 @@ pub fn card_width(content_w: f32, wide: bool, scale: f32) -> f32 {
 
 impl Plaivo {
     pub fn render_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let offline = self.home_server().filter(|s| crate::plex::is_down(&s.id)).map(|s| SharedString::from(format!("Can't reach {} right now.", s.name)));
+        let offline = self
+            .home_server()
+            .filter(|s| crate::plex::is_down(&s.id))
+            .map(|s| SharedString::from(format!("Can't reach {} right now.", s.name)));
         if let Some(e) = self.home_error.clone().or(offline) {
             return div()
                 .size_full()
@@ -50,10 +57,23 @@ impl Plaivo {
                     div()
                         .flex()
                         .gap(px(12.))
-                        .child(pill("retry", "Retry", Some(Icon::Refresh), true).on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))))
-                        .child(pill("change", "Change server", None, false).on_click(cx.listener(|this, _, _, cx| this.navigate(crate::app::Nav::Servers, true, cx))))
+                        .child(
+                            pill("retry", "Retry", Some(Icon::Refresh), true)
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))),
+                        )
+                        .child(
+                            pill("change", "Change server", None, false).on_click(cx.listener(
+                                |this, _, _, cx| this.navigate(crate::app::Nav::Servers, true, cx),
+                            )),
+                        )
                         .when(self.has_downloads(), |d| {
-                            d.child(pill("offline", "Downloads", Some(Icon::Download), false).on_click(cx.listener(|this, _, _, cx| this.navigate(crate::app::Nav::Downloads(None), true, cx))))
+                            d.child(
+                                pill("offline", "Downloads", Some(Icon::Download), false).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.navigate(crate::app::Nav::Downloads(None), true, cx)
+                                    }),
+                                ),
+                            )
                         }),
                 )
                 .into_any_element();
@@ -64,7 +84,11 @@ impl Plaivo {
         let hubs: Vec<AnyElement> = if self.hubs.is_empty() {
             (0..3).map(|i| self.render_hub_skeleton(i, cw)).collect()
         } else {
-            let top = if self.hero.is_empty() { 0. } else { vh * 0.75 + 16. };
+            let top = if self.hero.is_empty() {
+                0.
+            } else {
+                vh * 0.75 + 16.
+            };
             self.render_hubs(false, cw, top, window, cx)
         };
         let page = div()
@@ -73,40 +97,90 @@ impl Plaivo {
             .overflow_y_scroll()
             .restrict_scroll_to_axis()
             .track_scroll(&self.home_scroll)
-            .child(div().flex().flex_col().gap(px(16.)).pb(px(24.)).children(hero).children(hubs))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .pb(px(24.))
+                    .children(hero)
+                    .children(hubs),
+            )
             .child(
                 div().absolute().top(px(12.)).right(px(12.)).child(
-                    overlay_button("refresh", Icon::Refresh, 40., 20., theme::black(0.3), theme::black(0.5), rgb(0xFFFFFF)).on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))),
+                    overlay_button(
+                        "refresh",
+                        Icon::Refresh,
+                        40.,
+                        20.,
+                        theme::black(0.3),
+                        theme::black(0.5),
+                        rgb(0xFFFFFF),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))),
                 ),
             );
-        div().size_full().relative().child(page).child(scrollbar(&self.home_scroll)).into_any_element()
+        div()
+            .size_full()
+            .relative()
+            .child(page)
+            .child(scrollbar(&self.home_scroll))
+            .into_any_element()
     }
 
-    fn render_hero(&mut self, width: f32, height: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_hero(
+        &mut self,
+        width: f32,
+        height: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let item = self.hero[self.hero_index.min(self.hero.len() - 1)].clone();
         let current = self.image(&item.thumb, Shape::Backdrop);
         let arrived = self.image_alpha();
-        let upcoming = self.hero[(self.hero_index + 1) % self.hero.len()].thumb.clone();
+        let upcoming = self.hero[(self.hero_index + 1) % self.hero.len()]
+            .thumb
+            .clone();
         self.image(&upcoming, Shape::Backdrop);
-        let fade = self.view.hero_prev.map(|(i, t0)| (i, ease_out(progress(Some(t0), Duration::from_millis(500), window))));
-        let previous = fade.filter(|(_, p)| *p < 1.).and_then(|(i, _)| self.hero.get(i).cloned()).and_then(|c| self.image(&c.thumb, Shape::Backdrop));
+        let fade = self.view.hero_prev.map(|(i, t0)| {
+            (
+                i,
+                ease_out(progress(Some(t0), Duration::from_millis(500), window)),
+            )
+        });
+        let previous = fade
+            .filter(|(_, p)| *p < 1.)
+            .and_then(|(i, _)| self.hero.get(i).cloned())
+            .and_then(|c| self.image(&c.thumb, Shape::Backdrop));
         let alpha = fade.map_or(1., |(_, p)| p);
         let bg = theme::bg();
         let dots = (self.hero.len() > 1).then(|| {
-            div().absolute().bottom(px(24.)).left_0().right_0().flex().justify_center().gap(px(8.)).children((0..self.hero.len()).map(|i| {
-                let active = i == self.hero_index;
-                div()
-                    .id(("dot", i))
-                    .w(px(if active { 24. } else { 8. }))
-                    .h(px(8.))
-                    .rounded_full()
-                    .cursor_pointer()
-                    .bg(if active { theme::text().into() } else { theme::tint(0.4) })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let d = i as isize - this.hero_index as isize;
-                        this.step_hero(d, cx);
-                    }))
-            }))
+            div()
+                .absolute()
+                .bottom(px(24.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .gap(px(8.))
+                .children((0..self.hero.len()).map(|i| {
+                    let active = i == self.hero_index;
+                    div()
+                        .id(("dot", i))
+                        .w(px(if active { 24. } else { 8. }))
+                        .h(px(8.))
+                        .rounded_full()
+                        .cursor_pointer()
+                        .bg(if active {
+                            theme::text().into()
+                        } else {
+                            theme::tint(0.4)
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let d = i as isize - this.hero_index as isize;
+                            this.step_hero(d, cx);
+                        }))
+                }))
         });
         let play_key = (item.server.to_string(), item.key.to_string());
         let open = item.clone();
@@ -118,14 +192,47 @@ impl Plaivo {
             .flex_none()
             .overflow_hidden()
             .bg(theme::bg())
-            .when_some(previous, |d, im| d.child(img(im).absolute().size_full().object_fit(ObjectFit::Cover)))
-            .when_some(current, |d, im| d.child(img(im).absolute().size_full().object_fit(ObjectFit::Cover).opacity(alpha * arrived)))
-            .child(div().absolute().size_full().bg(linear_gradient(180., linear_color_stop(bg.opacity(0.), 0.5), linear_color_stop(bg.opacity(1.), 0.94))))
-            .child(div().absolute().size_full().bg(linear_gradient(90., linear_color_stop(bg.opacity(0.65), 0.), linear_color_stop(bg.opacity(0.), 0.6))))
+            .when_some(previous, |d, im| {
+                d.child(img(im).absolute().size_full().object_fit(ObjectFit::Cover))
+            })
+            .when_some(current, |d, im| {
+                d.child(
+                    img(im)
+                        .absolute()
+                        .size_full()
+                        .object_fit(ObjectFit::Cover)
+                        .opacity(alpha * arrived),
+                )
+            })
+            .child(div().absolute().size_full().bg(linear_gradient(
+                180.,
+                linear_color_stop(bg.opacity(0.), 0.5),
+                linear_color_stop(bg.opacity(1.), 0.94),
+            )))
+            .child(div().absolute().size_full().bg(linear_gradient(
+                90.,
+                linear_color_stop(bg.opacity(0.65), 0.),
+                linear_color_stop(bg.opacity(0.), 0.6),
+            )))
             .on_scroll(cx.listener(|this, ev: &ScrollEvent, _, cx| this.hero_wheel(ev, cx)))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, _| this.view.hero_drag = Some(f32::from(ev.position.x))))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, ev: &MouseUpEvent, _, cx| this.hero_release(f32::from(ev.position.x), cx)))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, ev: &MouseUpEvent, _, cx| this.hero_release(f32::from(ev.position.x), cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                    this.view.hero_drag = Some(f32::from(ev.position.x))
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                    this.hero_release(f32::from(ev.position.x), cx)
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                    this.hero_release(f32::from(ev.position.x), cx)
+                }),
+            )
             .child(
                 div()
                     .absolute()
@@ -135,9 +242,27 @@ impl Plaivo {
                     .flex()
                     .flex_col()
                     .gap(px(12.))
-                    .child(div().text_size(px(40.)).font_weight(FontWeight::BOLD).line_height(px(46.)).child(item.title.clone()))
-                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(item.meta.clone()))
-                    .child(div().text_size(px(14.)).line_height(px(20.)).text_color(theme::tint(0.7)).line_clamp(2).child(item.summary.clone()))
+                    .child(
+                        div()
+                            .text_size(px(40.))
+                            .font_weight(FontWeight::BOLD)
+                            .line_height(px(46.))
+                            .child(item.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(item.meta.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(theme::tint(0.7))
+                            .line_clamp(2)
+                            .child(item.summary.clone()),
+                    )
                     .child(
                         div()
                             .pt(px(8.))
@@ -157,12 +282,41 @@ impl Plaivo {
                                     .cursor_pointer()
                                     .child(icon(Icon::Play, 20., rgb(0x000000)))
                                     .when(item.progress > 0., |d| {
-                                        d.child(div().w(px(40.)).h(px(6.)).rounded(px(3.)).bg(theme::black(0.25)).child(div().h_full().rounded(px(3.)).w(gpui::relative(item.progress)).bg(rgb(0x000000))))
+                                        d.child(
+                                            div()
+                                                .w(px(40.))
+                                                .h(px(6.))
+                                                .rounded(px(3.))
+                                                .bg(theme::black(0.25))
+                                                .child(
+                                                    div()
+                                                        .h_full()
+                                                        .rounded(px(3.))
+                                                        .w(gpui::relative(item.progress))
+                                                        .bg(rgb(0x000000)),
+                                                ),
+                                        )
                                     })
-                                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(rgb(0x000000)).child(if item.progress > 0. { "Resume" } else { "Play" }))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.play(play_key.0.clone(), play_key.1.clone(), cx))),
+                                    .child(
+                                        div()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(0x000000))
+                                            .child(if item.progress > 0. {
+                                                "Resume"
+                                            } else {
+                                                "Play"
+                                            }),
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.play(play_key.0.clone(), play_key.1.clone(), cx)
+                                    })),
                             )
-                            .child(pill("hero-details", "Details", None, false).on_click(cx.listener(move |this, _, _, cx| this.open(&open, cx)))),
+                            .child(
+                                pill("hero-details", "Details", None, false).on_click(
+                                    cx.listener(move |this, _, _, cx| this.open(&open, cx)),
+                                ),
+                            ),
                     ),
             )
             .children(dots)
@@ -176,7 +330,11 @@ impl Plaivo {
             return;
         }
         cx.stop_propagation();
-        if self.view.hero_cooldown.is_some_and(|t| t.elapsed() < Duration::from_millis(450)) {
+        if self
+            .view
+            .hero_cooldown
+            .is_some_and(|t| t.elapsed() < Duration::from_millis(450))
+        {
             return;
         }
         self.view.hero_acc += if ev.modifiers.shift { dx + dy } else { dx };
@@ -204,9 +362,24 @@ impl Plaivo {
         }
     }
 
-    pub fn render_hubs(&mut self, lib: bool, cw: f32, mut top: f32, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    pub fn render_hubs(
+        &mut self,
+        lib: bool,
+        cw: f32,
+        mut top: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let vh = f32::from(window.viewport_size().height);
-        let scrolled = -f32::from(if lib { &self.lib_hubs_scroll } else { &self.home_scroll }.offset().y);
+        let scrolled = -f32::from(
+            if lib {
+                &self.lib_hubs_scroll
+            } else {
+                &self.home_scroll
+            }
+            .offset()
+            .y,
+        );
         (0..self.hub_vec(lib).len())
             .map(|i| {
                 let wide = self.hub_vec(lib)[i].wide;
@@ -223,7 +396,11 @@ impl Plaivo {
         let wide = i == 0;
         let w = card_width(cw, wide, self.settings.card_scale());
         let pad = self.settings.card_pad();
-        let art_h = if wide { (w - 2. * pad) * 9. / 16. } else { (w - 2. * pad) * 1.5 };
+        let art_h = if wide {
+            (w - 2. * pad) * 9. / 16.
+        } else {
+            (w - 2. * pad) * 1.5
+        };
         div()
             .flex()
             .flex_col()
@@ -231,14 +408,37 @@ impl Plaivo {
             .px(px(8.))
             .pt(if i == 0 { px(16.) } else { px(0.) })
             .child(div().pl(px(4.)).child(skeleton(px(180.), 20.)))
-            .child(div().flex().overflow_hidden().children((0..8).map(|_| div().w(px(w)).flex_none().p(px(pad)).child(div().w(px(w - 2. * pad)).h(px(art_h)).rounded(px(8.)).bg(theme::surface())))))
+            .child(div().flex().overflow_hidden().children((0..8).map(|_| {
+                div().w(px(w)).flex_none().p(px(pad)).child(
+                    div()
+                        .w(px(w - 2. * pad))
+                        .h(px(art_h))
+                        .rounded(px(8.))
+                        .bg(theme::surface()),
+                )
+            })))
             .into_any_element()
     }
 
-    fn render_hub(&mut self, lib: bool, i: usize, cw: f32, near: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_hub(
+        &mut self,
+        lib: bool,
+        i: usize,
+        cw: f32,
+        near: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (title, resume, wide, scroll, key, server) = {
             let h = &self.hub_vec(lib)[i];
-            (h.title.clone(), h.resume, h.wide, h.scroll.clone(), h.key.clone(), h.server.clone())
+            (
+                h.title.clone(),
+                h.resume,
+                h.wide,
+                h.scroll.clone(),
+                h.key.clone(),
+                h.server.clone(),
+            )
         };
         let w = card_width(cw, wide, self.settings.card_scale());
         let pad = self.settings.card_pad();
@@ -252,7 +452,11 @@ impl Plaivo {
         }
         let offset = f32::from(scroll.offset().x);
         let first = ((-offset - cw) / w).floor().max(0.) as usize;
-        let last = if near { ((-offset + 2. * cw) / w).ceil() as usize } else { 0 };
+        let last = if near {
+            ((-offset + 2. * cw) / w).ceil() as usize
+        } else {
+            0
+        };
         let items = std::mem::take(&mut self.hub_vec(lib)[i].items);
         let cards: Vec<AnyElement> = items
             .iter()
@@ -261,7 +465,11 @@ impl Plaivo {
                 if (first..last).contains(&j) {
                     self.media_card(("card", j), c, w, wide, cx)
                 } else {
-                    div().w(px(w)).h(px(card_height(w, wide, pad))).flex_none().into_any_element()
+                    div()
+                        .w(px(w))
+                        .h(px(card_height(w, wide, pad)))
+                        .flex_none()
+                        .into_any_element()
                 }
             })
             .collect();
@@ -269,7 +477,12 @@ impl Plaivo {
         let base = self.hub_vec(lib)[i].slide.map_or(offset, |(_, to, _)| to);
         let max = f32::from(scroll.max_offset().x);
         let page = (cw - 16.) * 0.8;
-        let arrow_y = if wide { (w - 2. * pad) * 9. / 32. } else { (w - 2. * pad) * 0.75 } - 24. + pad;
+        let arrow_y = if wide {
+            (w - 2. * pad) * 9. / 32.
+        } else {
+            (w - 2. * pad) * 0.75
+        } - 24.
+            + pad;
         let left = hovered && offset < -1.;
         let right = hovered && -offset < max - 1.;
         div()
@@ -278,7 +491,13 @@ impl Plaivo {
             .flex_col()
             .gap(px(4.))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.view.hub_hover = if *hovered { Some(i) } else if this.view.hub_hover == Some(i) { None } else { this.view.hub_hover };
+                this.view.hub_hover = if *hovered {
+                    Some(i)
+                } else if this.view.hub_hover == Some(i) {
+                    None
+                } else {
+                    this.view.hub_hover
+                };
                 cx.notify();
             }))
             .child(
@@ -288,36 +507,88 @@ impl Plaivo {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(icon(if resume { Icon::PlayCircle } else { Icon::Sparkle }, 24., theme::text()))
+                        .child(icon(
+                            if resume {
+                                Icon::PlayCircle
+                            } else {
+                                Icon::Sparkle
+                            },
+                            24.,
+                            theme::text(),
+                        ))
                         .child(div().text_size(px(22.)).child(title.clone()))
                         .when(!key.is_empty(), |d| {
-                            d.cursor_pointer().child(icon(Icon::ChevronRight, 22., theme::muted())).on_click(cx.listener(move |this, _, _, cx| {
-                                this.navigate(crate::app::Nav::Hub(server.to_string(), key.to_string(), title.to_string(), resume), true, cx)
-                            }))
+                            d.cursor_pointer()
+                                .child(icon(Icon::ChevronRight, 22., theme::muted()))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.navigate(
+                                        crate::app::Nav::Hub(
+                                            server.to_string(),
+                                            key.to_string(),
+                                            title.to_string(),
+                                            resume,
+                                        ),
+                                        true,
+                                        cx,
+                                    )
+                                }))
                         }),
                 ),
             )
             .child(
                 div()
                     .relative()
-                    .child(div().id(("hub-scroll", i)).overflow_x_scroll().restrict_scroll_to_axis().track_scroll(&scroll).px(px(8.)).flex().children(cards))
+                    .child(
+                        div()
+                            .id(("hub-scroll", i))
+                            .overflow_x_scroll()
+                            .restrict_scroll_to_axis()
+                            .track_scroll(&scroll)
+                            .px(px(8.))
+                            .flex()
+                            .children(cards),
+                    )
                     .when(left, |d| {
                         d.child(
                             div().absolute().left(px(8.)).top(px(arrow_y)).child(
-                                overlay_button(("hub-left", i), Icon::ChevronLeft, 48., 32., theme::black(0.7), theme::black(0.9), rgb(0xFFFFFF)).on_click(cx.listener(move |this, _, _, cx| {
-                                    this.hub_vec(lib)[i].slide = Some((offset, (base + page).min(0.), Instant::now()));
-                                    cx.notify();
-                                })),
+                                overlay_button(
+                                    ("hub-left", i),
+                                    Icon::ChevronLeft,
+                                    48.,
+                                    32.,
+                                    theme::black(0.7),
+                                    theme::black(0.9),
+                                    rgb(0xFFFFFF),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.hub_vec(lib)[i].slide =
+                                            Some((offset, (base + page).min(0.), Instant::now()));
+                                        cx.notify();
+                                    },
+                                )),
                             ),
                         )
                     })
                     .when(right, |d| {
                         d.child(
                             div().absolute().right(px(8.)).top(px(arrow_y)).child(
-                                overlay_button(("hub-right", i), Icon::ChevronRight, 48., 32., theme::black(0.7), theme::black(0.9), rgb(0xFFFFFF)).on_click(cx.listener(move |this, _, _, cx| {
-                                    this.hub_vec(lib)[i].slide = Some((offset, (base - page).max(-max), Instant::now()));
-                                    cx.notify();
-                                })),
+                                overlay_button(
+                                    ("hub-right", i),
+                                    Icon::ChevronRight,
+                                    48.,
+                                    32.,
+                                    theme::black(0.7),
+                                    theme::black(0.9),
+                                    rgb(0xFFFFFF),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.hub_vec(lib)[i].slide =
+                                            Some((offset, (base - page).max(-max), Instant::now()));
+                                        cx.notify();
+                                    },
+                                )),
                             ),
                         )
                     }),
@@ -341,4 +612,3 @@ mod tests {
         }
     }
 }
-

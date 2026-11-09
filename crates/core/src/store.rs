@@ -19,7 +19,8 @@ pub fn config_dir() -> PathBuf {
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
     #[cfg(target_os = "macos")]
-    let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"));
+    let base =
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"));
     base.unwrap_or_else(|| ".".into()).join("Plaivo")
 }
 
@@ -33,7 +34,8 @@ pub fn cache_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Plaivo"));
     #[cfg(target_os = "macos")]
     let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches/Plaivo"));
-    base.unwrap_or_else(|| config_dir().join("cache")).join("cache")
+    base.unwrap_or_else(|| config_dir().join("cache"))
+        .join("cache")
 }
 
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
@@ -45,7 +47,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension(format!("{}-{}.tmp", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
+    let tmp = path.with_extension(format!(
+        "{}-{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
@@ -53,7 +59,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> bool {
-    let result = serde_json::to_vec_pretty(value).map_err(std::io::Error::other).and_then(|b| write_atomic(path, &b));
+    let result = serde_json::to_vec_pretty(value)
+        .map_err(std::io::Error::other)
+        .and_then(|b| write_atomic(path, &b));
     if let Err(e) = &result {
         log::error!("could not write {}: {e}", path.display());
     }
@@ -61,7 +69,9 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> bool {
 }
 
 pub(crate) fn fnv1a(key: &str) -> u64 {
-    key.bytes().fold(0xcbf29ce484222325, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+    key.bytes().fold(0xcbf29ce484222325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100000001b3)
+    })
 }
 
 pub fn cache_path(kind: &str, key: &str) -> PathBuf {
@@ -109,7 +119,9 @@ mod tests {
 
     #[test]
     fn atomic_write_round_trips() {
-        let p = std::env::temp_dir().join(format!("plaivo-store-test-{}", std::process::id())).join("x.json");
+        let p = std::env::temp_dir()
+            .join(format!("plaivo-store-test-{}", std::process::id()))
+            .join("x.json");
         assert!(write_json(&p, &vec![1, 2, 3]));
         assert_eq!(read_json::<Vec<i32>>(&p), Some(vec![1, 2, 3]));
         let _ = std::fs::remove_dir_all(p.parent().unwrap());

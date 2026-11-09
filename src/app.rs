@@ -1,7 +1,9 @@
 use crate::downloads::{Downloads, Entry, State};
 use crate::images::{self, Lru};
 use crate::player::Player;
-use crate::plex::{self, Client, Ctx, DISCOVER_ID, Item, R, SORTS, Server, Source, initial_sort, sort_items};
+use crate::plex::{
+    self, Client, Ctx, DISCOVER_ID, Item, R, SORTS, Server, Source, initial_sort, sort_items,
+};
 use crate::settings::{BLUR_PARAM, CardPrefs, EpisodePoster, Settings, ViewMode, library_key};
 use crate::store;
 use crate::ui::add_server::AddServer;
@@ -10,7 +12,10 @@ use crate::ui::services::Services;
 use crate::watch::Watch;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
-use gpui::{AppContext, Bounds, Context, Entity, FocusHandle, Pixels, RenderImage, ScrollHandle, SharedString, Task, UniformListScrollHandle, Window};
+use gpui::{
+    AppContext, Bounds, Context, Entity, FocusHandle, Pixels, RenderImage, ScrollHandle,
+    SharedString, Task, UniformListScrollHandle, Window,
+};
 pub use plaivo_core::{Account, first, join};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::{HashMap, HashSet};
@@ -100,7 +105,11 @@ pub struct Thumb {
     pub blur: bool,
 }
 
-static CARD_PREFS: std::sync::Mutex<CardPrefs> = std::sync::Mutex::new(CardPrefs { poster: EpisodePoster::Thumbnail, numbers: true, spoilers: false });
+static CARD_PREFS: std::sync::Mutex<CardPrefs> = std::sync::Mutex::new(CardPrefs {
+    poster: EpisodePoster::Thumbnail,
+    numbers: true,
+    spoilers: false,
+});
 
 pub fn set_card_prefs(s: &Settings) {
     *CARD_PREFS.lock().unwrap_or_else(|e| e.into_inner()) = s.card_prefs();
@@ -165,7 +174,11 @@ pub enum LibTab {
     Collections,
 }
 
-pub const LIB_TABS: [(LibTab, &str); 3] = [(LibTab::Recommended, "Recommended"), (LibTab::Browse, "Browse"), (LibTab::Collections, "Collections")];
+pub const LIB_TABS: [(LibTab, &str); 3] = [
+    (LibTab::Recommended, "Recommended"),
+    (LibTab::Browse, "Browse"),
+    (LibTab::Collections, "Collections"),
+];
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LibKey {
@@ -191,7 +204,13 @@ impl HubList {
     fn rebuild(&mut self) {
         let mut items: Vec<&Item> = self.items.iter().collect();
         sort_items(&mut items, &self.sort);
-        self.cards = items.into_iter().map(|it| Card { resume: self.resume, ..card_for(it, false, &self.server) }).collect();
+        self.cards = items
+            .into_iter()
+            .map(|it| Card {
+                resume: self.resume,
+                ..card_for(it, false, &self.server)
+            })
+            .collect();
     }
 
     pub fn sorts(&self) -> Vec<(&'static str, &'static str)> {
@@ -362,7 +381,9 @@ pub struct Plaivo {
 
 pub fn open_url(url: &str) {
     #[cfg(windows)]
-    let r = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
+    let r = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
     #[cfg(target_os = "macos")]
     let r = std::process::Command::new("open").arg(url).spawn();
     if let Err(e) = r {
@@ -388,7 +409,11 @@ fn open_downloads(root: PathBuf, client: Client, tx: UnboundedSender<()>) -> Arc
 }
 
 pub fn thumb(server: &str, path: &str) -> Option<Thumb> {
-    (!path.is_empty()).then(|| Thumb { server: server.to_owned(), path: path.to_owned(), blur: false })
+    (!path.is_empty()).then(|| Thumb {
+        server: server.to_owned(),
+        path: path.to_owned(),
+        blur: false,
+    })
 }
 
 pub fn card_for(it: &Item, wide: bool, server: &str) -> Card {
@@ -404,7 +429,13 @@ pub fn card_for(it: &Item, wide: bool, server: &str) -> Card {
         progress: it.progress(),
         watched: it.watched(),
         unwatched: it.unwatched(),
-        parent: if it.kind == "season" { &it.parent_rating_key } else { &it.grandparent_rating_key }.clone().into(),
+        parent: if it.kind == "season" {
+            &it.parent_rating_key
+        } else {
+            &it.grandparent_rating_key
+        }
+        .clone()
+        .into(),
         server: server.to_owned().into(),
         thumb: thumb(server, art).map(|t| Thumb { blur, ..t }),
         ..Default::default()
@@ -416,7 +447,14 @@ fn hub_rows(hubs: &[plex::Hub], server: &str, old: &[Hub]) -> Vec<Hub> {
         .enumerate()
         .map(|(i, h)| {
             let wide = wide_hub(h);
-            let items = h.metadata.iter().map(|it| Card { resume: h.is_continue(), ..card_for(it, wide, server) }).collect();
+            let items = h
+                .metadata
+                .iter()
+                .map(|it| Card {
+                    resume: h.is_continue(),
+                    ..card_for(it, wide, server)
+                })
+                .collect();
             Hub {
                 title: h.title.clone().into(),
                 key: h.key.clone().into(),
@@ -438,8 +476,16 @@ pub fn episode_card(e: &Item, server: &str) -> Card {
         card.title = format!("{}. {}", e.index.unwrap_or(0), e.title).into();
         card.thumb = thumb(server, &e.thumb).map(|t| Thumb { blur: hide, ..t });
     }
-    card.summary = if hide { SharedString::default() } else { e.summary.clone().into() };
-    card.meta = join(&[e.duration.map(plex::fmt_duration).unwrap_or_default(), e.originally_available_at.clone()]).into();
+    card.summary = if hide {
+        SharedString::default()
+    } else {
+        e.summary.clone().into()
+    };
+    card.meta = join(&[
+        e.duration.map(plex::fmt_duration).unwrap_or_default(),
+        e.originally_available_at.clone(),
+    ])
+    .into();
     card
 }
 
@@ -453,7 +499,9 @@ fn hero_card(it: &Item, server: &str) -> Card {
     card.title = first(&[&it.grandparent_title, &it.title]).to_owned().into();
     card.meta = join(&[
         kind.into(),
-        it.audience_rating.map(|r| format!("★ {r:.1}")).unwrap_or_default(),
+        it.audience_rating
+            .map(|r| format!("★ {r:.1}"))
+            .unwrap_or_default(),
         it.content_rating.clone(),
         it.year.map(|y| y.to_string()).unwrap_or_default(),
     ])
@@ -463,14 +511,16 @@ fn hero_card(it: &Item, server: &str) -> Card {
     card
 }
 
-
 fn title_rank(title: &str, q: &str) -> u8 {
     let (t, q) = (title.to_lowercase(), q.to_lowercase());
     if t == q {
         0
     } else if t.starts_with(&q) {
         1
-    } else if t.split(|c: char| !c.is_alphanumeric()).any(|w| !w.is_empty() && w.starts_with(&q)) {
+    } else if t
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| !w.is_empty() && w.starts_with(&q))
+    {
         2
     } else if t.contains(&q) {
         3
@@ -481,30 +531,49 @@ fn title_rank(title: &str, q: &str) -> u8 {
 
 // Library hits (episodes folded into their show) ranked by title match then server score; Discover hits the
 // account already owns are dropped, the rest follow in Discover's own order.
-fn rank_search(q: &str, home: &str, local: Vec<(String, Vec<(Item, f64)>)>, discover: Vec<Item>) -> Vec<(String, Item)> {
+fn rank_search(
+    q: &str,
+    home: &str,
+    local: Vec<(String, Vec<(Item, f64)>)>,
+    discover: Vec<Item>,
+) -> Vec<(String, Item)> {
     let mut seen = HashSet::new();
     let mut owned_guids = HashSet::new();
     let mut lib: Vec<(u8, bool, f64, String, Item)> = Vec::new();
     for (server, hits) in local {
         for (it, score) in hits {
             let it = it.as_show();
-            if !matches!(it.kind.as_str(), "movie" | "show") || !seen.insert((server.clone(), it.rating_key.clone())) {
+            if !matches!(it.kind.as_str(), "movie" | "show")
+                || !seen.insert((server.clone(), it.rating_key.clone()))
+            {
                 continue;
             }
             if !it.guid.is_empty() && !owned_guids.insert(it.guid.clone()) {
                 continue;
             }
-            lib.push((title_rank(&it.title, q), server != home, -score, server.clone(), it));
+            lib.push((
+                title_rank(&it.title, q),
+                server != home,
+                -score,
+                server.clone(),
+                it,
+            ));
         }
     }
     lib.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
-    let owned_titles: HashSet<(String, Option<i64>)> = lib.iter().map(|e| (e.4.title.to_lowercase(), e.4.year)).collect();
+    let owned_titles: HashSet<(String, Option<i64>)> = lib
+        .iter()
+        .map(|e| (e.4.title.to_lowercase(), e.4.year))
+        .collect();
     let mut out: Vec<(String, Item)> = lib.into_iter().map(|e| (e.3, e.4)).collect();
     out.extend(
         discover
             .into_iter()
             .filter(|it| matches!(it.kind.as_str(), "movie" | "show"))
-            .filter(|it| !owned_guids.contains(&it.guid) && !owned_titles.contains(&(it.title.to_lowercase(), it.year)))
+            .filter(|it| {
+                !owned_guids.contains(&it.guid)
+                    && !owned_titles.contains(&(it.title.to_lowercase(), it.year))
+            })
             .map(|it| (DISCOVER_ID.to_owned(), it)),
     );
     out
@@ -532,12 +601,24 @@ pub fn shape_size(shape: Shape, scale: f32, width: u32) -> (u32, u32) {
 fn image_key(buf: &mut String, t: &Thumb, (w, h): (u32, u32)) {
     use std::fmt::Write;
     buf.clear();
-    let _ = write!(buf, "{}{}@{w}x{h}{}", t.server, t.path, if t.blur { "#blur" } else { "" });
+    let _ = write!(
+        buf,
+        "{}{}@{w}x{h}{}",
+        t.server,
+        t.path,
+        if t.blur { "#blur" } else { "" }
+    );
 }
 
 pub use plex::fmt_resolution;
 
-pub fn poll_until<T>(attempt: &AtomicU64, current: u64, every: Duration, deadline: Instant, mut step: impl FnMut() -> Option<T>) -> Option<T> {
+pub fn poll_until<T>(
+    attempt: &AtomicU64,
+    current: u64,
+    every: Duration,
+    deadline: Instant,
+    mut step: impl FnMut() -> Option<T>,
+) -> Option<T> {
     while Instant::now() < deadline {
         std::thread::sleep(every);
         if attempt.load(Ordering::SeqCst) != current {
@@ -553,19 +634,33 @@ pub fn poll_until<T>(attempt: &AtomicU64, current: u64, every: Duration, deadlin
 type ImageRx = futures::channel::mpsc::UnboundedReceiver<(String, Option<Arc<RenderImage>>)>;
 
 impl Plaivo {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, account: Account, settings: Settings, client: Client, queue: Arc<images::Queue>, images_rx: ImageRx) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        account: Account,
+        settings: Settings,
+        client: Client,
+        queue: Arc<images::Queue>,
+        images_rx: ImageRx,
+    ) -> Self {
         let raw = window.window_handle().expect("window handle").as_raw();
         set_card_prefs(&settings);
         let search = cx.new(|cx| TextInput::new("Search movies and shows", cx));
-        cx.subscribe(&search, |this: &mut Self, _, ev: &InputEvent, cx| match ev {
-            InputEvent::Changed(q) => this.search_debounced(q.to_string(), cx),
-            InputEvent::Submit(q) => this.search(q.to_string(), cx),
-        })
+        cx.subscribe(
+            &search,
+            |this: &mut Self, _, ev: &InputEvent, cx| match ev {
+                InputEvent::Changed(q) => this.search_debounced(q.to_string(), cx),
+                InputEvent::Submit(q) => this.search(q.to_string(), cx),
+            },
+        )
         .detach();
         cx.spawn(async move |this, cx| {
             let mut rx = images_rx;
             while let Some((key, img)) = rx.next().await {
-                if this.update(cx, |this, cx| this.on_image(key, img, cx)).is_err() {
+                if this
+                    .update(cx, |this, cx| this.on_image(key, img, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -577,7 +672,10 @@ impl Plaivo {
         cx.spawn(async move |this, cx| {
             while downloads_rx.next().await.is_some() {
                 while downloads_rx.try_recv().is_ok() {}
-                if this.update(cx, |this, cx| this.downloads_changed(cx)).is_err() {
+                if this
+                    .update(cx, |this, cx| this.downloads_changed(cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -680,7 +778,8 @@ impl Plaivo {
             async {}
         })
         .detach();
-        cx.observe_window_appearance(window, |_, _, cx| cx.notify()).detach();
+        cx.observe_window_appearance(window, |_, _, cx| cx.notify())
+            .detach();
         window.focus(&s.focus, cx);
         s.open_downloads(cx);
         if s.account.has_servers() {
@@ -691,7 +790,11 @@ impl Plaivo {
         s
     }
 
-    pub fn bg<T: Send + 'static>(cx: &mut Context<Self>, job: impl FnOnce() -> T + Send + 'static, done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static) {
+    pub fn bg<T: Send + 'static>(
+        cx: &mut Context<Self>,
+        job: impl FnOnce() -> T + Send + 'static,
+        done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+    ) {
         let task = cx.background_executor().spawn(async move { job() });
         cx.spawn(async move |this, cx| {
             let v = task.await;
@@ -705,11 +808,19 @@ impl Plaivo {
     }
 
     pub fn detach(cx: &mut Context<Self>, job: impl FnOnce() + Send + 'static) {
-        cx.background_executor().spawn(async move { job() }).detach();
+        cx.background_executor()
+            .spawn(async move { job() })
+            .detach();
     }
 
-    pub fn with_downloads(&self, cx: &mut Context<Self>, f: impl FnOnce(&Downloads) + Send + 'static) {
-        let Some(d) = self.downloads.clone() else { return };
+    pub fn with_downloads(
+        &self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&Downloads) + Send + 'static,
+    ) {
+        let Some(d) = self.downloads.clone() else {
+            return;
+        };
         Self::detach(cx, move || f(&d));
     }
 
@@ -760,16 +871,31 @@ impl Plaivo {
     }
 
     pub fn downloads_changed(&mut self, cx: &mut Context<Self>) {
-        let entries = self.downloads.as_ref().map(|d| d.snapshot()).unwrap_or_default();
+        let entries = self
+            .downloads
+            .as_ref()
+            .map(|d| d.snapshot())
+            .unwrap_or_default();
         let detail_before = (self.page == Page::Detail).then(|| self.detail_download_states());
         let changed = entries != self.download_entries;
         if changed {
             self.download_entries = entries;
         }
-        let done = self.download_entries.iter().filter(|e| e.state == State::Done).map(|e| (e.server.as_str(), e.key.as_str()));
-        let library_changed = !done.eq(self.offline.iter().map(|(s, it)| (s.as_str(), it.rating_key.as_str())));
+        let done = self
+            .download_entries
+            .iter()
+            .filter(|e| e.state == State::Done)
+            .map(|e| (e.server.as_str(), e.key.as_str()));
+        let library_changed = !done.eq(self
+            .offline
+            .iter()
+            .map(|(s, it)| (s.as_str(), it.rating_key.as_str())));
         if library_changed {
-            self.offline = self.downloads.as_ref().map(|d| d.library()).unwrap_or_default();
+            self.offline = self
+                .downloads
+                .as_ref()
+                .map(|d| d.library())
+                .unwrap_or_default();
             self.offline_cards = crate::ui::downloads::offline_cards(&self.offline);
         }
         let visible = match self.page {
@@ -787,7 +913,12 @@ impl Plaivo {
     }
 
     // Stale-while-revalidate: apply the disk-cached response at once, then the network one only if it differs.
-    pub(crate) fn load<T: Send + 'static>(&self, cx: &mut Context<Self>, job: impl Fn(&Ctx) -> R<T> + Send + 'static, done: impl Fn(&mut Self, R<T>, &mut Context<Self>) + 'static) {
+    pub(crate) fn load<T: Send + 'static>(
+        &self,
+        cx: &mut Context<Self>,
+        job: impl Fn(&Ctx) -> R<T> + Send + 'static,
+        done: impl Fn(&mut Self, R<T>, &mut Context<Self>) + 'static,
+    ) {
         let client = self.client.clone();
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
         cx.background_executor()
@@ -836,23 +967,42 @@ impl Plaivo {
 
     pub fn server(&self, id: &str) -> Option<Server> {
         if id == DISCOVER_ID {
-            return self.account.token.as_deref().map(|t| self.client.discover(t));
+            return self
+                .account
+                .token
+                .as_deref()
+                .map(|t| self.client.discover(t));
         }
         self.servers.iter().find(|s| s.id == id).cloned()
     }
 
     pub fn home_server(&self) -> Option<Server> {
-        self.server(&self.settings.home_server).or_else(|| self.servers.first().cloned())
+        self.server(&self.settings.home_server)
+            .or_else(|| self.servers.first().cloned())
     }
 
     pub fn size_for(&self, shape: Shape) -> (u32, u32) {
-        shape_size(shape, self.scale * self.settings.card_scale(), self.viewport_w)
+        shape_size(
+            shape,
+            self.scale * self.settings.card_scale(),
+            self.viewport_w,
+        )
     }
 
     fn image_url(&self, server: &str, path: &str, (w, h): (u32, u32)) -> Option<String> {
         if path.starts_with("http") {
-            let resizer = |id: &str| self.servers.iter().find(|s| s.id == id && !s.is_jellyfin() && !plex::is_down(&s.id));
-            let proxy = resizer(server).or_else(|| resizer(&self.settings.home_server)).or_else(|| self.servers.iter().find(|s| !s.is_jellyfin() && !plex::is_down(&s.id)));
+            let resizer = |id: &str| {
+                self.servers
+                    .iter()
+                    .find(|s| s.id == id && !s.is_jellyfin() && !plex::is_down(&s.id))
+            };
+            let proxy = resizer(server)
+                .or_else(|| resizer(&self.settings.home_server))
+                .or_else(|| {
+                    self.servers
+                        .iter()
+                        .find(|s| !s.is_jellyfin() && !plex::is_down(&s.id))
+                });
             return Some(match proxy {
                 Some(srv) => srv.image_url(path, w, h),
                 None => path.replace("/t/p/original/", "/t/p/w780/"),
@@ -868,7 +1018,9 @@ impl Plaivo {
         if let Some(img) = self.lru.get(&self.image_key) {
             return Some(img);
         }
-        let local = (shape != Shape::Backdrop).then(|| self.downloads.as_ref()?.image(&t.server, &t.path)).flatten();
+        let local = (shape != Shape::Backdrop)
+            .then(|| self.downloads.as_ref()?.image(&t.server, &t.path))
+            .flatten();
         if local.is_some() {
             self.image_key.push_str(LOCAL_IMAGE);
         }
@@ -877,22 +1029,35 @@ impl Plaivo {
         }
         let url = match &local {
             Some(file) => file.to_string_lossy().into_owned(),
-            None => self.image_url(&t.server, &t.path, size)? + if t.blur { BLUR_PARAM } else { "" },
+            None => {
+                self.image_url(&t.server, &t.path, size)? + if t.blur { BLUR_PARAM } else { "" }
+            }
         };
         let key = self.image_key.clone();
         self.requested.insert(key.clone());
-        if let Some(dropped) = self.queue.push(images::Job { key, url, local: local.is_some(), size }) {
+        if let Some(dropped) = self.queue.push(images::Job {
+            key,
+            url,
+            local: local.is_some(),
+            size,
+        }) {
             self.requested.remove(&dropped.key);
         }
         None
     }
 
     pub fn image_alpha(&self) -> f32 {
-        self.arrivals.get(&self.image_key).map_or(1., |t| (t.elapsed().as_secs_f32() / IMAGE_FADE.as_secs_f32()).min(1.))
+        self.arrivals.get(&self.image_key).map_or(1., |t| {
+            (t.elapsed().as_secs_f32() / IMAGE_FADE.as_secs_f32()).min(1.)
+        })
     }
 
     pub fn trim_images(&mut self, full_player: bool, cx: &mut Context<Self>) {
-        for img in self.lru.set_budget(if full_player { PLAYER_IMAGE_BUDGET } else { IMAGE_BUDGET }) {
+        for img in self.lru.set_budget(if full_player {
+            PLAYER_IMAGE_BUDGET
+        } else {
+            IMAGE_BUDGET
+        }) {
             cx.drop_image(img, None);
         }
     }
@@ -910,7 +1075,9 @@ impl Plaivo {
         self.requested.remove(&key);
         match img {
             Some(img) => {
-                let key = key.strip_suffix(LOCAL_IMAGE).map_or(key.clone(), str::to_owned);
+                let key = key
+                    .strip_suffix(LOCAL_IMAGE)
+                    .map_or(key.clone(), str::to_owned);
                 self.arrivals.insert(key.clone(), Instant::now());
                 for old in self.lru.insert(key, img) {
                     cx.drop_image(old, None);
@@ -928,7 +1095,9 @@ impl Plaivo {
         thumb.as_ref().is_none_or(|t| {
             let mut key = String::new();
             image_key(&mut key, t, self.size_for(shape));
-            self.lru.contains(&key) || self.failed.contains(&key) || self.failed.contains(&(key + LOCAL_IMAGE))
+            self.lru.contains(&key)
+                || self.failed.contains(&key)
+                || self.failed.contains(&(key + LOCAL_IMAGE))
         })
     }
 
@@ -954,10 +1123,20 @@ impl Plaivo {
         if !self.home_ready {
             return log::debug!("splash: waiting for home");
         }
-        let mut wanted: Vec<_> = self.hero.first().map(|c| (c.thumb.clone(), Shape::Backdrop)).into_iter().collect();
+        let mut wanted: Vec<_> = self
+            .hero
+            .first()
+            .map(|c| (c.thumb.clone(), Shape::Backdrop))
+            .into_iter()
+            .collect();
         if let Some(h) = self.hubs.first() {
             let shape = if h.wide { Shape::Wide } else { Shape::Poster };
-            wanted.extend(h.items.iter().take(FIRST_ROW_IMAGES).map(|c| (c.thumb.clone(), shape)));
+            wanted.extend(
+                h.items
+                    .iter()
+                    .take(FIRST_ROW_IMAGES)
+                    .map(|c| (c.thumb.clone(), shape)),
+            );
         }
         wanted.retain(|(thumb, shape)| !self.image_settled(thumb, *shape));
         if wanted.is_empty() {
@@ -981,7 +1160,9 @@ impl Plaivo {
         if self.servers.is_empty() {
             self.nav = vec![Nav::Servers];
             self.navigate(Nav::Servers, false, cx);
-        } else if (self.home_error.is_some() || self.servers_error.is_some()) && self.has_downloads() {
+        } else if (self.home_error.is_some() || self.servers_error.is_some())
+            && self.has_downloads()
+        {
             self.navigate(Nav::Downloads(None), true, cx);
         } else {
             self.navigate(Nav::Home, false, cx);
@@ -997,9 +1178,19 @@ impl Plaivo {
             cx,
             move || -> R<Option<String>> {
                 let pin = c.create_pin(true)?;
-                log::info!("sign-in: PIN {} created, waiting for browser approval", pin.id);
+                log::info!(
+                    "sign-in: PIN {} created, waiting for browser approval",
+                    pin.id
+                );
                 open_url(&c.auth_url(&pin.code));
-                poll_until(&pin_gen, gen_, Duration::from_secs(1), Instant::now() + Duration::from_secs(600), || c.check_pin(pin.id).transpose()).transpose()
+                poll_until(
+                    &pin_gen,
+                    gen_,
+                    Duration::from_secs(1),
+                    Instant::now() + Duration::from_secs(600),
+                    || c.check_pin(pin.id).transpose(),
+                )
+                .transpose()
             },
             move |this, r, cx| {
                 if this.pin_gen.load(Ordering::SeqCst) != gen_ {
@@ -1068,33 +1259,54 @@ impl Plaivo {
         if self.account.token.is_some() {
             known.insert(DISCOVER_ID.to_owned());
         }
-        if self.player.server.as_ref().is_some_and(|s| !known.contains(&s.id)) {
+        if self
+            .player
+            .server
+            .as_ref()
+            .is_some_and(|s| !known.contains(&s.id))
+        {
             self.stop_playback(cx);
         }
         let stale_page = match self.page {
             Page::Library => match self.nav.last() {
-                Some(Nav::Library(server, _) | Nav::Collection(server, _, _)) => !known.contains(server),
+                Some(Nav::Library(server, _) | Nav::Collection(server, _, _)) => {
+                    !known.contains(server)
+                }
                 Some(Nav::Watchlist) => !known.contains(DISCOVER_ID),
                 _ => true,
             },
-            Page::HubList => self.hub_list.as_ref().is_none_or(|l| !known.contains(&l.server)),
+            Page::HubList => self
+                .hub_list
+                .as_ref()
+                .is_none_or(|l| !known.contains(&l.server)),
             Page::Detail => !known.contains(&self.detail_id.0),
             _ => false,
         };
         self.nav.retain(|n| match n {
-            Nav::Library(server, _) | Nav::Collection(server, _, _) | Nav::Hub(server, _, _, _) | Nav::Detail(server, _, _) => known.contains(server),
+            Nav::Library(server, _)
+            | Nav::Collection(server, _, _)
+            | Nav::Hub(server, _, _, _)
+            | Nav::Detail(server, _, _) => known.contains(server),
             Nav::Watchlist => known.contains(DISCOVER_ID),
             _ => true,
         });
         self.library_cache.retain(|l| known.contains(&l.key.server));
-        if self.library.as_ref().is_some_and(|l| !known.contains(&l.key.server)) {
+        if self
+            .library
+            .as_ref()
+            .is_some_and(|l| !known.contains(&l.key.server))
+        {
             self.library = None;
         }
         if !known.contains(&self.lib_hubs_for.0) {
             self.lib_hubs = None;
             self.lib_hubs_for = Default::default();
         }
-        if self.hub_list.as_ref().is_some_and(|l| !known.contains(&l.server)) {
+        if self
+            .hub_list
+            .as_ref()
+            .is_some_and(|l| !known.contains(&l.server))
+        {
             self.hub_list = None;
         }
         if !known.contains(&self.detail_id.0) {
@@ -1123,20 +1335,44 @@ impl Plaivo {
         };
         self.servers_loading = true;
         let c = self.client.clone();
-        Self::bg(cx, move || c.servers(&token).map(|r| (r, token)), |this, r, cx| match r {
-            Ok((resources, token)) => this.probe_servers(resources, token, cx),
-            Err(e) => this.discovery_done(Vec::new(), Some(e), cx),
-        });
+        Self::bg(
+            cx,
+            move || c.servers(&token).map(|r| (r, token)),
+            |this, r, cx| match r {
+                Ok((resources, token)) => this.probe_servers(resources, token, cx),
+                Err(e) => this.discovery_done(Vec::new(), Some(e), cx),
+            },
+        );
     }
 
-    fn probe_servers(&mut self, resources: Vec<plex::Resource>, token: String, cx: &mut Context<Self>) {
-        log::info!("discovery: {} server(s) on account: {}", resources.len(), resources.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "));
+    fn probe_servers(
+        &mut self,
+        resources: Vec<plex::Resource>,
+        token: String,
+        cx: &mut Context<Self>,
+    ) {
+        log::info!(
+            "discovery: {} server(s) on account: {}",
+            resources.len(),
+            resources
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         if resources.is_empty() {
-            return self.discovery_done(Vec::new(), Some("No Plex Media Servers found on this account.".into()), cx);
+            return self.discovery_done(
+                Vec::new(),
+                Some("No Plex Media Servers found on this account.".into()),
+                cx,
+            );
         }
         let total = resources.len();
         if let Some(sp) = &mut self.splash {
-            sp.servers = resources.iter().map(|r| (r.client_identifier.clone(), r.name.clone(), Status::Pending)).collect();
+            sp.servers = resources
+                .iter()
+                .map(|r| (r.client_identifier.clone(), r.name.clone(), Status::Pending))
+                .collect();
         }
         self.probe = Some((Vec::new(), total, false));
         cx.spawn(async move |this, cx| {
@@ -1147,33 +1383,43 @@ impl Plaivo {
         for res in resources {
             let (c, t) = (self.client.clone(), token.clone());
             let id = res.client_identifier.clone();
-            Self::bg(cx, move || c.connect(&res, &t), move |this, r, cx| {
-                match &r {
-                    Ok(srv) => log::info!("discovery: {} reachable at {}", srv.name, srv.uri),
-                    Err(e) => log::warn!("discovery: {e}"),
-                }
-                let ok = r.is_ok();
-                if let Some(row) = this.splash.as_mut().and_then(|sp| sp.servers.iter_mut().find(|x| x.0 == id)) {
-                    row.2 = if ok { Status::Ok } else { Status::Error };
-                }
-                let previous = this.account.servers.iter().find(|s| s.id == id).cloned();
-                let Some(probe) = &mut this.probe else { return };
-                probe.2 |= ok;
-                probe.0.extend(r.ok().or(previous));
-                probe.1 -= 1;
-                if probe.1 == 0 {
-                    let (mut list, _, any_ok) = this.probe.take().unwrap();
-                    list.sort_by_key(|x| !x.owned);
-                    this.discovery_done(if any_ok { list } else { Vec::new() }, None, cx);
-                } else {
-                    this.check_splash(cx);
-                }
-            });
+            Self::bg(
+                cx,
+                move || c.connect(&res, &t),
+                move |this, r, cx| {
+                    match &r {
+                        Ok(srv) => log::info!("discovery: {} reachable at {}", srv.name, srv.uri),
+                        Err(e) => log::warn!("discovery: {e}"),
+                    }
+                    let ok = r.is_ok();
+                    if let Some(row) = this
+                        .splash
+                        .as_mut()
+                        .and_then(|sp| sp.servers.iter_mut().find(|x| x.0 == id))
+                    {
+                        row.2 = if ok { Status::Ok } else { Status::Error };
+                    }
+                    let previous = this.account.servers.iter().find(|s| s.id == id).cloned();
+                    let Some(probe) = &mut this.probe else { return };
+                    probe.2 |= ok;
+                    probe.0.extend(r.ok().or(previous));
+                    probe.1 -= 1;
+                    if probe.1 == 0 {
+                        let (mut list, _, any_ok) = this.probe.take().unwrap();
+                        list.sort_by_key(|x| !x.owned);
+                        this.discovery_done(if any_ok { list } else { Vec::new() }, None, cx);
+                    } else {
+                        this.check_splash(cx);
+                    }
+                },
+            );
         }
     }
 
     fn probe_deadline(&mut self, cx: &mut Context<Self>) {
-        let Some(sp) = self.splash.as_mut().filter(|sp| !sp.probes_done) else { return };
+        let Some(sp) = self.splash.as_mut().filter(|sp| !sp.probes_done) else {
+            return;
+        };
         for (id, name, status) in &sp.servers {
             if *status == Status::Pending {
                 log::info!("discovery: {name} has not answered yet, hiding it until it does");
@@ -1223,7 +1469,8 @@ impl Plaivo {
             self.settings.home_server = first.id.clone();
             self.settings.save();
         }
-        self.sections.retain(|sec| self.servers.iter().any(|s| s.id == sec.server));
+        self.sections
+            .retain(|sec| self.servers.iter().any(|s| s.id == sec.server));
         self.load_sections(cx);
         let home = self.home_server();
         if previous_home.as_ref().map(|s| &s.id) != home.as_ref().map(|s| &s.id) {
@@ -1252,25 +1499,48 @@ impl Plaivo {
     fn load_sections(&mut self, cx: &mut Context<Self>) {
         for srv in self.servers.clone() {
             let id = srv.id.clone();
-            self.load(cx, move |c| srv.sections(c), move |this, r, _| match r {
-                Ok(dirs) => {
-                    this.sections.retain(|x| x.server != id);
-                    this.sections.extend(dirs.into_iter().map(|d| SectionInfo { id: library_key(&id, &d.key), server: id.clone(), key: d.key, title: d.title.into(), kind: d.kind }));
-                }
-                Err(e) => log::warn!("sections for {id}: {e}"),
-            });
+            self.load(
+                cx,
+                move |c| srv.sections(c),
+                move |this, r, _| match r {
+                    Ok(dirs) => {
+                        this.sections.retain(|x| x.server != id);
+                        this.sections.extend(dirs.into_iter().map(|d| SectionInfo {
+                            id: library_key(&id, &d.key),
+                            server: id.clone(),
+                            key: d.key,
+                            title: d.title.into(),
+                            kind: d.kind,
+                        }));
+                    }
+                    Err(e) => log::warn!("sections for {id}: {e}"),
+                },
+            );
         }
     }
 
     pub fn sections_in_order(&self, hidden: bool) -> Vec<(&str, Vec<&SectionInfo>)> {
-        let home = self.servers.iter().find(|s| s.id == self.settings.home_server).or(self.servers.first()).map(|s| s.id.as_str());
+        let home = self
+            .servers
+            .iter()
+            .find(|s| s.id == self.settings.home_server)
+            .or(self.servers.first())
+            .map(|s| s.id.as_str());
         let mut order: Vec<&Server> = self.servers.iter().collect();
         order.sort_by_key(|s| Some(s.id.as_str()) != home);
         order
             .into_iter()
             .map(|srv| {
                 let shown = hidden || !plex::is_down(&srv.id);
-                let mut rows: Vec<&SectionInfo> = self.sections.iter().filter(|x| shown && x.server == srv.id && (hidden || !self.settings.library_hidden(&x.id))).collect();
+                let mut rows: Vec<&SectionInfo> = self
+                    .sections
+                    .iter()
+                    .filter(|x| {
+                        shown
+                            && x.server == srv.id
+                            && (hidden || !self.settings.library_hidden(&x.id))
+                    })
+                    .collect();
                 rows.sort_by_key(|x| self.settings.library_rank(&x.id));
                 (srv.name.as_str(), rows)
             })
@@ -1317,28 +1587,92 @@ impl Plaivo {
             Nav::Watchlist => {
                 self.page = Page::Library;
                 let section = if self.watchlist_shows { "2" } else { "1" };
-                let sort = self.library.iter().chain(&self.library_cache).find(|l| l.key.listing == Listing::Watchlist && l.key.section == section).map(|l| l.key.sort.clone());
-                self.show_library(LibKey { server: DISCOVER_ID.to_owned(), section: section.to_owned(), sort: sort.unwrap_or_else(|| "addedAt:desc".to_owned()), listing: Listing::Watchlist }, SharedString::default(), cx);
+                let sort = self
+                    .library
+                    .iter()
+                    .chain(&self.library_cache)
+                    .find(|l| l.key.listing == Listing::Watchlist && l.key.section == section)
+                    .map(|l| l.key.sort.clone());
+                self.show_library(
+                    LibKey {
+                        server: DISCOVER_ID.to_owned(),
+                        section: section.to_owned(),
+                        sort: sort.unwrap_or_else(|| "addedAt:desc".to_owned()),
+                        listing: Listing::Watchlist,
+                    },
+                    SharedString::default(),
+                    cx,
+                );
             }
             Nav::Library(server, section) => {
                 self.page = Page::Library;
                 match self.lib_tab {
                     LibTab::Recommended => self.load_lib_hubs(server, section, cx),
                     LibTab::Browse => {
-                        let sort = self.library.iter().chain(&self.library_cache).find(|l| l.key.listing == Listing::Items && l.key.server == server && l.key.section == section).map(|l| l.key.sort.clone());
-                        self.show_library(LibKey { server, section, sort: sort.unwrap_or_else(|| SORTS[0].0.to_owned()), listing: Listing::Items }, SharedString::default(), cx);
+                        let sort = self
+                            .library
+                            .iter()
+                            .chain(&self.library_cache)
+                            .find(|l| {
+                                l.key.listing == Listing::Items
+                                    && l.key.server == server
+                                    && l.key.section == section
+                            })
+                            .map(|l| l.key.sort.clone());
+                        self.show_library(
+                            LibKey {
+                                server,
+                                section,
+                                sort: sort.unwrap_or_else(|| SORTS[0].0.to_owned()),
+                                listing: Listing::Items,
+                            },
+                            SharedString::default(),
+                            cx,
+                        );
                     }
-                    LibTab::Collections => self.show_library(LibKey { server, section, sort: String::new(), listing: Listing::Collections }, SharedString::default(), cx),
+                    LibTab::Collections => self.show_library(
+                        LibKey {
+                            server,
+                            section,
+                            sort: String::new(),
+                            listing: Listing::Collections,
+                        },
+                        SharedString::default(),
+                        cx,
+                    ),
                 }
             }
             Nav::Collection(server, key, title) => {
                 self.page = Page::Library;
-                self.show_library(LibKey { server, section: key, sort: String::new(), listing: Listing::Collection }, title.into(), cx);
+                self.show_library(
+                    LibKey {
+                        server,
+                        section: key,
+                        sort: String::new(),
+                        listing: Listing::Collection,
+                    },
+                    title.into(),
+                    cx,
+                );
             }
             Nav::Hub(server, key, title, resume) => {
                 self.page = Page::HubList;
-                if self.hub_list.as_ref().is_none_or(|l| l.server != server || l.key != key) {
-                    self.hub_list = Some(HubList { server, sort: initial_sort(&key), key, title: title.into(), resume, items: Vec::new(), cards: Vec::new(), loaded: false, scroll: UniformListScrollHandle::new() });
+                if self
+                    .hub_list
+                    .as_ref()
+                    .is_none_or(|l| l.server != server || l.key != key)
+                {
+                    self.hub_list = Some(HubList {
+                        server,
+                        sort: initial_sort(&key),
+                        key,
+                        title: title.into(),
+                        resume,
+                        items: Vec::new(),
+                        cards: Vec::new(),
+                        loaded: false,
+                        scroll: UniformListScrollHandle::new(),
+                    });
                 }
                 self.load_hub_list(cx);
             }
@@ -1367,7 +1701,11 @@ impl Plaivo {
             return self.play(card.server.to_string(), card.key.to_string(), cx);
         }
         if self.page == Page::Downloads {
-            return self.navigate(Nav::Downloads(Some((card.server.to_string(), card.key.to_string()))), true, cx);
+            return self.navigate(
+                Nav::Downloads(Some((card.server.to_string(), card.key.to_string()))),
+                true,
+                cx,
+            );
         }
         let q = self.search.read(cx).text().trim().to_owned();
         if self.page == Page::Search && !q.is_empty() {
@@ -1375,8 +1713,16 @@ impl Plaivo {
             self.settings.save();
         }
         let nav = match card.kind.as_ref() {
-            "season" if !card.parent.is_empty() => Nav::Detail(card.server.to_string(), card.parent.to_string(), Some(card.key.to_string())),
-            "collection" => Nav::Collection(card.server.to_string(), card.key.to_string(), card.title.to_string()),
+            "season" if !card.parent.is_empty() => Nav::Detail(
+                card.server.to_string(),
+                card.parent.to_string(),
+                Some(card.key.to_string()),
+            ),
+            "collection" => Nav::Collection(
+                card.server.to_string(),
+                card.key.to_string(),
+                card.title.to_string(),
+            ),
             _ => Nav::Detail(card.server.to_string(), card.key.to_string(), None),
         };
         self.navigate(nav, true, cx);
@@ -1388,7 +1734,9 @@ impl Plaivo {
     }
 
     pub fn load_home(&mut self, cx: &mut Context<Self>) {
-        let Some(srv) = self.home_server() else { return };
+        let Some(srv) = self.home_server() else {
+            return;
+        };
         self.home_error = None;
         self.failed.clear();
         if !self.home_ready {
@@ -1396,20 +1744,24 @@ impl Plaivo {
             self.hubs.clear();
         }
         let id = srv.id.clone();
-        self.load(cx, move |c| srv.hubs(c), move |this, r, cx| {
-            if this.home_server().map(|h| h.id) != Some(id.clone()) {
-                return;
-            }
-            match r {
-                Ok(hubs) => this.build_home(&id, hubs, cx),
-                Err(e) if !this.home_ready => {
-                    let name = this.server(&id).map(|x| x.name).unwrap_or_default();
-                    this.home_error = Some(format!("Could not reach {name}: {e}").into());
-                    this.finish_splash(cx);
+        self.load(
+            cx,
+            move |c| srv.hubs(c),
+            move |this, r, cx| {
+                if this.home_server().map(|h| h.id) != Some(id.clone()) {
+                    return;
                 }
-                Err(e) => log::warn!("home refresh failed: {e}"),
-            }
-        });
+                match r {
+                    Ok(hubs) => this.build_home(&id, hubs, cx),
+                    Err(e) if !this.home_ready => {
+                        let name = this.server(&id).map(|x| x.name).unwrap_or_default();
+                        this.home_error = Some(format!("Could not reach {name}: {e}").into());
+                        this.finish_splash(cx);
+                    }
+                    Err(e) => log::warn!("home refresh failed: {e}"),
+                }
+            },
+        );
     }
 
     fn build_home(&mut self, server: &str, hubs: Vec<plex::Hub>, cx: &mut Context<Self>) {
@@ -1419,7 +1771,10 @@ impl Plaivo {
             .filter(|h| h.id.contains("recentlyAdded") || h.id.contains("featured"))
             .chain(hubs.iter())
             .flat_map(|h| h.metadata.iter())
-            .filter(|it| !first(&[&it.art, &it.grandparent_art]).is_empty() && matches!(it.kind.as_str(), "movie" | "show"))
+            .filter(|it| {
+                !first(&[&it.art, &it.grandparent_art]).is_empty()
+                    && matches!(it.kind.as_str(), "movie" | "show")
+            })
             .filter(|it| seen.insert(it.rating_key.clone()))
             .take(6)
             .map(|it| hero_card(it, server))
@@ -1431,7 +1786,9 @@ impl Plaivo {
             .iter()
             .filter(|h| !h.is_continue())
             .flat_map(|h| h.metadata.iter())
-            .filter(|it| matches!(it.kind.as_str(), "movie" | "show") && seen.insert(it.rating_key.clone()))
+            .filter(|it| {
+                matches!(it.kind.as_str(), "movie" | "show") && seen.insert(it.rating_key.clone())
+            })
             .take(SUGGESTIONS)
             .map(|it| card_for(it, false, server))
             .collect();
@@ -1439,7 +1796,16 @@ impl Plaivo {
         for c in self.hero.clone().iter().take(2) {
             self.image(&c.thumb, Shape::Backdrop);
         }
-        if let Some((shape, firsts)) = self.hubs.first().map(|h| (if h.wide { Shape::Wide } else { Shape::Poster }, h.items.iter().take(FIRST_ROW_IMAGES).cloned().collect::<Vec<_>>())) {
+        if let Some((shape, firsts)) = self.hubs.first().map(|h| {
+            (
+                if h.wide { Shape::Wide } else { Shape::Poster },
+                h.items
+                    .iter()
+                    .take(FIRST_ROW_IMAGES)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        }) {
             for c in firsts {
                 self.image(&c.thumb, shape);
             }
@@ -1491,44 +1857,73 @@ impl Plaivo {
     }
 
     fn load_lib_hubs(&mut self, server: String, section: String, cx: &mut Context<Self>) {
-        let Some(srv) = self.server(&server) else { return };
-        let kind = self.sections.iter().find(|s| s.server == server && s.key == section).map(|s| s.kind.clone()).unwrap_or_default();
+        let Some(srv) = self.server(&server) else {
+            return;
+        };
+        let kind = self
+            .sections
+            .iter()
+            .find(|s| s.server == server && s.key == section)
+            .map(|s| s.kind.clone())
+            .unwrap_or_default();
         let key = (server, section.clone());
         if self.lib_hubs_for != key {
             self.lib_hubs = None;
             self.lib_hubs_scroll = ScrollHandle::new();
             self.lib_hubs_for = key.clone();
         }
-        self.load(cx, move |c| srv.section_hubs(c, &section, &kind), move |this, r, cx| {
-            if this.lib_hubs_for != key {
-                return;
-            }
-            match r {
-                Ok(hubs) => this.lib_hubs = Some(hub_rows(&hubs, &key.0, this.lib_hubs.as_deref().unwrap_or_default())),
-                Err(e) => {
-                    this.lib_hubs.get_or_insert_default();
-                    this.toast(format!("Could not load recommendations: {e}"), cx);
+        self.load(
+            cx,
+            move |c| srv.section_hubs(c, &section, &kind),
+            move |this, r, cx| {
+                if this.lib_hubs_for != key {
+                    return;
                 }
-            }
-        });
+                match r {
+                    Ok(hubs) => {
+                        this.lib_hubs = Some(hub_rows(
+                            &hubs,
+                            &key.0,
+                            this.lib_hubs.as_deref().unwrap_or_default(),
+                        ))
+                    }
+                    Err(e) => {
+                        this.lib_hubs.get_or_insert_default();
+                        this.toast(format!("Could not load recommendations: {e}"), cx);
+                    }
+                }
+            },
+        );
     }
 
     fn load_hub_list(&mut self, cx: &mut Context<Self>) {
         let Some(l) = &self.hub_list else { return };
-        let Some(srv) = self.server(&l.server) else { return };
+        let Some(srv) = self.server(&l.server) else {
+            return;
+        };
         let (server, key) = (l.server.clone(), l.key.clone());
         let k = key.clone();
-        self.load(cx, move |c| srv.hub_items(c, &k), move |this, r, cx| {
-            let Some(l) = this.hub_list.as_mut().filter(|l| l.server == server && l.key == key) else { return };
-            l.loaded = true;
-            match r {
-                Ok(items) => {
-                    l.items = items;
-                    l.rebuild();
+        self.load(
+            cx,
+            move |c| srv.hub_items(c, &k),
+            move |this, r, cx| {
+                let Some(l) = this
+                    .hub_list
+                    .as_mut()
+                    .filter(|l| l.server == server && l.key == key)
+                else {
+                    return;
+                };
+                l.loaded = true;
+                match r {
+                    Ok(items) => {
+                        l.items = items;
+                        l.rebuild();
+                    }
+                    Err(e) => this.toast(format!("Could not load list: {e}"), cx),
                 }
-                Err(e) => this.toast(format!("Could not load list: {e}"), cx),
-            }
-        });
+            },
+        );
     }
 
     pub fn set_hub_sort(&mut self, sort: &str, cx: &mut Context<Self>) {
@@ -1561,7 +1956,13 @@ impl Plaivo {
         }
         self.library = Some(match self.library_cache.iter().position(|l| l.key == key) {
             Some(i) => self.library_cache.remove(i),
-            None => Library { key, title, items: vec![None; 48], pages: HashSet::new(), scroll: UniformListScrollHandle::new() },
+            None => Library {
+                key,
+                title,
+                items: vec![None; 48],
+                pages: HashSet::new(),
+                scroll: UniformListScrollHandle::new(),
+            },
         });
         self.refresh_library_page(0, cx);
     }
@@ -1572,7 +1973,13 @@ impl Plaivo {
             return;
         }
         let pages: Vec<usize> = (start / PAGE..=(end - 1) / PAGE)
-            .filter(|p| !lib.pages.contains(p) && p * PAGE < lib.items.len() && lib.items[p * PAGE..(p * PAGE + PAGE).min(lib.items.len())].iter().any(Option::is_none))
+            .filter(|p| {
+                !lib.pages.contains(p)
+                    && p * PAGE < lib.items.len()
+                    && lib.items[p * PAGE..(p * PAGE + PAGE).min(lib.items.len())]
+                        .iter()
+                        .any(Option::is_none)
+            })
             .collect();
         for p in pages {
             self.refresh_library_page(p, cx);
@@ -1584,25 +1991,49 @@ impl Plaivo {
         let first_load = lib.pages.is_empty();
         lib.pages.insert(page);
         let key = lib.key.clone();
-        let Some(srv) = self.server(&key.server) else { return };
+        let Some(srv) = self.server(&key.server) else {
+            return;
+        };
         let k = key.clone();
         let summaries = self.settings.view_mode == ViewMode::List;
         let fetch = move |c: &Ctx| match k.listing {
-            Listing::Items => srv.section_items(c, &k.section, page * PAGE, PAGE, &k.sort, summaries),
+            Listing::Items => {
+                srv.section_items(c, &k.section, page * PAGE, PAGE, &k.sort, summaries)
+            }
             Listing::Collections => srv.collections(c, &k.section, page * PAGE, PAGE),
-            Listing::Collection => srv.collection_items(c, &k.section, page * PAGE, PAGE, summaries),
+            Listing::Collection => {
+                srv.collection_items(c, &k.section, page * PAGE, PAGE, summaries)
+            }
             Listing::Watchlist => srv.watchlist(c, &k.section, page * PAGE, PAGE, &k.sort),
         };
         self.load(cx, fetch, move |this, r, cx| match r {
             Ok((items, total)) => {
-                let Some(lib) = this.library.as_mut().filter(|l| l.key == key).or_else(|| this.library_cache.iter_mut().find(|l| l.key == key)) else { return };
+                let Some(lib) = this
+                    .library
+                    .as_mut()
+                    .filter(|l| l.key == key)
+                    .or_else(|| this.library_cache.iter_mut().find(|l| l.key == key))
+                else {
+                    return;
+                };
                 if page == 0 && (first_load || lib.items.len() != total) {
                     lib.items.resize(total, None);
                 }
                 for (i, it) in items.iter().enumerate() {
                     if let Some(slot) = lib.items.get_mut(page * PAGE + i) {
-                        let meta = [it.content_rating.clone(), it.year.map(|y| y.to_string()).unwrap_or_default(), it.duration.map(plex::fmt_duration).unwrap_or_default(), it.audience_rating.map(|r| format!("★ {r:.1}")).unwrap_or_default()];
-                        *slot = Some(Card { summary: it.summary.clone().into(), meta: join(&meta).into(), ..card_for(it, false, &key.server) });
+                        let meta = [
+                            it.content_rating.clone(),
+                            it.year.map(|y| y.to_string()).unwrap_or_default(),
+                            it.duration.map(plex::fmt_duration).unwrap_or_default(),
+                            it.audience_rating
+                                .map(|r| format!("★ {r:.1}"))
+                                .unwrap_or_default(),
+                        ];
+                        *slot = Some(Card {
+                            summary: it.summary.clone().into(),
+                            meta: join(&meta).into(),
+                            ..card_for(it, false, &key.server)
+                        });
                     }
                 }
             }
@@ -1617,7 +2048,9 @@ impl Plaivo {
 
     fn search_debounced(&mut self, q: String, cx: &mut Context<Self>) {
         self.search_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(300)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
             this.update(cx, |this, cx| this.search(q, cx)).ok();
         }));
     }
@@ -1633,38 +2066,67 @@ impl Plaivo {
             return;
         }
         self.searching = true;
-        let servers: Vec<Server> = self.servers.iter().filter(|s| !plex::is_down(&s.id)).cloned().collect();
-        let (c, token) = (self.client.clone(), self.account.token.clone().unwrap_or_default());
+        let servers: Vec<Server> = self
+            .servers
+            .iter()
+            .filter(|s| !plex::is_down(&s.id))
+            .cloned()
+            .collect();
+        let (c, token) = (
+            self.client.clone(),
+            self.account.token.clone().unwrap_or_default(),
+        );
         Self::bg(
             cx,
             move || {
                 let discover = {
                     let (c, q) = (c.clone(), q.clone());
-                    std::thread::spawn(move || if token.is_empty() { Ok(Vec::new()) } else { c.discover_search(&q, &token) })
+                    std::thread::spawn(move || {
+                        if token.is_empty() {
+                            Ok(Vec::new())
+                        } else {
+                            c.discover_search(&q, &token)
+                        }
+                    })
                 };
                 let local: Vec<_> = servers
                     .into_iter()
                     .map(|srv| {
                         let (c, q) = (c.clone(), q.clone());
-                        std::thread::spawn(move || (srv.id.clone(), srv.search(&Ctx::new(c, Source::Live), &q)))
+                        std::thread::spawn(move || {
+                            (srv.id.clone(), srv.search(&Ctx::new(c, Source::Live), &q))
+                        })
                     })
                     .collect();
                 let local: Vec<_> = local.into_iter().filter_map(|h| h.join().ok()).collect();
-                (q, local, discover.join().unwrap_or_else(|_| Err("search thread panicked".into())))
+                (
+                    q,
+                    local,
+                    discover
+                        .join()
+                        .unwrap_or_else(|_| Err("search thread panicked".into())),
+                )
             },
             move |this, (q, local, discover), cx| {
                 if this.search_gen != gen_ {
                     return;
                 }
                 let mut errors = Vec::new();
-                let local: Vec<(String, Vec<(Item, f64)>)> = local.into_iter().filter_map(|(srv, r)| r.map_err(|e| errors.push(e)).ok().map(|hits| (srv, hits))).collect();
+                let local: Vec<(String, Vec<(Item, f64)>)> = local
+                    .into_iter()
+                    .filter_map(|(srv, r)| {
+                        r.map_err(|e| errors.push(e)).ok().map(|hits| (srv, hits))
+                    })
+                    .collect();
                 let home = this.home_server().map(|h| h.id).unwrap_or_default();
                 this.results = rank_search(&q, &home, local, discover.unwrap_or_default())
                     .iter()
                     .map(|(server, it)| {
                         let mut c = card_for(it, false, server);
                         if server == DISCOVER_ID {
-                            c.subtitle = join(&[c.subtitle.to_string(), "Not in your library".into()]).into();
+                            c.subtitle =
+                                join(&[c.subtitle.to_string(), "Not in your library".into()])
+                                    .into();
                         }
                         c
                     })
@@ -1680,8 +2142,16 @@ impl Plaivo {
         cx.notify();
     }
 
-    fn load_detail(&mut self, server: String, key: String, season: Option<String>, cx: &mut Context<Self>) {
-        let Some(srv) = self.server(&server) else { return };
+    fn load_detail(
+        &mut self,
+        server: String,
+        key: String,
+        season: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(srv) = self.server(&server) else {
+            return;
+        };
         if self.detail_id != (server.clone(), key.clone()) {
             self.detail = None;
             self.seasons.clear();
@@ -1700,11 +2170,17 @@ impl Plaivo {
             cx,
             move |c| -> R<(Item, Vec<Item>)> {
                 let it = srv.metadata(c, &key)?;
-                let seasons = if it.kind == "show" { srv.children(c, &key)? } else { Vec::new() };
+                let seasons = if it.kind == "show" {
+                    srv.children(c, &key)?
+                } else {
+                    Vec::new()
+                };
                 Ok((it, seasons))
             },
             move |this, r, cx| match r {
-                Ok((it, seasons)) if this.detail_id == (server.clone(), it.rating_key.clone()) => this.apply_detail(&server, it, seasons, cx),
+                Ok((it, seasons)) if this.detail_id == (server.clone(), it.rating_key.clone()) => {
+                    this.apply_detail(&server, it, seasons, cx)
+                }
                 Ok(_) => {}
                 Err(e) => this.toast(format!("Could not load details: {e}"), cx),
             },
@@ -1716,17 +2192,51 @@ impl Plaivo {
         let extras = it
             .extras()
             .iter()
-            .map(|x| Card { resume: true, subtitle: x.duration.map(plex::fmt_duration).unwrap_or_default().into(), ..card_for(x, true, server) })
+            .map(|x| Card {
+                resume: true,
+                subtitle: x
+                    .duration
+                    .map(plex::fmt_duration)
+                    .unwrap_or_default()
+                    .into(),
+                ..card_for(x, true, server)
+            })
             .collect();
-        let watchlisted = self.detail.as_ref().filter(|d| d.item.rating_key == it.rating_key).and_then(|d| d.watchlisted);
-        let related = self.detail.as_mut().filter(|d| d.item.rating_key == it.rating_key).map(|d| std::mem::take(&mut d.related)).unwrap_or_default();
+        let watchlisted = self
+            .detail
+            .as_ref()
+            .filter(|d| d.item.rating_key == it.rating_key)
+            .and_then(|d| d.watchlisted);
+        let related = self
+            .detail
+            .as_mut()
+            .filter(|d| d.item.rating_key == it.rating_key)
+            .map(|d| std::mem::take(&mut d.related))
+            .unwrap_or_default();
         let fresh = related.is_empty();
         self.detail = Some(DetailView {
             logo: thumb(server, it.logo()),
-            ratings: it.rating_labels().into_iter().map(|(s, v)| (s, v.into())).collect(),
+            ratings: it
+                .rating_labels()
+                .into_iter()
+                .map(|(s, v)| (s, v.into()))
+                .collect(),
             media_line: it.media_line(0).into(),
-            info: summary.info.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
-            cast: it.role.iter().take(40).map(|p| CastMember { name: p.tag.clone().into(), role: p.role.clone().into(), thumb: thumb(server, &p.thumb) }).collect(),
+            info: summary
+                .info
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            cast: it
+                .role
+                .iter()
+                .take(40)
+                .map(|p| CastMember {
+                    name: p.tag.clone().into(),
+                    role: p.role.clone().into(),
+                    thumb: thumb(server, &p.thumb),
+                })
+                .collect(),
             extras,
             related,
             watchlisted,
@@ -1734,7 +2244,12 @@ impl Plaivo {
             eyebrow: summary.eyebrow.into(),
             title: it.title.clone().into(),
             chips: summary.chips.into_iter().map(Into::into).collect(),
-            genres: it.genre.iter().take(4).map(|t| t.tag.clone().into()).collect(),
+            genres: it
+                .genre
+                .iter()
+                .take(4)
+                .map(|t| t.tag.clone().into())
+                .collect(),
             summary: it.summary.clone().into(),
             play_label: summary.play_label.into(),
             play_key: summary.play_key.into(),
@@ -1756,27 +2271,38 @@ impl Plaivo {
     }
 
     pub fn select_season(&mut self, key: String, cx: &mut Context<Self>) {
-        let Some(srv) = self.server(&self.detail_id.0) else { return };
+        let Some(srv) = self.server(&self.detail_id.0) else {
+            return;
+        };
         self.season = Some(key.clone());
         self.seasons = self
             .season_items
             .iter()
-            .map(|x| Choice { id: x.rating_key.clone().into(), label: x.title.clone().into(), selected: x.rating_key == key, ..Default::default() })
+            .map(|x| Choice {
+                id: x.rating_key.clone().into(),
+                label: x.title.clone().into(),
+                selected: x.rating_key == key,
+                ..Default::default()
+            })
             .collect();
         let server = srv.id.clone();
         let k = key.clone();
-        self.load(cx, move |c| srv.children(c, &k), move |this, r, cx| {
-            if this.season.as_deref() != Some(key.as_str()) || this.detail_id.0 != server {
-                return;
-            }
-            match r {
-                Ok(eps) => {
-                    this.episodes = eps.iter().map(|e| episode_card(e, &server)).collect();
-                    this.episode_items = eps;
+        self.load(
+            cx,
+            move |c| srv.children(c, &k),
+            move |this, r, cx| {
+                if this.season.as_deref() != Some(key.as_str()) || this.detail_id.0 != server {
+                    return;
                 }
-                Err(e) => this.toast(format!("Could not load episodes: {e}"), cx),
-            }
-        });
+                match r {
+                    Ok(eps) => {
+                        this.episodes = eps.iter().map(|e| episode_card(e, &server)).collect();
+                        this.episode_items = eps;
+                    }
+                    Err(e) => this.toast(format!("Could not load episodes: {e}"), cx),
+                }
+            },
+        );
         cx.notify();
     }
 
@@ -1794,20 +2320,29 @@ impl Plaivo {
 
     fn open_owned_copy(&mut self, it: &Item, cx: &mut Context<Self>) {
         let home = self.home_server().map(|h| h.id).unwrap_or_default();
-        let mut servers: Vec<Server> = self.servers.iter().filter(|s| !plex::is_down(&s.id)).cloned().collect();
+        let mut servers: Vec<Server> = self
+            .servers
+            .iter()
+            .filter(|s| !plex::is_down(&s.id))
+            .cloned()
+            .collect();
         servers.sort_by_key(|s| s.id != home);
         let (client, key, it) = (self.client.clone(), it.rating_key.clone(), it.clone());
-        Self::bg(cx, move || plaivo_core::watch_together::find_owned(&it, &servers, &client), move |this, found, cx| {
-            let Some((server, local)) = found else { return };
-            if this.page != Page::Detail || this.detail_id != (DISCOVER_ID.to_owned(), key) {
-                return;
-            }
-            let nav = Nav::Detail(server, local.rating_key, None);
-            if let Some(last) = this.nav.last_mut() {
-                *last = nav.clone();
-            }
-            this.navigate(nav, false, cx);
-        });
+        Self::bg(
+            cx,
+            move || plaivo_core::watch_together::find_owned(&it, &servers, &client),
+            move |this, found, cx| {
+                let Some((server, local)) = found else { return };
+                if this.page != Page::Detail || this.detail_id != (DISCOVER_ID.to_owned(), key) {
+                    return;
+                }
+                let nav = Nav::Detail(server, local.rating_key, None);
+                if let Some(last) = this.nav.last_mut() {
+                    *last = nav.clone();
+                }
+                this.navigate(nav, false, cx);
+            },
+        );
     }
 
     fn load_related(&mut self, server: &str, it: &Item, cx: &mut Context<Self>) {
@@ -1815,16 +2350,45 @@ impl Plaivo {
         if self.owned_check.take_if(|k| *k == it.rating_key).is_some() {
             self.open_owned_copy(it, cx);
         }
-        let Some(srv) = self.server(server).filter(|_| server != DISCOVER_ID && matches!(it.kind.as_str(), "movie" | "show")) else { return };
+        let Some(srv) = self
+            .server(server)
+            .filter(|_| server != DISCOVER_ID && matches!(it.kind.as_str(), "movie" | "show"))
+        else {
+            return;
+        };
         let (server, key) = (server.to_owned(), it.rating_key.clone());
         let k = key.clone();
-        self.load(cx, move |c| srv.related(c, &k), move |this, r, _| {
-            let Some(d) = this.detail.as_mut().filter(|d| d.item.rating_key == key && *d.server == server) else { return };
-            match r {
-                Ok(hubs) => d.related = hubs.into_iter().take(3).map(|h| (h.title.into(), h.metadata.iter().map(|it| card_for(it, false, &server)).collect())).collect(),
-                Err(e) => log::debug!("related for {key}: {e}"),
-            }
-        });
+        self.load(
+            cx,
+            move |c| srv.related(c, &k),
+            move |this, r, _| {
+                let Some(d) = this
+                    .detail
+                    .as_mut()
+                    .filter(|d| d.item.rating_key == key && *d.server == server)
+                else {
+                    return;
+                };
+                match r {
+                    Ok(hubs) => {
+                        d.related = hubs
+                            .into_iter()
+                            .take(3)
+                            .map(|h| {
+                                (
+                                    h.title.into(),
+                                    h.metadata
+                                        .iter()
+                                        .map(|it| card_for(it, false, &server))
+                                        .collect(),
+                                )
+                            })
+                            .collect()
+                    }
+                    Err(e) => log::debug!("related for {key}: {e}"),
+                }
+            },
+        );
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -1840,16 +2404,29 @@ mod tests {
     use super::*;
 
     fn item(key: &str, kind: &str, title: &str, guid: &str) -> Item {
-        Item { rating_key: key.into(), kind: kind.into(), title: title.into(), guid: guid.into(), ..Default::default() }
+        Item {
+            rating_key: key.into(),
+            kind: kind.into(),
+            title: title.into(),
+            guid: guid.into(),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn title_matches_rank_above_incidental_hits() {
         let local = vec![(
             "home".to_owned(),
-            vec![(item("1", "movie", "Sherlock Gnomes", "g1"), 0.99), (item("2", "show", "Dexter's Laboratory", "g2"), 0.5), (item("3", "show", "Dexter", "g3"), 0.4)],
+            vec![
+                (item("1", "movie", "Sherlock Gnomes", "g1"), 0.99),
+                (item("2", "show", "Dexter's Laboratory", "g2"), 0.5),
+                (item("3", "show", "Dexter", "g3"), 0.4),
+            ],
         )];
-        let keys: Vec<_> = rank_search("dexter", "home", local, vec![]).into_iter().map(|(_, i)| i.rating_key).collect();
+        let keys: Vec<_> = rank_search("dexter", "home", local, vec![])
+            .into_iter()
+            .map(|(_, i)| i.rating_key)
+            .collect();
         assert_eq!(keys, ["3", "2", "1"]);
     }
 
@@ -1858,10 +2435,23 @@ mod tests {
         let mut ep = item("10", "episode", "Pilot", "");
         ep.grandparent_rating_key = "2".into();
         ep.grandparent_title = "Dexter's Laboratory".into();
-        let local = vec![("home".to_owned(), vec![(item("2", "show", "Dexter's Laboratory", "g2"), 0.5), (ep.clone(), 0.4), (ep, 0.3)])];
-        let discover = vec![item("x", "show", "Dexter's Laboratory", "g2"), item("y", "show", "Dexter: New Blood", "g9")];
+        let local = vec![(
+            "home".to_owned(),
+            vec![
+                (item("2", "show", "Dexter's Laboratory", "g2"), 0.5),
+                (ep.clone(), 0.4),
+                (ep, 0.3),
+            ],
+        )];
+        let discover = vec![
+            item("x", "show", "Dexter's Laboratory", "g2"),
+            item("y", "show", "Dexter: New Blood", "g9"),
+        ];
         let out = rank_search("dexter", "home", local, discover);
-        let keys: Vec<_> = out.iter().map(|(s, i)| format!("{s}/{}", i.rating_key)).collect();
+        let keys: Vec<_> = out
+            .iter()
+            .map(|(s, i)| format!("{s}/{}", i.rating_key))
+            .collect();
         assert_eq!(keys, ["home/2", "discover/y"]);
     }
 
@@ -1892,8 +2482,14 @@ mod tests {
             }),
             Some(3)
         );
-        assert_eq!(poll_until(&attempt, 2, Duration::ZERO, later(), || Some(1)), None);
-        assert_eq!(poll_until(&attempt, 1, Duration::ZERO, Instant::now(), || Some(1)), None);
+        assert_eq!(
+            poll_until(&attempt, 2, Duration::ZERO, later(), || Some(1)),
+            None
+        );
+        assert_eq!(
+            poll_until(&attempt, 1, Duration::ZERO, Instant::now(), || Some(1)),
+            None
+        );
     }
 
     #[test]

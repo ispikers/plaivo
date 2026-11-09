@@ -26,12 +26,22 @@ pub struct Clock {
 
 impl Clock {
     pub fn new(opened_at: i64) -> Self {
-        Self { opened_at, next_id: 1, sent: Vec::new(), window: VecDeque::with_capacity(WINDOW + 1) }
+        Self {
+            opened_at,
+            next_id: 1,
+            sent: Vec::new(),
+            window: VecDeque::with_capacity(WINDOW + 1),
+        }
     }
 
     fn ping_at(&self, id: u64) -> i64 {
         let n = id as i64;
-        self.opened_at + if n <= 3 { (n - 1) * 500 } else { (n - 3) * 5000 }
+        self.opened_at
+            + if n <= 3 {
+                (n - 1) * 500
+            } else {
+                (n - 3) * 5000
+            }
     }
 
     pub fn next_ping_at(&self) -> i64 {
@@ -57,14 +67,21 @@ impl Clock {
     }
 
     pub fn on_pong(&mut self, id: u64, server_time: i64, now: i64) -> Pong {
-        let Some(i) = self.sent.iter().position(|&(sid, _)| sid == id) else { return Pong::Ignored };
+        let Some(i) = self.sent.iter().position(|&(sid, _)| sid == id) else {
+            return Pong::Ignored;
+        };
         let (_, sent_at) = self.sent.swap_remove(i);
         let rtt = now - sent_at;
         if !(0..=MAX_RTT_MS).contains(&rtt) {
             return Pong::Ignored;
         }
-        let sample = Sample { offset_ms: server_time - (sent_at + rtt / 2), rtt_ms: rtt };
-        let stepped = self.best().is_some_and(|b| (sample.offset_ms - b.offset_ms).abs() > (rtt + b.rtt_ms) / 2 + 100);
+        let sample = Sample {
+            offset_ms: server_time - (sent_at + rtt / 2),
+            rtt_ms: rtt,
+        };
+        let stepped = self
+            .best()
+            .is_some_and(|b| (sample.offset_ms - b.offset_ms).abs() > (rtt + b.rtt_ms) / 2 + 100);
         if stepped {
             self.window.clear();
         }
@@ -72,11 +89,18 @@ impl Clock {
         if self.window.len() > WINDOW {
             self.window.pop_front();
         }
-        if stepped { Pong::Stepped } else { Pong::Accepted }
+        if stepped {
+            Pong::Stepped
+        } else {
+            Pong::Accepted
+        }
     }
 
     pub fn best(&self) -> Option<Sample> {
-        self.window.iter().copied().reduce(|best, s| if s.rtt_ms < best.rtt_ms { s } else { best })
+        self.window
+            .iter()
+            .copied()
+            .reduce(|best, s| if s.rtt_ms < best.rtt_ms { s } else { best })
     }
 
     pub fn relay_now(&self, now: i64) -> Option<i64> {
@@ -103,7 +127,11 @@ mod tests {
                     clock.sent(id.as_u64().unwrap(), at);
                     continue;
                 }
-                let result = match clock.on_pong(e["pong"].as_u64().unwrap(), e["serverTime"].as_i64().unwrap(), at) {
+                let result = match clock.on_pong(
+                    e["pong"].as_u64().unwrap(),
+                    e["serverTime"].as_i64().unwrap(),
+                    at,
+                ) {
                     Pong::Accepted => "accepted",
                     Pong::Stepped => "stepped",
                     Pong::Ignored => "ignored",
@@ -111,7 +139,12 @@ mod tests {
                 let best = clock.best();
                 got.push(json!({"result": result, "offsetMs": best.map(|b| b.offset_ms), "rttMs": best.map(|b| b.rtt_ms)}));
             }
-            assert_eq!(Value::from(got), case["expect"]["pongs"], "{}", case["name"]);
+            assert_eq!(
+                Value::from(got),
+                case["expect"]["pongs"],
+                "{}",
+                case["name"]
+            );
         }
     }
 
@@ -124,7 +157,18 @@ mod tests {
                 sent.push((id, now));
             }
         }
-        assert_eq!(sent, [(1, 1000), (2, 1500), (3, 2000), (4, 6000), (5, 11000), (6, 16000), (7, 21000)]);
+        assert_eq!(
+            sent,
+            [
+                (1, 1000),
+                (2, 1500),
+                (3, 2000),
+                (4, 6000),
+                (5, 11000),
+                (6, 16000),
+                (7, 21000)
+            ]
+        );
     }
 
     #[test]
@@ -145,7 +189,13 @@ mod tests {
             clock.sent(id, at);
             clock.on_pong(id, at + 10_000 + 30, at + 60);
         }
-        assert_eq!(clock.best(), Some(Sample { offset_ms: 10_000, rtt_ms: 60 }));
+        assert_eq!(
+            clock.best(),
+            Some(Sample {
+                offset_ms: 10_000,
+                rtt_ms: 60
+            })
+        );
         assert_eq!(clock.relay_now(5), Some(10_005));
     }
 }

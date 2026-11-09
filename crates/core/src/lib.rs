@@ -55,7 +55,10 @@ impl Account {
     }
 
     pub fn server(&self, id: &str) -> Option<&Server> {
-        self.servers.iter().chain(&self.jellyfin).find(|s| s.id == id)
+        self.servers
+            .iter()
+            .chain(&self.jellyfin)
+            .find(|s| s.id == id)
     }
 
     pub fn add_jellyfin(&mut self, srv: Server) {
@@ -86,7 +89,12 @@ pub fn sign_out(account: &mut Account, settings: &mut Settings) {
 #[cfg(not(target_os = "android"))]
 pub(crate) fn http() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
-    ureq::Agent::config_builder().tls_config(TlsConfig::builder().provider(TlsProvider::Rustls).root_certs(RootCerts::PlatformVerifier).build())
+    ureq::Agent::config_builder().tls_config(
+        TlsConfig::builder()
+            .provider(TlsProvider::Rustls)
+            .root_certs(RootCerts::PlatformVerifier)
+            .build(),
+    )
 }
 
 #[cfg(target_os = "android")]
@@ -95,11 +103,17 @@ pub(crate) fn http() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope>
 }
 
 pub fn first<'a>(options: &[&'a str]) -> &'a str {
-    options.iter().copied().find(|s| !s.is_empty()).unwrap_or("")
+    options
+        .iter()
+        .copied()
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
 }
 
 pub fn redact(line: &str) -> String {
-    ["X-Plex-Token", "ApiKey", "Token"].iter().fold(line.to_owned(), |l, key| redact_key(&l, key))
+    ["X-Plex-Token", "ApiKey", "Token"]
+        .iter()
+        .fold(line.to_owned(), |l, key| redact_key(&l, key))
 }
 
 fn redact_key(line: &str, key: &str) -> String {
@@ -117,7 +131,9 @@ fn redact_key(line: &str, key: &str) -> String {
             Some(v) => ("\"", v),
             None => ("", value),
         };
-        let end = value.find(|c: char| c == '&' || c == '"' || c == '\'' || c == ',' || c.is_whitespace()).unwrap_or(value.len());
+        let end = value
+            .find(|c: char| c == '&' || c == '"' || c == '\'' || c == ',' || c.is_whitespace())
+            .unwrap_or(value.len());
         out.push_str(&rest[..i + key.len()]);
         out.push(sep);
         out.push_str(quote);
@@ -129,7 +145,12 @@ fn redact_key(line: &str, key: &str) -> String {
 }
 
 pub fn join(parts: &[String]) -> String {
-    parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join(" · ")
+    parts
+        .iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 #[cfg(test)]
@@ -142,8 +163,19 @@ mod tests {
         let old = r#"{"client_id":"abc","token":"t","servers":[{"name":"Home","id":"p1","uri":"https://1-2-3-4.x.plex.direct:32400","token":"pt","owned":true}]}"#;
         let mut a: Account = serde_json::from_str(old).unwrap();
         assert!(a.jellyfin.is_empty());
-        assert_eq!((a.servers[0].backend, a.servers[0].user_id.as_str()), (Backend::Plex, ""));
-        a.jellyfin.push(Server { name: "nas".into(), id: "j1".into(), uri: "http://nas:8096".into(), token: "jt".into(), backend: Backend::Jellyfin, user_id: "u1".into(), ..Default::default() });
+        assert_eq!(
+            (a.servers[0].backend, a.servers[0].user_id.as_str()),
+            (Backend::Plex, "")
+        );
+        a.jellyfin.push(Server {
+            name: "nas".into(),
+            id: "j1".into(),
+            uri: "http://nas:8096".into(),
+            token: "jt".into(),
+            backend: Backend::Jellyfin,
+            user_id: "u1".into(),
+            ..Default::default()
+        });
         let back: Account = serde_json::from_slice(&serde_json::to_vec(&a).unwrap()).unwrap();
         assert_eq!(back.servers, a.servers);
         assert_eq!(back.jellyfin, a.jellyfin);
@@ -152,23 +184,52 @@ mod tests {
 
     #[test]
     fn tokens_never_reach_the_log() {
-        assert_eq!(redact("GET http://h/a?X-Plex-Token=abc123&b=1 ok"), "GET http://h/a?X-Plex-Token=<redacted>&b=1 ok");
-        assert_eq!(redact("hdr X-Plex-Token: s3cr3t done"), "hdr X-Plex-Token:<redacted> done");
-        assert_eq!(redact("Playing: http://nas:8096/Videos/i/stream?Static=true&ApiKey=0b5d8e2f done"), "Playing: http://nas:8096/Videos/i/stream?Static=true&ApiKey=<redacted> done");
-        assert_eq!(redact(r#"Authorization: MediaBrowser Client="Plaivo", Token="0b5d8e2f", x"#), r#"Authorization: MediaBrowser Client="Plaivo", Token="<redacted>", x"#);
+        assert_eq!(
+            redact("GET http://h/a?X-Plex-Token=abc123&b=1 ok"),
+            "GET http://h/a?X-Plex-Token=<redacted>&b=1 ok"
+        );
+        assert_eq!(
+            redact("hdr X-Plex-Token: s3cr3t done"),
+            "hdr X-Plex-Token:<redacted> done"
+        );
+        assert_eq!(
+            redact("Playing: http://nas:8096/Videos/i/stream?Static=true&ApiKey=0b5d8e2f done"),
+            "Playing: http://nas:8096/Videos/i/stream?Static=true&ApiKey=<redacted> done"
+        );
+        assert_eq!(
+            redact(r#"Authorization: MediaBrowser Client="Plaivo", Token="0b5d8e2f", x"#),
+            r#"Authorization: MediaBrowser Client="Plaivo", Token="<redacted>", x"#
+        );
         assert_eq!(redact("no secrets here"), "no secrets here");
     }
 
     #[test]
     fn jellyfin_servers_merge_after_plex_and_re_add_replaces() {
-        let jf = |id: &str, token: &str| Server { id: id.into(), token: token.into(), backend: Backend::Jellyfin, ..Default::default() };
-        let mut a = Account { servers: vec![Server { id: "p1".into(), ..Default::default() }], ..Default::default() };
+        let jf = |id: &str, token: &str| Server {
+            id: id.into(),
+            token: token.into(),
+            backend: Backend::Jellyfin,
+            ..Default::default()
+        };
+        let mut a = Account {
+            servers: vec![Server {
+                id: "p1".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
         assert!(!a.has_servers());
         a.add_jellyfin(jf("j1", "old"));
         a.add_jellyfin(jf("j2", "x"));
         a.add_jellyfin(jf("j1", "new"));
         assert!(a.has_servers());
-        assert_eq!(a.all_servers().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["p1", "j1", "j2"]);
+        assert_eq!(
+            a.all_servers()
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["p1", "j1", "j2"]
+        );
         assert_eq!(a.server("j1").map(|s| s.token.as_str()), Some("new"));
         assert_eq!(a.server("p1").map(|s| s.backend), Some(Backend::Plex));
         assert!(a.server("nope").is_none());

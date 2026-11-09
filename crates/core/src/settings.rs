@@ -9,7 +9,12 @@ const RECENT_SEARCHES: usize = 8;
 const RECENT_ROOMS: usize = 5;
 pub const COUNTDOWN_MAX: u32 = 30;
 pub const DENSITY_MAX: u32 = 5;
-pub const SUBTITLE_COLORS: [(&str, &str); 4] = [("FFFFFF", "White"), ("FFFF00", "Yellow"), ("00FFFF", "Cyan"), ("00FF00", "Green")];
+pub const SUBTITLE_COLORS: [(&str, &str); 4] = [
+    ("FFFFFF", "White"),
+    ("FFFF00", "Yellow"),
+    ("00FFFF", "Cyan"),
+    ("00FF00", "Green"),
+];
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
@@ -176,7 +181,11 @@ pub enum GridSpacing {
 }
 
 impl GridSpacing {
-    pub const ALL: [GridSpacing; 3] = [GridSpacing::Tight, GridSpacing::Normal, GridSpacing::Spacious];
+    pub const ALL: [GridSpacing; 3] = [
+        GridSpacing::Tight,
+        GridSpacing::Normal,
+        GridSpacing::Spacious,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -197,7 +206,11 @@ pub enum EpisodePoster {
 }
 
 impl EpisodePoster {
-    pub const ALL: [EpisodePoster; 3] = [EpisodePoster::Series, EpisodePoster::Season, EpisodePoster::Thumbnail];
+    pub const ALL: [EpisodePoster; 3] = [
+        EpisodePoster::Series,
+        EpisodePoster::Season,
+        EpisodePoster::Thumbnail,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -217,7 +230,11 @@ pub struct CardPrefs {
 
 impl Default for CardPrefs {
     fn default() -> Self {
-        Self { poster: EpisodePoster::Thumbnail, numbers: true, spoilers: false }
+        Self {
+            poster: EpisodePoster::Thumbnail,
+            numbers: true,
+            spoilers: false,
+        }
     }
 }
 
@@ -227,12 +244,20 @@ impl CardPrefs {
     }
 
     pub fn art<'a>(&self, it: &'a Item, wide: bool) -> &'a str {
-        if it.kind == "episode" && !wide && self.poster == EpisodePoster::Season { first(&[&it.parent_thumb, &it.grandparent_thumb, &it.thumb]) } else { it.card_art(wide) }
+        if it.kind == "episode" && !wide && self.poster == EpisodePoster::Season {
+            first(&[&it.parent_thumb, &it.grandparent_thumb, &it.thumb])
+        } else {
+            it.card_art(wide)
+        }
     }
 
     pub fn text(&self, it: &Item) -> (String, String) {
         let (title, subtitle) = it.card_text();
-        if it.kind == "episode" && !self.numbers { (title, it.title.clone()) } else { (title, subtitle) }
+        if it.kind == "episode" && !self.numbers {
+            (title, it.title.clone())
+        } else {
+            (title, subtitle)
+        }
     }
 
     pub fn spoiler(&self, it: &Item) -> bool {
@@ -326,9 +351,18 @@ impl Settings {
         }
     }
 
-    pub fn up_next_in(&self, time: f64, duration: f64, credits: Option<f64>, anchor: &mut Option<f64>) -> Option<f64> {
+    pub fn up_next_in(
+        &self,
+        time: f64,
+        duration: f64,
+        credits: Option<f64>,
+        anchor: &mut Option<f64>,
+    ) -> Option<f64> {
         let countdown = self.autoplay_countdown.min(COUNTDOWN_MAX) as f64;
-        let start = credits.filter(|c| *c > 0.0).map_or(duration, |c| c.min(duration)).min(duration - countdown);
+        let start = credits
+            .filter(|c| *c > 0.0)
+            .map_or(duration, |c| c.min(duration))
+            .min(duration - countdown);
         if !self.autoplay_next || duration <= countdown || time < start {
             *anchor = None;
             return None;
@@ -338,7 +372,11 @@ impl Settings {
     }
 
     pub fn languages(&self) -> LanguagePrefs {
-        LanguagePrefs { audio: self.audio_language.clone(), subtitles: self.subtitle_language.clone(), mode: self.subtitle_mode }
+        LanguagePrefs {
+            audio: self.audio_language.clone(),
+            subtitles: self.subtitle_language.clone(),
+            mode: self.subtitle_mode,
+        }
     }
 
     pub fn set_languages(&mut self, p: &LanguagePrefs) {
@@ -348,7 +386,11 @@ impl Settings {
     }
 
     pub fn card_prefs(&self) -> CardPrefs {
-        CardPrefs { poster: self.episode_poster, numbers: self.episode_numbers, spoilers: self.hide_spoilers }
+        CardPrefs {
+            poster: self.episode_poster,
+            numbers: self.episode_numbers,
+            spoilers: self.hide_spoilers,
+        }
     }
 
     pub fn card_pad(&self) -> f32 {
@@ -364,7 +406,10 @@ impl Settings {
     }
 
     pub fn library_rank(&self, key: &str) -> usize {
-        self.library_order.iter().position(|k| k == key).unwrap_or(usize::MAX)
+        self.library_order
+            .iter()
+            .position(|k| k == key)
+            .unwrap_or(usize::MAX)
     }
 
     pub fn library_hidden(&self, key: &str) -> bool {
@@ -379,21 +424,39 @@ impl Settings {
     }
 
     pub fn move_library(&mut self, arranged: &[String], key: &str, step: isize) {
-        let Some(i) = arranged.iter().position(|k| k == key) else { return };
+        let Some(i) = arranged.iter().position(|k| k == key) else {
+            return;
+        };
         let server = library_server(key);
         let j = if step < 0 {
-            arranged[..i].iter().rposition(|k| library_server(k) == server)
+            arranged[..i]
+                .iter()
+                .rposition(|k| library_server(k) == server)
         } else {
-            arranged[i + 1..].iter().position(|k| library_server(k) == server).map(|j| i + 1 + j)
+            arranged[i + 1..]
+                .iter()
+                .position(|k| library_server(k) == server)
+                .map(|j| i + 1 + j)
         };
         let Some(j) = j else { return };
         let mut order = arranged.to_vec();
         order.swap(i, j);
-        order.extend(self.library_order.iter().filter(|k| !arranged.contains(k)).cloned());
+        order.extend(
+            self.library_order
+                .iter()
+                .filter(|k| !arranged.contains(k))
+                .cloned(),
+        );
         self.library_order = order;
     }
 
-    pub fn migrate_android(&mut self, sidebar_compact: Option<bool>, home_server: Option<String>, quality: Option<i32>, scale: Option<&str>) {
+    pub fn migrate_android(
+        &mut self,
+        sidebar_compact: Option<bool>,
+        home_server: Option<String>,
+        quality: Option<i32>,
+        scale: Option<&str>,
+    ) {
         if let Some(v) = sidebar_compact {
             self.sidebar_compact = v;
         }
@@ -403,7 +466,9 @@ impl Settings {
         if let Some(v) = quality.and_then(|q| u32::try_from(q).ok()) {
             self.quality = v;
         }
-        if let Some(v) = scale.and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_ascii_lowercase())).ok()) {
+        if let Some(v) = scale.and_then(|s| {
+            serde_json::from_value(serde_json::Value::String(s.to_ascii_lowercase())).ok()
+        }) {
             self.scale = v;
         }
     }
@@ -415,18 +480,41 @@ mod tests {
 
     #[test]
     fn card_prefs_shape_episode_cards() {
-        let ep = Item { kind: "episode".into(), title: "Pilot".into(), grandparent_title: "Show".into(), parent_index: Some(1), index: Some(2), thumb: "/ep".into(), parent_thumb: "/season".into(), grandparent_thumb: "/series".into(), ..Default::default() };
-        let hub = Hub { kind: "episode".into(), ..Default::default() };
+        let ep = Item {
+            kind: "episode".into(),
+            title: "Pilot".into(),
+            grandparent_title: "Show".into(),
+            parent_index: Some(1),
+            index: Some(2),
+            thumb: "/ep".into(),
+            parent_thumb: "/season".into(),
+            grandparent_thumb: "/series".into(),
+            ..Default::default()
+        };
+        let hub = Hub {
+            kind: "episode".into(),
+            ..Default::default()
+        };
         let thumbs = CardPrefs::default();
         assert!(thumbs.wide_hub(&hub));
-        assert_eq!((thumbs.art(&ep, true), thumbs.art(&ep, false)), ("/ep", "/series"));
+        assert_eq!(
+            (thumbs.art(&ep, true), thumbs.art(&ep, false)),
+            ("/ep", "/series")
+        );
         assert_eq!(thumbs.text(&ep).1, "S1 · E2 · Pilot");
-        let season = CardPrefs { poster: EpisodePoster::Season, numbers: false, spoilers: true };
+        let season = CardPrefs {
+            poster: EpisodePoster::Season,
+            numbers: false,
+            spoilers: true,
+        };
         assert!(!season.wide_hub(&hub));
         assert_eq!(season.art(&ep, false), "/season");
         assert_eq!(season.text(&ep), ("Show".to_owned(), "Pilot".to_owned()));
         assert!(season.blur(&ep, "/ep") && !season.blur(&ep, "/season"));
-        assert!(!season.spoiler(&Item { view_count: Some(1), ..ep.clone() }));
+        assert!(!season.spoiler(&Item {
+            view_count: Some(1),
+            ..ep.clone()
+        }));
         assert!(!thumbs.blur(&ep, "/ep"));
     }
 
@@ -445,7 +533,8 @@ mod tests {
 
     #[test]
     fn unknown_and_missing_fields_fall_back_to_defaults() {
-        let s: Settings = serde_json::from_str(r#"{"sidebar_compact":true,"future_option":1}"#).unwrap();
+        let s: Settings =
+            serde_json::from_str(r#"{"sidebar_compact":true,"future_option":1}"#).unwrap();
         assert!(s.sidebar_compact && s.home_server.is_empty() && s.scale == Scale::Fit);
         let s: Settings = serde_json::from_str(r#"{"scale":"stretch"}"#).unwrap();
         assert_eq!(s.scale.next(), Scale::Fit);
@@ -453,42 +542,91 @@ mod tests {
 
     #[test]
     fn android_prefs_migrate_once_into_settings() {
-        let mut s = Settings { recent_searches: vec!["x".into()], ..Default::default() };
+        let mut s = Settings {
+            recent_searches: vec!["x".into()],
+            ..Default::default()
+        };
         s.migrate_android(Some(true), Some("srv".into()), Some(8000), Some("Fill"));
         assert!(s.sidebar_compact);
-        assert_eq!((s.home_server.as_str(), s.quality, s.scale), ("srv", 8000, Scale::Fill));
+        assert_eq!(
+            (s.home_server.as_str(), s.quality, s.scale),
+            ("srv", 8000, Scale::Fill)
+        );
         assert_eq!(s.recent_searches, ["x"]);
 
-        let mut s = Settings { home_server: "kept".into(), quality: 4000, ..Default::default() };
+        let mut s = Settings {
+            home_server: "kept".into(),
+            quality: 4000,
+            ..Default::default()
+        };
         s.migrate_android(None, Some(String::new()), Some(-1), Some("Zoom"));
-        assert_eq!((s.home_server.as_str(), s.quality, s.scale, s.sidebar_compact), ("kept", 4000, Scale::Fit, false));
+        assert_eq!(
+            (
+                s.home_server.as_str(),
+                s.quality,
+                s.scale,
+                s.sidebar_compact
+            ),
+            ("kept", 4000, Scale::Fit, false)
+        );
     }
 
     #[test]
     fn new_fields_default_when_missing() {
         let s: Settings = serde_json::from_str(r#"{"quality":8000,"skip_intro":"auto"}"#).unwrap();
         assert!(s.autoplay_next);
-        assert_eq!((s.autoplay_countdown, s.seek_small, s.seek_large, s.density), (5, 10, 30, 3));
-        assert_eq!((s.skip_intro, s.skip_credits), (SkipMode::Auto, SkipMode::Button));
-        assert_eq!((s.subtitle_mode, s.subtitle_size, s.subtitle_color.as_str(), s.subtitle_position), (SubtitleMode::ForeignAudio, 100, "FFFFFF", 100));
+        assert_eq!(
+            (s.autoplay_countdown, s.seek_small, s.seek_large, s.density),
+            (5, 10, 30, 3)
+        );
+        assert_eq!(
+            (s.skip_intro, s.skip_credits),
+            (SkipMode::Auto, SkipMode::Button)
+        );
+        assert_eq!(
+            (
+                s.subtitle_mode,
+                s.subtitle_size,
+                s.subtitle_color.as_str(),
+                s.subtitle_position
+            ),
+            (SubtitleMode::ForeignAudio, 100, "FFFFFF", 100)
+        );
         assert!(s.download_dir.is_empty() && !s.auto_remove_watched);
         assert!(s.watch_name.is_empty() && s.watch_relay.is_empty() && s.watch_rooms.is_empty());
-        let s: Settings = serde_json::from_str(r#"{"audio_language":"jpn","subtitle_mode":"always"}"#).unwrap();
-        assert_eq!(s.languages(), LanguagePrefs { audio: "jpn".into(), subtitles: String::new(), mode: SubtitleMode::Always });
+        let s: Settings =
+            serde_json::from_str(r#"{"audio_language":"jpn","subtitle_mode":"always"}"#).unwrap();
+        assert_eq!(
+            s.languages(),
+            LanguagePrefs {
+                audio: "jpn".into(),
+                subtitles: String::new(),
+                mode: SubtitleMode::Always
+            }
+        );
     }
 
     #[test]
     fn recent_rooms_move_to_front_and_cap() {
         let mut s = Settings::default();
-        for c in ["AAAAAA", "BBBBBB", "AAAAAA", "CCCCCC", "DDDDDD", "EEEEEE", "FFFFFF"] {
+        for c in [
+            "AAAAAA", "BBBBBB", "AAAAAA", "CCCCCC", "DDDDDD", "EEEEEE", "FFFFFF",
+        ] {
             s.remember_room(c);
         }
-        assert_eq!(s.watch_rooms, ["FFFFFF", "EEEEEE", "DDDDDD", "CCCCCC", "AAAAAA"]);
+        assert_eq!(
+            s.watch_rooms,
+            ["FFFFFF", "EEEEEE", "DDDDDD", "CCCCCC", "AAAAAA"]
+        );
     }
 
     #[test]
     fn skip_mode_follows_marker_kind() {
-        let s = Settings { skip_intro: SkipMode::Auto, skip_credits: SkipMode::Off, ..Default::default() };
+        let s = Settings {
+            skip_intro: SkipMode::Auto,
+            skip_credits: SkipMode::Off,
+            ..Default::default()
+        };
         assert_eq!(s.skip_mode("intro"), SkipMode::Auto);
         assert_eq!(s.skip_mode("credits"), SkipMode::Off);
         assert_eq!(s.skip_mode("commercial"), SkipMode::Button);
@@ -496,28 +634,75 @@ mod tests {
 
     #[test]
     fn up_next_counts_down_from_the_first_tick_in_the_window() {
-        let s = Settings { autoplay_countdown: 10, ..Default::default() };
+        let s = Settings {
+            autoplay_countdown: 10,
+            ..Default::default()
+        };
         let run = |s: &Settings, credits: Option<f64>, times: &[f64]| {
             let mut anchor = None;
-            times.iter().map(|&t| s.up_next_in(t, 1300.0, credits, &mut anchor)).collect::<Vec<_>>()
+            times
+                .iter()
+                .map(|&t| s.up_next_in(t, 1300.0, credits, &mut anchor))
+                .collect::<Vec<_>>()
         };
-        assert_eq!(run(&s, None, &[1000.0, 1290.0, 1297.5]), [None, Some(10.0), Some(2.5)]);
+        assert_eq!(
+            run(&s, None, &[1000.0, 1290.0, 1297.5]),
+            [None, Some(10.0), Some(2.5)]
+        );
         assert_eq!(run(&s, None, &[1299.0, 1300.0]), [Some(10.0), Some(9.0)]);
-        assert_eq!(run(&s, Some(1200.0), &[1199.0, 1204.0, 1211.0, 1215.0]), [None, Some(10.0), Some(3.0), Some(-1.0)]);
-        assert_eq!(run(&s, Some(1250.0), &[1251.0, 1100.0, 1252.0]), [Some(10.0), None, Some(10.0)]);
+        assert_eq!(
+            run(&s, Some(1200.0), &[1199.0, 1204.0, 1211.0, 1215.0]),
+            [None, Some(10.0), Some(3.0), Some(-1.0)]
+        );
+        assert_eq!(
+            run(&s, Some(1250.0), &[1251.0, 1100.0, 1252.0]),
+            [Some(10.0), None, Some(10.0)]
+        );
         assert_eq!(run(&s, Some(1296.0), &[1289.0, 1290.0]), [None, Some(10.0)]);
         assert_eq!(run(&s, Some(0.0), &[1295.0]), [Some(10.0)]);
-        let zero = Settings { autoplay_countdown: 0, ..s.clone() };
-        assert_eq!(run(&zero, Some(1200.0), &[1199.0, 1200.5]), [None, Some(0.0)]);
+        let zero = Settings {
+            autoplay_countdown: 0,
+            ..s.clone()
+        };
+        assert_eq!(
+            run(&zero, Some(1200.0), &[1199.0, 1200.5]),
+            [None, Some(0.0)]
+        );
         assert_eq!(run(&zero, None, &[1299.0]), [None]);
-        assert_eq!(run(&Settings { autoplay_next: false, ..s.clone() }, None, &[1299.0]), [None]);
-        assert_eq!(run(&Settings { autoplay_countdown: 99, ..s.clone() }, None, &[1270.0]), [Some(30.0)]);
+        assert_eq!(
+            run(
+                &Settings {
+                    autoplay_next: false,
+                    ..s.clone()
+                },
+                None,
+                &[1299.0]
+            ),
+            [None]
+        );
+        assert_eq!(
+            run(
+                &Settings {
+                    autoplay_countdown: 99,
+                    ..s.clone()
+                },
+                None,
+                &[1270.0]
+            ),
+            [Some(30.0)]
+        );
         assert_eq!(s.up_next_in(5.0, 0.0, None, &mut None), None);
     }
 
     #[test]
     fn density_scales_cards_around_the_default() {
-        let at = |density| Settings { density, ..Default::default() }.card_scale();
+        let at = |density| {
+            Settings {
+                density,
+                ..Default::default()
+            }
+            .card_scale()
+        };
         assert_eq!(at(3), 1.0);
         assert!(at(1) < at(2) && at(2) < at(3) && at(3) < at(4) && at(4) < at(5));
         assert_eq!((at(0), at(9)), (at(1), at(5)));
@@ -534,13 +719,19 @@ mod tests {
         let all = keys(&["a/1", "a/2", "b/1", "a/3"]);
         assert_eq!(arranged(&s, all.clone()), all);
         s.move_library(&all, "a/3", -1);
-        assert_eq!(arranged(&s, all.clone()), keys(&["a/1", "a/3", "b/1", "a/2"]));
+        assert_eq!(
+            arranged(&s, all.clone()),
+            keys(&["a/1", "a/3", "b/1", "a/2"])
+        );
         let now = arranged(&s, all.clone());
         s.move_library(&now, "a/1", -1);
         s.move_library(&now, "b/1", 1);
         assert_eq!(arranged(&s, all.clone()), now);
         s.move_library(&now, "a/1", 1);
-        assert_eq!(arranged(&s, keys(&["a/1", "a/2", "b/1", "a/3", "c/9"])), keys(&["a/3", "a/1", "b/1", "a/2", "c/9"]));
+        assert_eq!(
+            arranged(&s, keys(&["a/1", "a/2", "b/1", "a/3", "c/9"])),
+            keys(&["a/3", "a/1", "b/1", "a/2", "c/9"])
+        );
 
         s.library_order.push("gone/1".into());
         let now = arranged(&s, all.clone());

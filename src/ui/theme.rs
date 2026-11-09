@@ -10,9 +10,24 @@ pub struct Palette {
     pub outline: u32,
 }
 
-pub const DARK: Palette = Palette { bg: 0x0E0F12, surface: 0x15171C, text: 0xEDEDED, outline: 0xFFFFFF1F };
-pub const OLED: Palette = Palette { bg: 0x000000, surface: 0x0A0A0A, text: 0xEDEDED, outline: 0xFFFFFF1F };
-pub const LIGHT: Palette = Palette { bg: 0xF7F7F8, surface: 0xFFFFFF, text: 0x111111, outline: 0x00000019 };
+pub const DARK: Palette = Palette {
+    bg: 0x0E0F12,
+    surface: 0x15171C,
+    text: 0xEDEDED,
+    outline: 0xFFFFFF1F,
+};
+pub const OLED: Palette = Palette {
+    bg: 0x000000,
+    surface: 0x0A0A0A,
+    text: 0xEDEDED,
+    outline: 0xFFFFFF1F,
+};
+pub const LIGHT: Palette = Palette {
+    bg: 0xF7F7F8,
+    surface: 0xFFFFFF,
+    text: 0x111111,
+    outline: 0x00000019,
+};
 const PALETTES: [&Palette; 3] = [&DARK, &OLED, &LIGHT];
 
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -31,7 +46,13 @@ pub fn palette_for(theme: Theme, appearance: WindowAppearance) -> &'static Palet
 
 pub fn apply(theme: Theme, appearance: WindowAppearance) {
     let p = palette_for(theme, appearance);
-    ACTIVE.store(PALETTES.iter().position(|q| std::ptr::eq(*q, p)).unwrap_or(0), Ordering::Relaxed);
+    ACTIVE.store(
+        PALETTES
+            .iter()
+            .position(|q| std::ptr::eq(*q, p))
+            .unwrap_or(0),
+        Ordering::Relaxed,
+    );
 }
 
 fn p() -> &'static Palette {

@@ -16,25 +16,101 @@ const DOWNSCALE: &str = "Anime4K_AutoDownscalePre_x2.glsl";
 pub const NVSCALER: &str = "nvscaler";
 
 pub const PRESETS: &[Preset] = &[
-    Preset { id: NVSCALER, name: "NVScaler", files: &["NVScaler.glsl"] },
-    Preset { id: "artcnn_c4f16", name: "ArtCNN C4F16", files: &["ArtCNN_C4F16.glsl"] },
-    Preset { id: "artcnn_c4f16_dn", name: "ArtCNN C4F16 Denoise", files: &["ArtCNN_C4F16_DN.glsl"] },
-    Preset { id: "artcnn_c4f16_ds", name: "ArtCNN C4F16 Denoise + Sharpen", files: &["ArtCNN_C4F16_DS.glsl"] },
-    Preset { id: "artcnn_c4f32", name: "ArtCNN C4F32", files: &["ArtCNN_C4F32.glsl"] },
-    Preset { id: "artcnn_c4f32_dn", name: "ArtCNN C4F32 Denoise", files: &["ArtCNN_C4F32_DN.glsl"] },
-    Preset { id: "artcnn_c4f32_ds", name: "ArtCNN C4F32 Denoise + Sharpen", files: &["ArtCNN_C4F32_DS.glsl"] },
-    Preset { id: "anime4k_fast_a", name: "Anime4K Fast A", files: &[CLAMP, RESTORE_M] },
-    Preset { id: "anime4k_fast_b", name: "Anime4K Fast B", files: &[CLAMP, RESTORE_M, UPSCALE_M, DOWNSCALE] },
-    Preset { id: "anime4k_fast_c", name: "Anime4K Fast C", files: &[CLAMP, UPSCALE_M, DOWNSCALE] },
-    Preset { id: "anime4k_fast_aa", name: "Anime4K Fast A+A", files: &[CLAMP, RESTORE_M, RESTORE_M] },
-    Preset { id: "anime4k_fast_bb", name: "Anime4K Fast B+B", files: &[CLAMP, RESTORE_M, RESTORE_M, UPSCALE_M, DOWNSCALE] },
-    Preset { id: "anime4k_fast_ca", name: "Anime4K Fast C+A", files: &[CLAMP, UPSCALE_M, RESTORE_M, DOWNSCALE] },
-    Preset { id: "anime4k_hq_a", name: "Anime4K HQ A", files: &[CLAMP, RESTORE_VL] },
-    Preset { id: "anime4k_hq_b", name: "Anime4K HQ B", files: &[CLAMP, RESTORE_VL, UPSCALE_VL, DOWNSCALE] },
-    Preset { id: "anime4k_hq_c", name: "Anime4K HQ C", files: &[CLAMP, UPSCALE_VL, DOWNSCALE] },
-    Preset { id: "anime4k_hq_aa", name: "Anime4K HQ A+A", files: &[CLAMP, RESTORE_VL, RESTORE_VL] },
-    Preset { id: "anime4k_hq_bb", name: "Anime4K HQ B+B", files: &[CLAMP, RESTORE_VL, RESTORE_VL, UPSCALE_VL, DOWNSCALE] },
-    Preset { id: "anime4k_hq_ca", name: "Anime4K HQ C+A", files: &[CLAMP, UPSCALE_VL, RESTORE_VL, DOWNSCALE] },
+    Preset {
+        id: NVSCALER,
+        name: "NVScaler",
+        files: &["NVScaler.glsl"],
+    },
+    Preset {
+        id: "artcnn_c4f16",
+        name: "ArtCNN C4F16",
+        files: &["ArtCNN_C4F16.glsl"],
+    },
+    Preset {
+        id: "artcnn_c4f16_dn",
+        name: "ArtCNN C4F16 Denoise",
+        files: &["ArtCNN_C4F16_DN.glsl"],
+    },
+    Preset {
+        id: "artcnn_c4f16_ds",
+        name: "ArtCNN C4F16 Denoise + Sharpen",
+        files: &["ArtCNN_C4F16_DS.glsl"],
+    },
+    Preset {
+        id: "artcnn_c4f32",
+        name: "ArtCNN C4F32",
+        files: &["ArtCNN_C4F32.glsl"],
+    },
+    Preset {
+        id: "artcnn_c4f32_dn",
+        name: "ArtCNN C4F32 Denoise",
+        files: &["ArtCNN_C4F32_DN.glsl"],
+    },
+    Preset {
+        id: "artcnn_c4f32_ds",
+        name: "ArtCNN C4F32 Denoise + Sharpen",
+        files: &["ArtCNN_C4F32_DS.glsl"],
+    },
+    Preset {
+        id: "anime4k_fast_a",
+        name: "Anime4K Fast A",
+        files: &[CLAMP, RESTORE_M],
+    },
+    Preset {
+        id: "anime4k_fast_b",
+        name: "Anime4K Fast B",
+        files: &[CLAMP, RESTORE_M, UPSCALE_M, DOWNSCALE],
+    },
+    Preset {
+        id: "anime4k_fast_c",
+        name: "Anime4K Fast C",
+        files: &[CLAMP, UPSCALE_M, DOWNSCALE],
+    },
+    Preset {
+        id: "anime4k_fast_aa",
+        name: "Anime4K Fast A+A",
+        files: &[CLAMP, RESTORE_M, RESTORE_M],
+    },
+    Preset {
+        id: "anime4k_fast_bb",
+        name: "Anime4K Fast B+B",
+        files: &[CLAMP, RESTORE_M, RESTORE_M, UPSCALE_M, DOWNSCALE],
+    },
+    Preset {
+        id: "anime4k_fast_ca",
+        name: "Anime4K Fast C+A",
+        files: &[CLAMP, UPSCALE_M, RESTORE_M, DOWNSCALE],
+    },
+    Preset {
+        id: "anime4k_hq_a",
+        name: "Anime4K HQ A",
+        files: &[CLAMP, RESTORE_VL],
+    },
+    Preset {
+        id: "anime4k_hq_b",
+        name: "Anime4K HQ B",
+        files: &[CLAMP, RESTORE_VL, UPSCALE_VL, DOWNSCALE],
+    },
+    Preset {
+        id: "anime4k_hq_c",
+        name: "Anime4K HQ C",
+        files: &[CLAMP, UPSCALE_VL, DOWNSCALE],
+    },
+    Preset {
+        id: "anime4k_hq_aa",
+        name: "Anime4K HQ A+A",
+        files: &[CLAMP, RESTORE_VL, RESTORE_VL],
+    },
+    Preset {
+        id: "anime4k_hq_bb",
+        name: "Anime4K HQ B+B",
+        files: &[CLAMP, RESTORE_VL, RESTORE_VL, UPSCALE_VL, DOWNSCALE],
+    },
+    Preset {
+        id: "anime4k_hq_ca",
+        name: "Anime4K HQ C+A",
+        files: &[CLAMP, UPSCALE_VL, RESTORE_VL, DOWNSCALE],
+    },
 ];
 
 pub fn find(id: &str) -> Option<&'static Preset> {
@@ -46,7 +122,10 @@ pub fn name(id: &str) -> &'static str {
 }
 
 pub fn dir() -> PathBuf {
-    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("shaders"))).unwrap_or_else(|| "shaders".into())
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("shaders")))
+        .unwrap_or_else(|| "shaders".into())
 }
 
 pub fn is_hdr(primaries: &str, gamma: &str) -> bool {
