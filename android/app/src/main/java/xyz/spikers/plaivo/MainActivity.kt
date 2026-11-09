@@ -203,8 +203,14 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
     val openMenu = remember { { card: MediaCard -> menu = card } }
     var libTab by remember { mutableStateOf(LibTab.Recommended) }
     var pages by remember { mutableStateOf(listOf<SubPage>()) }
-    val open = { card: MediaCard -> if (card.kind == "collection") pages = pages + SubPage.Collection(card.server, card.key, card.title) else play(card) }
-    val openRow = { server: String, row: MediaRow -> pages = pages + SubPage.Hub(server, row.key, row.title) }
+    val open = { card: MediaCard ->
+        when (card.kind) {
+            "collection" -> pages = pages + SubPage.Collection(card.server, card.key, card.title)
+            "movie", "show", "season" -> pages = pages + SubPage.Detail(card.server, card.key)
+            else -> play(card)
+        }
+    }
+    val openRow = { server: String, row: MediaRow -> pages = pages + SubPage.Hub(server, row.key, row.title, row.resume) }
     fun reloadServers() {
         if (!core.hasServers()) return onAccountChanged()
         servers = core.servers()
@@ -235,7 +241,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
     val inset by animateDpAsState(if (pinned) Dims.sidebar else Dims.sidebarCompact, tween(180, easing = EaseOutQuart), label = "inset")
     Box(Modifier.fillMaxSize().background(Palette.bg)) {
         Box(Modifier.fillMaxSize().padding(start = inset)) {
-            CompositionLocalProvider(LocalCardScale provides cardScale, LocalCardMenu provides openMenu, LocalAppearance provides appearance) {
+            CompositionLocalProvider(LocalCardScale provides cardScale, LocalCardMenu provides openMenu, LocalPlay provides play, LocalAppearance provides appearance) {
                 when (val s = screen) {
                     Screen.Home -> HomeScreen(home, serversLoaded, refresh + changes, focusHome, { focusHome = false }, open, { row -> home?.let { openRow(it.id, row) } }) { screen = Screen.Downloads }
                     Screen.Search -> SearchScreen(open)
@@ -268,7 +274,8 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                     key(i, p) {
                         FullPage(onBack = { pages = pages.take(i) }) {
                             when (p) {
-                                is SubPage.Hub -> HubListScreen(p.server, p.key, p.title, open)
+                                is SubPage.Hub -> HubListScreen(p.server, p.key, p.title, if (p.resume) play else open)
+                                is SubPage.Detail -> DetailScreen(p.server, p.key, changes, open, { row -> openRow(p.server, row) }) { changes++ }
                                 is SubPage.Collection -> CollectionScreen(p.server, p.key, p.title, open)
                             }
                         }
@@ -290,6 +297,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
 }
 
 sealed interface SubPage {
-    data class Hub(val server: String, val key: String, val title: String) : SubPage
+    data class Hub(val server: String, val key: String, val title: String, val resume: Boolean) : SubPage
+    data class Detail(val server: String, val key: String) : SubPage
     data class Collection(val server: String, val key: String, val title: String) : SubPage
 }

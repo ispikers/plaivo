@@ -38,6 +38,8 @@ private val cardShape = RoundedCornerShape(8.dp)
 
 val LocalCardMenu = staticCompositionLocalOf<((MediaCard) -> Unit)?> { null }
 
+val LocalPlay = staticCompositionLocalOf<(MediaCard) -> Unit> { {} }
+
 @Composable
 fun MediaTile(card: MediaCard, wide: Boolean, modifier: Modifier = Modifier, dim: Boolean = false, onFocus: () -> Unit = {}, onClick: () -> Unit) {
     val menu = LocalCardMenu.current

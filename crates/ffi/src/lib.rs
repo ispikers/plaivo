@@ -4,7 +4,7 @@ use plaivo_core::plex::{self, Client, Ctx, Hub, Item, QUALITIES, SORTS, Server, 
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key};
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
-use plaivo_core::{Account, first, jellyfin, join, store};
+use plaivo_core::{Account, detail, first, jellyfin, join, store};
 use qrcodegen::{QrCode, QrCodeEcc};
 use std::collections::HashMap;
 use std::path::Path;
@@ -162,6 +162,73 @@ pub enum Action {
 pub struct InfoLine {
     pub label: String,
     pub value: String,
+}
+
+#[derive(uniffi::Enum)]
+pub enum RatingSource {
+    Imdb,
+    Critics,
+    Audience,
+    Tmdb,
+    Stars,
+}
+
+impl From<plex::RatingSource> for RatingSource {
+    fn from(s: plex::RatingSource) -> Self {
+        match s {
+            plex::RatingSource::Imdb => Self::Imdb,
+            plex::RatingSource::Critics => Self::Critics,
+            plex::RatingSource::Audience => Self::Audience,
+            plex::RatingSource::Tmdb => Self::Tmdb,
+            plex::RatingSource::Stars => Self::Stars,
+        }
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct Rating {
+    pub source: RatingSource,
+    pub value: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct CastMember {
+    pub name: String,
+    pub role: String,
+    pub image: Option<String>,
+}
+
+#[derive(uniffi::Record)]
+pub struct Season {
+    pub key: String,
+    pub title: String,
+    pub image: Option<String>,
+}
+
+#[derive(uniffi::Record)]
+pub struct Detail {
+    pub server: String,
+    pub key: String,
+    pub kind: String,
+    pub title: String,
+    pub eyebrow: String,
+    pub logo: Option<String>,
+    pub backdrop: Option<String>,
+    pub chips: Vec<String>,
+    pub ratings: Vec<Rating>,
+    pub genres: Vec<String>,
+    pub summary: String,
+    pub play_key: String,
+    pub play_label: String,
+    pub progress: f32,
+    pub media_line: String,
+    pub info: Vec<InfoLine>,
+    pub cast: Vec<CastMember>,
+    pub extras: Vec<Card>,
+    pub seasons: Vec<Season>,
+    pub season: Option<String>,
+    pub watched: bool,
+    pub trailer_key: Option<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -731,6 +798,66 @@ impl Plaivo {
             Listing::CollectionItems => srv.collection_items(&ctx, &key, start, size, list)?,
         };
         Ok(LibraryPage { cards: items.iter().map(|it| card(&srv, it, false, &prefs)).collect(), total: total as u64 })
+    }
+
+    pub fn detail(&self, server_id: String, key: String, cached: bool) -> R<Detail> {
+        let srv = self.server(&server_id)?;
+        let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
+        let mut it = srv.metadata(&ctx, &key)?;
+        let mut wanted = None;
+        if it.kind == "season" && !it.parent_rating_key.is_empty() {
+            let show = srv.metadata(&ctx, &it.parent_rating_key)?;
+            wanted = Some(std::mem::replace(&mut it, show).rating_key);
+        }
+        let seasons = if it.kind == "show" { srv.children(&ctx, &it.rating_key)? } else { Vec::new() };
+        let summary = detail::summary(&it, true);
+        let prefs = self.card_prefs();
+        let image = |path: &str, w: u32, h: u32| (!path.is_empty()).then(|| srv.image_url(path, w, h));
+        Ok(Detail {
+            server: server_id,
+            key: it.rating_key.clone(),
+            kind: it.kind.clone(),
+            title: it.title.clone(),
+            eyebrow: summary.eyebrow,
+            logo: image(it.logo(), 880, 300),
+            backdrop: image(first(&[&it.art, &it.grandparent_art]), 1920, 1080),
+            chips: summary.chips,
+            ratings: it.rating_labels().into_iter().map(|(source, value)| Rating { source: source.into(), value }).collect(),
+            genres: it.genre.iter().take(4).map(|t| t.tag.clone()).collect(),
+            summary: it.summary.clone(),
+            play_key: summary.play_key,
+            play_label: summary.play_label,
+            progress: summary.progress,
+            media_line: if it.kind == "show" { String::new() } else { it.media_line(0) },
+            info: summary.info.into_iter().map(|(label, value)| InfoLine { label: label.into(), value }).collect(),
+            cast: it.role.iter().take(40).map(|p| CastMember { name: p.tag.clone(), role: p.role.clone(), image: image(&p.thumb, 300, 300) }).collect(),
+            extras: it.extras().iter().map(|x| Card { subtitle: x.duration.map(plex::fmt_duration).unwrap_or_default(), ..card(&srv, x, true, &prefs) }).collect(),
+            season: detail::pick_season(&it, &seasons, wanted.as_deref()),
+            seasons: seasons.iter().map(|x| Season { key: x.rating_key.clone(), title: x.title.clone(), image: image(&x.thumb, 300, 450) }).collect(),
+            watched: it.watched(),
+            trailer_key: it.trailer().map(|t| t.rating_key.clone()),
+        })
+    }
+
+    pub fn episodes(&self, server_id: String, season_key: String, cached: bool) -> R<Vec<Card>> {
+        let srv = self.server(&server_id)?;
+        let ctx = Ctx::new(self.client.clone(), if cached { Source::Cache } else { Source::Network });
+        let prefs = self.card_prefs();
+        Ok(srv
+            .children(&ctx, &season_key)?
+            .iter()
+            .map(|e| Card {
+                title: format!("{}. {}", e.index.unwrap_or(0), e.title),
+                meta: join(&[e.duration.map(plex::fmt_duration).unwrap_or_default(), e.originally_available_at.clone()]),
+                ..card(&srv, e, true, &prefs)
+            })
+            .collect())
+    }
+
+    pub fn related(&self, server_id: String, key: String) -> R<Vec<Row>> {
+        let srv = self.server(&server_id)?;
+        let hubs = srv.related(&Ctx::new(self.client.clone(), Source::Network), &key)?;
+        Ok(rows(&srv, &hubs[..hubs.len().min(3)], &self.card_prefs()))
     }
 
     pub fn item_menu(&self, server_id: String, key: String) -> R<ItemMenu> {

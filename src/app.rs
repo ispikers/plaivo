@@ -1691,41 +1691,7 @@ impl Plaivo {
     }
 
     fn apply_detail(&mut self, server: &str, it: Item, seasons: Vec<Item>, cx: &mut Context<Self>) {
-        let media = it.media.first();
-        let on_deck = it.on_deck.as_ref().and_then(|d| d.metadata.as_ref());
-        let (mut play_key, mut play_label, progress) = match it.kind.as_str() {
-            "show" => match on_deck {
-                Some(ep) => (
-                    ep.rating_key.clone(),
-                    format!("{} S{}E{}", if ep.progress() > 0.0 { "Resume" } else { "Play" }, ep.parent_index.unwrap_or(0), ep.index.unwrap_or(0)),
-                    ep.progress(),
-                ),
-                None => (it.rating_key.clone(), "Play".into(), 0.0),
-            },
-            _ => (it.rating_key.clone(), if it.progress() > 0.0 { "Resume" } else { "Play" }.into(), it.progress()),
-        };
-        let mut chips = vec![
-            if it.kind == "episode" { it.originally_available_at.clone() } else { it.year.map(|y| y.to_string()).unwrap_or_default() },
-            it.content_rating.clone(),
-            it.duration.filter(|_| it.kind != "show").map(plex::fmt_duration).unwrap_or_default(),
-            it.child_count.filter(|_| it.kind == "show").map(|n| format!("{n} season{}", if n == 1 { "" } else { "s" })).unwrap_or_default(),
-            media.map(|m| fmt_resolution(&m.video_resolution)).unwrap_or_default(),
-            media.map(|m| m.video_dynamic_range.clone()).filter(|r| r != "SDR").unwrap_or_default(),
-            it.audio_label(),
-        ];
-        if server == DISCOVER_ID {
-            chips.insert(0, "Not in your library".into());
-            play_key.clear();
-            play_label.clear();
-        }
-        chips.retain(|c| !c.is_empty());
-        let names = |tags: &[plex::Tag]| tags.iter().take(3).map(|t| t.tag.clone()).collect::<Vec<_>>().join(", ");
-        let info = [
-            ("Studio", it.studio.clone()),
-            (if it.director.len() > 1 { "Directors" } else { "Director" }, names(&it.director)),
-            (if it.writer.len() > 1 { "Writers" } else { "Writer" }, names(&it.writer)),
-            ("Released", if it.kind == "episode" { String::new() } else { it.originally_available_at.clone() }),
-        ];
+        let summary = plaivo_core::detail::summary(&it, server != DISCOVER_ID);
         let extras = it
             .extras()
             .iter()
@@ -1738,20 +1704,20 @@ impl Plaivo {
             logo: thumb(server, it.logo()),
             ratings: it.rating_labels().into_iter().map(|(s, v)| (s, v.into())).collect(),
             media_line: it.media_line(0).into(),
-            info: info.into_iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.into(), v.into())).collect(),
+            info: summary.info.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
             cast: it.role.iter().take(40).map(|p| CastMember { name: p.tag.clone().into(), role: p.role.clone().into(), thumb: thumb(server, &p.thumb) }).collect(),
             extras,
             related,
             watchlisted,
             server: server.to_owned().into(),
-            eyebrow: if it.kind == "episode" { join(&[it.grandparent_title.clone(), it.episode_label()]) } else { String::new() }.into(),
+            eyebrow: summary.eyebrow.into(),
             title: it.title.clone().into(),
-            chips: chips.into_iter().map(Into::into).collect(),
+            chips: summary.chips.into_iter().map(Into::into).collect(),
             genres: it.genre.iter().take(4).map(|t| t.tag.clone().into()).collect(),
             summary: it.summary.clone().into(),
-            play_label: play_label.into(),
-            play_key: play_key.into(),
-            progress,
+            play_label: summary.play_label.into(),
+            play_key: summary.play_key.into(),
+            progress: summary.progress,
             art: thumb(server, first(&[&it.art, &it.grandparent_art])),
             is_show: it.kind == "show",
             item: it.clone(),
@@ -1760,13 +1726,7 @@ impl Plaivo {
             self.load_related(server, &it, cx);
         }
         if it.kind == "show" {
-            let valid = |k: &String| seasons.iter().any(|x| &x.rating_key == k);
-            let pick = self
-                .season
-                .clone()
-                .filter(valid)
-                .or_else(|| on_deck.map(|e| e.parent_rating_key.clone()).filter(valid))
-                .or_else(|| seasons.iter().find(|x| x.index != Some(0)).or(seasons.first()).map(|x| x.rating_key.clone()));
+            let pick = plaivo_core::detail::pick_season(&it, &seasons, self.season.as_deref());
             self.season_items = seasons;
             if let Some(k) = pick {
                 self.select_season(k, cx);

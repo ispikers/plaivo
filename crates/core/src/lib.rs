@@ -1,3 +1,4 @@
+pub mod detail;
 pub mod downloads;
 pub mod jellyfin;
 pub mod menu;

@@ -153,6 +153,7 @@ private fun Info(card: MediaCard?, modifier: Modifier) {
 private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> Unit, onFocus: (MediaCard) -> Unit, play: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit, modifier: Modifier) {
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val playNow = LocalPlay.current
     var active by remember { mutableIntStateOf(0) }
     val first = remember { FocusRequester() }
     LaunchedEffect(takeFocus) {
@@ -190,7 +191,7 @@ private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> 
                                     modifier = if (index == 0 && i == 0) Modifier.focusRequester(first) else Modifier,
                                     dim = index != active,
                                     onFocus = { onFocus(card) },
-                                ) { play(card) }
+                                ) { if (row.resume) playNow(card) else play(card) }
                             }
                             if (row.key.isNotEmpty()) item(key = "see-all") { SeeAll(row.wide, dim = index != active) { openRow(row) } }
                         }
