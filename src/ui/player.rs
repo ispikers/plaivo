@@ -8,7 +8,7 @@ use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{bounds_probe, fmt_time, icon, pill, progress_bar, round_button, shadow, stepper, tip};
 use crate::shaders;
 use gpui::{
-    AnyElement, Context, ElementId, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, SharedString, Window, canvas, div, linear_color_stop,
+    AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, SharedString, Window, canvas, div, linear_color_stop,
     linear_gradient, point, prelude::*, px, rgb, uniform_list,
 };
 use std::f32::consts::TAU;
@@ -31,7 +31,7 @@ fn fmt_speed(s: f64) -> String {
     if s == 1.0 { "Normal".into() } else { format!("{s}×") }
 }
 
-fn spinner(size: f32) -> impl IntoElement {
+pub fn spinner(size: f32, color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -49,7 +49,7 @@ fn spinner(size: f32) -> impl IntoElement {
             let mut path = PathBuilder::stroke(px(4.));
             path.add_polygon(&points, false);
             if let Ok(path) = path.build() {
-                window.paint_path(path, theme::white());
+                window.paint_path(path, color);
             }
             window.request_animation_frame();
         },
@@ -178,7 +178,7 @@ impl Plaivo {
                 cx.notify();
             }));
         let spinner = self.player.buffering.then(|| {
-            div().absolute().size_full().flex().items_center().justify_center().child(spinner(44.))
+            div().absolute().size_full().flex().items_center().justify_center().child(spinner(44., theme::white()))
         });
         let up_next = self.up_next();
         let skip = self.active_skip().filter(|_| up_next.is_none()).map(|s| {

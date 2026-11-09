@@ -418,10 +418,14 @@ impl Trackers {
             _ => (text("session"), text("authorize_url")),
         };
         let (Some(secret), Some(url)) = (secret, url) else { return Err("invalid response".into()) };
+        let user_code = text("user_code");
         Ok(SignIn {
             service,
-            url,
-            user_code: text("user_code"),
+            url: match &user_code {
+                Some(code) => format!("{}/{code}", url.trim_end_matches('/')),
+                None => url,
+            },
+            user_code,
             interval_secs: v["interval"].as_u64().unwrap_or(3).clamp(1, 60),
             expires_in_secs: v["expires_in"].as_u64().unwrap_or(600),
             secret,

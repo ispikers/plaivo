@@ -134,7 +134,7 @@ impl Plaivo {
     }
 
     pub fn close_overlays(&mut self) -> bool {
-        self.menu.take().is_some() | self.dialog.take().is_some()
+        self.menu.take().is_some() | self.dialog.take().is_some() | self.services.cancel()
     }
 
     fn menu_entries(&self, server: &str, it: &Item, watchlisted: Option<bool>) -> Vec<(Icon, &'static str, Action)> {
@@ -259,6 +259,7 @@ impl Plaivo {
         if self.dialog.is_some() {
             out.push(self.render_dialog(window, cx));
         }
+        out.extend(self.render_sign_in(cx));
         out
     }
 
