@@ -33,16 +33,19 @@ import uniffi.plaivo_ffi.Service
 import uniffi.plaivo_ffi.TrackerPoll
 import uniffi.plaivo_ffi.TrackerSignIn
 
-val Service.title get() = when (this) {
-    Service.TRAKT -> "Trakt"
-    Service.MAL -> "MyAnimeList"
-}
+val Service.title
+    get() =
+        when (this) {
+            Service.TRAKT -> "Trakt"
+            Service.MAL -> "MyAnimeList"
+        }
 
-private fun failure(reason: String) = when (reason) {
-    "expired" -> "The code expired. Press Back and try again."
-    "denied" -> "Access was denied."
-    else -> "Sign-in failed: $reason"
-}
+private fun failure(reason: String) =
+    when (reason) {
+        "expired" -> "The code expired. Press Back and try again."
+        "denied" -> "Access was denied."
+        else -> "Sign-in failed: $reason"
+    }
 
 @Composable
 fun TrackerSignInScreen(service: Service, onClose: () -> Unit) {
@@ -53,12 +56,13 @@ fun TrackerSignInScreen(service: Service, onClose: () -> Unit) {
     val cancel = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { cancel.requestFocus() } }
     LaunchedEffect(Unit) {
-        val s = try {
-            io { core.beginTrackerSignIn(service) }
-        } catch (e: PlaivoException) {
-            status = "Could not start sign-in: ${e.message}"
-            return@LaunchedEffect
-        }
+        val s =
+            try {
+                io { core.beginTrackerSignIn(service) }
+            } catch (e: PlaivoException) {
+                status = "Could not start sign-in: ${e.message}"
+                return@LaunchedEffect
+            }
         sign = s
         status = "Waiting for approval…"
         var interval = s.intervalSecs.toLong()
@@ -79,17 +83,41 @@ fun TrackerSignInScreen(service: Service, onClose: () -> Unit) {
         }
         status = failure("expired")
     }
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Heading("Connect ${service.title}")
         Row(horizontalArrangement = Arrangement.spacedBy(56.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.width(420.dp), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                Modifier.width(420.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 val s = sign
                 val code = s?.userCode
-                Text(if (code != null) "On your phone or computer, go to" else "Scan the code with your phone, or open", fontSize = 16.sp, color = Palette.muted)
-                Text(s?.url?.removePrefix("https://") ?: "…", fontSize = if (code != null) 24.sp else 14.sp, color = Palette.text, textAlign = TextAlign.Center, maxLines = 3)
+                Text(
+                    if (code != null) "On your phone or computer, go to" else "Scan the code with your phone, or open",
+                    fontSize = 16.sp,
+                    color = Palette.muted,
+                )
+                Text(
+                    s?.url?.removePrefix("https://") ?: "…",
+                    fontSize = if (code != null) 24.sp else 14.sp,
+                    color = Palette.text,
+                    textAlign = TextAlign.Center,
+                    maxLines = 3,
+                )
                 if (code != null) {
                     Text("and enter this code", fontSize = 16.sp, color = Palette.muted)
-                    Text(code, fontSize = 44.sp, fontWeight = FontWeight.Bold, color = Palette.text, letterSpacing = 8.sp)
+                    Text(
+                        code,
+                        fontSize = 44.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Palette.text,
+                        letterSpacing = 8.sp,
+                    )
                 }
             }
             val s = sign

@@ -51,15 +51,19 @@ object Watch : WatchListener {
     private val main = Handler(Looper.getMainLooper())
     var state by mutableStateOf<WatchState?>(null)
         private set
+
     var item by mutableStateOf<Bound?>(null)
         private set
+
     var rooms by mutableStateOf<List<String>>(emptyList())
         private set
+
     var player: PlayerActivity? = null
     private var pendingShare: MediaCard? = null
     private var resolving: Pair<String, Long>? = null
 
-    val inRoom get() = state?.connection.let { it == WatchConnection.CONNECTED || it == WatchConnection.RECONNECTING }
+    val inRoom
+        get() = state?.connection.let { it == WatchConnection.CONNECTED || it == WatchConnection.RECONNECTING }
 
     fun start() {
         rooms = core.settings().watchRooms
@@ -78,11 +82,24 @@ object Watch : WatchListener {
         main.post { player?.follow(command) }
     }
 
-    fun deviceName(): String = android.provider.Settings.Global.getString(App.instance.contentResolver, "device_name") ?: Build.MODEL
+    fun deviceName(): String =
+        android.provider.Settings.Global.getString(App.instance.contentResolver, "device_name") ?: Build.MODEL
 
-    fun create() = background.launch { runCatching { core.watchCreate(deviceName()) }.onFailure { main.post { pendingShare = null; toast(it.message) } } }
+    fun create() =
+        background.launch {
+            runCatching { core.watchCreate(deviceName()) }
+                .onFailure {
+                    main.post {
+                        pendingShare = null
+                        toast(it.message)
+                    }
+                }
+        }
 
-    fun join(code: String) = background.launch { runCatching { core.watchJoin(code, deviceName()) }.onFailure { main.post { toast(it.message) } } }
+    fun join(code: String) =
+        background.launch {
+            runCatching { core.watchJoin(code, deviceName()) }.onFailure { main.post { toast(it.message) } }
+        }
 
     fun share(card: MediaCard) {
         if (!inRoom) {
@@ -90,10 +107,13 @@ object Watch : WatchListener {
             create()
             return
         }
-        background.launch { runCatching { core.watchShare(card.server, card.key) }.onFailure { main.post { toast(it.message) } } }
+        background.launch {
+            runCatching { core.watchShare(card.server, card.key) }.onFailure { main.post { toast(it.message) } }
+        }
     }
 
-    fun epochFor(server: String, key: String): Long? = item?.takeIf { inRoom && it.server == server && it.key == key }?.epoch
+    fun epochFor(server: String, key: String): Long? =
+        item?.takeIf { inRoom && it.server == server && it.key == key }?.epoch
 
     fun loaded(server: String, key: String, durationMs: Long) {
         epochFor(server, key)?.let { core.watchMatched(it, durationMs) }
@@ -107,7 +127,12 @@ object Watch : WatchListener {
         val b = item ?: return
         val p = player
         if (p != null) return if (p.started()) p.watch(b) else Unit
-        App.instance.startActivity(Intent(App.instance, PlayerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("server", b.server).putExtra("key", b.key))
+        App.instance.startActivity(
+            Intent(App.instance, PlayerActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .putExtra("server", b.server)
+                .putExtra("key", b.key)
+        )
     }
 
     private fun onState(s: WatchState) {
@@ -120,10 +145,11 @@ object Watch : WatchListener {
             return
         }
         if (s.code != before?.code) rooms = editSettings { rememberRoom(it, s.code) }.watchRooms
-        if (s.host) pendingShare?.let {
-            pendingShare = null
-            share(it)
-        }
+        if (s.host)
+            pendingShare?.let {
+                pendingShare = null
+                share(it)
+            }
         val target = s.code to s.epoch
         if (s.media == null) {
             item = null
@@ -171,32 +197,73 @@ fun WatchTogetherScreen() {
         if (code.isNotBlank()) Watch.join(code)
     }
     Column(
-        Modifier.fillMaxSize().onFocusChanged { focused = it.hasFocus }.verticalScroll(rememberScrollState()).padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
+        Modifier.fillMaxSize()
+            .onFocusChanged { focused = it.hasFocus }
+            .verticalScroll(rememberScrollState())
+            .padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Heading("Watch Together")
         when {
             s != null && Watch.inRoom -> {
                 Text("Room code", fontSize = 13.sp, color = Palette.muted)
-                Text(s.displayCode, fontSize = 64.sp, fontWeight = FontWeight.Bold, color = Palette.text, letterSpacing = 6.sp)
-                Note(if (connection == WatchConnection.RECONNECTING) "Reconnecting…" else "Friends join with this code in Plaivo or Plezy.")
+                Text(
+                    s.displayCode,
+                    fontSize = 64.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Palette.text,
+                    letterSpacing = 6.sp,
+                )
+                Note(
+                    if (connection == WatchConnection.RECONNECTING) "Reconnecting…"
+                    else "Friends join with this code in Plaivo or Plezy."
+                )
                 SectionTitle("Watching")
                 val media = s.media
                 if (media == null) {
-                    Note(if (s.host) "Hold OK on any poster and choose Watch together." else "Waiting for the host to pick something.")
+                    Note(
+                        if (s.host) "Hold OK on any poster and choose Watch together."
+                        else "Waiting for the host to pick something."
+                    )
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         SettingsRow(Glyph.PlayCircle, media, s.status, Modifier.weight(1f), onClick = Watch::open)
                         if (Watch.item != null) ActionButton("Open party", Watch::open)
                     }
-                    if (s.host) SettingsRow(Glyph.Stop, "Stop sharing", "Clears what the room is watching", onClick = core::watchClearMedia)
+                    if (s.host)
+                        SettingsRow(
+                            Glyph.Stop,
+                            "Stop sharing",
+                            "Clears what the room is watching",
+                            onClick = core::watchClearMedia,
+                        )
                 }
                 SectionTitle("People")
                 s.peers.forEach { p ->
                     key(p.peerId) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            SettingsRow(Glyph.Person, if (p.me) "${p.name} (you)" else p.name, p.status, Modifier.weight(1f)) {
-                                if (p.host) Text("Host", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Palette.bg, modifier = Modifier.background(Palette.text, CircleShape).padding(horizontal = 10.dp, vertical = 3.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            SettingsRow(
+                                Glyph.Person,
+                                if (p.me) "${p.name} (you)" else p.name,
+                                p.status,
+                                Modifier.weight(1f),
+                            ) {
+                                if (p.host)
+                                    Text(
+                                        "Host",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Palette.bg,
+                                        modifier =
+                                            Modifier.background(Palette.text, CircleShape)
+                                                .padding(horizontal = 10.dp, vertical = 3.dp),
+                                    )
                             }
                             if (s.host && !p.me) {
                                 ActionButton("Make host", { core.watchTransferHost(p.peerId) })
@@ -207,10 +274,22 @@ fun WatchTogetherScreen() {
                 }
                 if (s.host) {
                     SectionTitle("Room")
-                    SettingsRow(Glyph.PlayCircle, "Who controls playback", "Play, pause, seek and speed", onClick = { core.watchSetControl(!s.everyoneControls) }) {
+                    SettingsRow(
+                        Glyph.PlayCircle,
+                        "Who controls playback",
+                        "Play, pause, seek and speed",
+                        onClick = { core.watchSetControl(!s.everyoneControls) },
+                    ) {
                         Value(if (s.everyoneControls) "Everyone" else "Host only")
                     }
-                    SettingsRow(Glyph.Lock, "Lock room", "New people can't join", onClick = { core.watchLock(!s.locked) }) { Switch(s.locked) }
+                    SettingsRow(
+                        Glyph.Lock,
+                        "Lock room",
+                        "New people can't join",
+                        onClick = { core.watchLock(!s.locked) },
+                    ) {
+                        Switch(s.locked)
+                    }
                     SettingsRow(Glyph.Close, "End room", "Closes the room for everyone", onClick = core::watchEnd)
                 }
                 SettingsRow(Glyph.Logout, "Leave room", "", Modifier.focusRequester(anchor), onClick = core::watchLeave)
@@ -221,15 +300,33 @@ fun WatchTogetherScreen() {
             }
             else -> {
                 Note("Watch in sync with friends. Rooms work with Plaivo and Plezy.")
-                SettingsRow(Glyph.Add, "Create a room", "You pick what everyone watches", Modifier.focusRequester(anchor), onClick = { Watch.create() })
+                SettingsRow(
+                    Glyph.Add,
+                    "Create a room",
+                    "You pick what everyone watches",
+                    Modifier.focusRequester(anchor),
+                    onClick = { Watch.create() },
+                )
                 SectionTitle("Join a room")
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Field(code, { code = it.uppercase().take(12) }, "Room code, like ABC-234", KeyboardType.Ascii, ImeAction.Go, ::join)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Field(
+                        code,
+                        { code = it.uppercase().take(12) },
+                        "Room code, like ABC-234",
+                        KeyboardType.Ascii,
+                        ImeAction.Go,
+                        ::join,
+                    )
                     ActionButton("Join", ::join)
                 }
                 if (Watch.rooms.isNotEmpty()) {
                     SectionTitle("Recent rooms")
-                    Watch.rooms.forEach { c -> SettingsRow(Glyph.Group, formatRoomCode(c), "", onClick = { Watch.join(c) }) }
+                    Watch.rooms.forEach { c ->
+                        SettingsRow(Glyph.Group, formatRoomCode(c), "", onClick = { Watch.join(c) })
+                    }
                 }
             }
         }
@@ -245,6 +342,10 @@ fun WatchPill(s: WatchState, modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         GlyphIcon(Glyph.Group, 16.dp, Color.White)
-        Text(listOf(s.displayCode, "${s.peers.size} watching", status).filter { it.isNotEmpty() }.joinToString(" · "), fontSize = 13.sp, color = Color.White)
+        Text(
+            listOf(s.displayCode, "${s.peers.size} watching", status).filter { it.isNotEmpty() }.joinToString(" · "),
+            fontSize = 13.sp,
+            color = Color.White,
+        )
     }
 }

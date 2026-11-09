@@ -53,32 +53,47 @@ import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
-import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.DownloadState
+import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.ServerInfo
 
 private const val SPOTLIGHT_DEBOUNCE_MS = 150L
 private const val CROSSFADE_MS = 280
 
 @OptIn(ExperimentalFoundationApi::class)
-private val keepScroll = object : BringIntoViewSpec {
-    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) = 0f
-}
+private val keepScroll =
+    object : BringIntoViewSpec {
+        override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) = 0f
+    }
 
 @OptIn(ExperimentalFoundationApi::class)
-private val centerFocused = object : BringIntoViewSpec {
-    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) = offset - (containerSize - size) / 2f
-}
+private val centerFocused =
+    object : BringIntoViewSpec {
+        override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float) =
+            offset - (containerSize - size) / 2f
+    }
 
 @Composable
-fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFocus: Boolean, onFocusTaken: () -> Unit, play: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit, openDownloads: () -> Unit) {
+fun HomeScreen(
+    server: ServerInfo?,
+    serversLoaded: Boolean,
+    refresh: Int,
+    takeFocus: Boolean,
+    onFocusTaken: () -> Unit,
+    play: (MediaCard) -> Unit,
+    openRow: (MediaRow) -> Unit,
+    openDownloads: () -> Unit,
+) {
     var rows by remember(server?.id) { mutableStateOf<List<MediaRow>>(emptyList()) }
     var error by remember(server?.id) { mutableStateOf<String?>(null) }
     LaunchedEffect(server?.id, refresh) {
         val id = server?.id ?: return@LaunchedEffect
         if (rows.isEmpty()) io { runCatching { core.home(id, true) } }.onSuccess { if (it.isNotEmpty()) rows = it }
         io { runCatching { core.home(id, false) } }
-            .onSuccess { rows = it; error = null }
+            .onSuccess {
+                rows = it
+                error = null
+            }
             .onFailure {
                 val offline = core.serverOffline(id)
                 if (offline) rows = emptyList()
@@ -86,7 +101,8 @@ fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFo
             }
     }
     when {
-        server == null -> Message(if (serversLoaded) "No reachable server" else "Loading…", openDownloads.takeIf { serversLoaded })
+        server == null ->
+            Message(if (serversLoaded) "No reachable server" else "Loading…", openDownloads.takeIf { serversLoaded })
         rows.isEmpty() -> Message(error ?: "Loading…", openDownloads.takeIf { error != null })
         else -> Spotlight(rows, takeFocus, onFocusTaken, play, openRow)
     }
@@ -96,14 +112,24 @@ fun HomeScreen(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, takeFo
 fun Message(text: String, openDownloads: (() -> Unit)? = null) {
     val entries by DownloadQueue.entries.collectAsState()
     val offline = openDownloads?.takeIf { entries.any { it.state == DownloadState.DONE } }
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Text(text, color = Palette.muted)
         if (offline != null) ActionButton("Watch your downloads", offline)
     }
 }
 
 @Composable
-fun Spotlight(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> Unit, play: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit) {
+fun Spotlight(
+    rows: List<MediaRow>,
+    takeFocus: Boolean,
+    onFocusTaken: () -> Unit,
+    play: (MediaCard) -> Unit,
+    openRow: (MediaRow) -> Unit,
+) {
     var focused by remember { mutableStateOf(rows.first().cards.firstOrNull()) }
     var shown by remember { mutableStateOf(focused) }
     LaunchedEffect(focused) {
@@ -112,18 +138,53 @@ fun Spotlight(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> Unit
     }
     Box(Modifier.fillMaxSize()) {
         Crossfade(shown?.backdrop, animationSpec = tween(CROSSFADE_MS), label = "backdrop") { url ->
-            if (url != null) AsyncImage(model = url, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            if (url != null)
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
         }
-        Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Palette.bg.copy(alpha = 0.86f), 0.56f to Palette.bg.copy(alpha = 0.32f), 1f to Color.Transparent)))
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0.45f), 0.38f to Color.Transparent, 1f to Palette.bg.copy(alpha = 0.96f))))
+        Box(
+            Modifier.fillMaxSize()
+                .background(
+                    Brush.horizontalGradient(
+                        0f to Palette.bg.copy(alpha = 0.86f),
+                        0.56f to Palette.bg.copy(alpha = 0.32f),
+                        1f to Color.Transparent,
+                    )
+                )
+        )
+        Box(
+            Modifier.fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.45f),
+                        0.38f to Color.Transparent,
+                        1f to Palette.bg.copy(alpha = 0.96f),
+                    )
+                )
+        )
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val railHeight = maxHeight * 0.52f
             val top = maxHeight * 0.075f
             Info(
                 shown,
-                Modifier.align(Alignment.TopStart).padding(start = Dims.edge, top = top).width(maxWidth * 0.57f).height(maxHeight - railHeight - top - 8.dp),
+                Modifier.align(Alignment.TopStart)
+                    .padding(start = Dims.edge, top = top)
+                    .width(maxWidth * 0.57f)
+                    .height(maxHeight - railHeight - top - 8.dp),
             )
-            Rails(rows, takeFocus, onFocusTaken, { focused = it }, play, openRow, Modifier.align(Alignment.BottomStart).fillMaxWidth().height(railHeight))
+            Rails(
+                rows,
+                takeFocus,
+                onFocusTaken,
+                { focused = it },
+                play,
+                openRow,
+                Modifier.align(Alignment.BottomStart).fillMaxWidth().height(railHeight),
+            )
         }
     }
 }
@@ -137,12 +198,36 @@ private fun Info(card: MediaCard?, modifier: Modifier) {
                 c.title,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                style = TextStyle(fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Palette.text, shadow = Shadow(Color.Black.copy(alpha = 0.5f), blurRadius = 12f)),
+                style =
+                    TextStyle(
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Palette.text,
+                        shadow = Shadow(Color.Black.copy(alpha = 0.5f), blurRadius = 12f),
+                    ),
             )
-            val meta = listOf(c.subtitle.takeIf { c.kind == "episode" }, c.meta).filterNot { it.isNullOrEmpty() }.joinToString(" · ")
-            if (meta.isNotEmpty()) Text(meta, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Palette.text)
+            val meta =
+                listOf(c.subtitle.takeIf { c.kind == "episode" }, c.meta)
+                    .filterNot { it.isNullOrEmpty() }
+                    .joinToString(" · ")
+            if (meta.isNotEmpty())
+                Text(
+                    meta,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Palette.text,
+                )
             if (c.summary.isNotEmpty()) {
-                Text(c.summary, maxLines = 3, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, lineHeight = 1.34.em, color = Palette.text.copy(alpha = 0.78f))
+                Text(
+                    c.summary,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    fontSize = 15.sp,
+                    lineHeight = 1.34.em,
+                    color = Palette.text.copy(alpha = 0.78f),
+                )
             }
         }
     }
@@ -150,7 +235,15 @@ private fun Info(card: MediaCard?, modifier: Modifier) {
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
-private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> Unit, onFocus: (MediaCard) -> Unit, play: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit, modifier: Modifier) {
+private fun Rails(
+    rows: List<MediaRow>,
+    takeFocus: Boolean,
+    onFocusTaken: () -> Unit,
+    onFocus: (MediaCard) -> Unit,
+    play: (MediaCard) -> Unit,
+    openRow: (MediaRow) -> Unit,
+    modifier: Modifier,
+) {
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val playNow = LocalPlay.current
@@ -163,7 +256,12 @@ private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> 
         }
     }
     CompositionLocalProvider(LocalBringIntoViewSpec provides keepScroll) {
-        LazyColumn(state = list, modifier = modifier, contentPadding = PaddingValues(top = 12.dp, bottom = 400.dp), userScrollEnabled = false) {
+        LazyColumn(
+            state = list,
+            modifier = modifier,
+            contentPadding = PaddingValues(top = 12.dp, bottom = 400.dp),
+            userScrollEnabled = false,
+        ) {
             itemsIndexed(rows, key = { _, row -> row.title }) { index, row ->
                 Column(
                     Modifier.onFocusChanged {
@@ -171,12 +269,25 @@ private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> 
                             active = index
                             scope.launch { list.animateScrollToItem(index) }
                         }
-                    },
+                    }
                 ) {
-                    Row(Modifier.padding(start = Dims.edge).height(30.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        Modifier.padding(start = Dims.edge).height(30.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         val isActive = index == active
-                        GlyphIcon(if (row.resume) Glyph.PlayCircle else Glyph.Sparkle, 18.dp, Palette.text.copy(alpha = if (isActive) 1f else 0.54f))
-                        Text(row.title, fontSize = 17.sp, fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold, color = Palette.text.copy(alpha = if (isActive) 1f else 0.54f))
+                        GlyphIcon(
+                            if (row.resume) Glyph.PlayCircle else Glyph.Sparkle,
+                            18.dp,
+                            Palette.text.copy(alpha = if (isActive) 1f else 0.54f),
+                        )
+                        Text(
+                            row.title,
+                            fontSize = 17.sp,
+                            fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold,
+                            color = Palette.text.copy(alpha = if (isActive) 1f else 0.54f),
+                        )
                     }
                     CompositionLocalProvider(LocalBringIntoViewSpec provides centerFocused) {
                         LazyRow(
@@ -191,9 +302,12 @@ private fun Rails(rows: List<MediaRow>, takeFocus: Boolean, onFocusTaken: () -> 
                                     modifier = if (index == 0 && i == 0) Modifier.focusRequester(first) else Modifier,
                                     dim = index != active,
                                     onFocus = { onFocus(card) },
-                                ) { if (row.resume) playNow(card) else play(card) }
+                                ) {
+                                    if (row.resume) playNow(card) else play(card)
+                                }
                             }
-                            if (row.key.isNotEmpty()) item(key = "see-all") { SeeAll(row.wide, dim = index != active) { openRow(row) } }
+                            if (row.key.isNotEmpty())
+                                item(key = "see-all") { SeeAll(row.wide, dim = index != active) { openRow(row) } }
                         }
                     }
                 }

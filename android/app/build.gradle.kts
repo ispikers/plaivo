@@ -2,6 +2,19 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.mikepenz.aboutlibraries.plugin.android")
+    id("com.diffplug.spotless")
+}
+
+spotless {
+    java {
+        target("src/**/*.java")
+        palantirJavaFormat("2.96.0")
+        removeUnusedImports()
+    }
+    kotlin {
+        target("src/**/*.kt")
+        ktfmt("0.54").kotlinlangStyle().configure { it.setMaxWidth(120) }
+    }
 }
 
 android {
@@ -89,10 +102,10 @@ androidComponents.onVariants { variant ->
                 ids.isEmpty() || ids.any { ((texts[it] as Map<*, *>?)?.get("content") as String?).isNullOrBlank() }
             }.map { "${it["uniqueId"]} has no license text" }.toMutableList()
             val modules = mutableSetOf<String>()
-            fun walk(c: org.gradle.api.artifacts.result.ResolvedComponentResult) {
-                c.dependencies.filterIsInstance<org.gradle.api.artifacts.result.ResolvedDependencyResult>().forEach { d ->
+            fun walk(c: ResolvedComponentResult) {
+                c.dependencies.filterIsInstance<ResolvedDependencyResult>().forEach { d ->
                     val id = d.selected.id
-                    if (id is org.gradle.api.artifacts.component.ModuleComponentIdentifier && modules.add("${id.group}:${id.module}")) walk(d.selected)
+                    if ((id is ModuleComponentIdentifier) && modules.add("${id.group}:${id.module}")) walk(d.selected)
                 }
             }
             walk(graph.get())

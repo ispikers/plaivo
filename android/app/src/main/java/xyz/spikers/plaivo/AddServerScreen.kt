@@ -82,18 +82,19 @@ fun AddServerScreen(onBack: (() -> Unit)?, onAdded: (String) -> Unit) {
         error = null
         code = null
         busy = true
-        job = scope.launch {
-            try {
-                block()
-            } catch (e: PlaivoException) {
-                if (mine == attempt) {
-                    error = e.message
-                    code = null
+        job =
+            scope.launch {
+                try {
+                    block()
+                } catch (e: PlaivoException) {
+                    if (mine == attempt) {
+                        error = e.message
+                        code = null
+                    }
+                } finally {
+                    if (mine == attempt) busy = false
                 }
-            } finally {
-                if (mine == attempt) busy = false
             }
-        }
     }
     fun probe() {
         if (address.isBlank()) return
@@ -124,32 +125,70 @@ fun AddServerScreen(onBack: (() -> Unit)?, onAdded: (String) -> Unit) {
         }
     }
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
+        Modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Heading("Add Library")
         Text("Enter the address you open Jellyfin with in a browser.", fontSize = 13.sp, color = Palette.muted)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Field(address, {
-                address = it
-                job?.cancel()
-                found = null
-                code = null
-                busy = false
-            }, "Server address, like 192.168.1.10:8096", KeyboardType.Uri, ImeAction.Go, ::probe, Modifier.focusRequester(addressFocus))
+            Field(
+                address,
+                {
+                    address = it
+                    job?.cancel()
+                    found = null
+                    code = null
+                    busy = false
+                },
+                "Server address, like 192.168.1.10:8096",
+                KeyboardType.Uri,
+                ImeAction.Go,
+                ::probe,
+                Modifier.focusRequester(addressFocus),
+            )
             ActionButton("Connect", ::probe)
         }
         found?.let { server ->
-            SettingsRow(Glyph.Server, server.name, "Jellyfin ${server.version} · ${server.uri}") { GlyphIcon(Glyph.Check, 20.dp, Palette.text) }
-            Text("Sign in", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted, modifier = Modifier.padding(top = 8.dp))
-            Field(username, { username = it }, "Username", KeyboardType.Text, ImeAction.Next, {}, Modifier.focusRequester(userFocus))
-            Field(password, { password = it }, "Password", KeyboardType.Password, ImeAction.Done, ::signIn, password = true)
+            SettingsRow(Glyph.Server, server.name, "Jellyfin ${server.version} · ${server.uri}") {
+                GlyphIcon(Glyph.Check, 20.dp, Palette.text)
+            }
+            Text(
+                "Sign in",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Palette.muted,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Field(
+                username,
+                { username = it },
+                "Username",
+                KeyboardType.Text,
+                ImeAction.Next,
+                {},
+                Modifier.focusRequester(userFocus),
+            )
+            Field(
+                password,
+                { password = it },
+                "Password",
+                KeyboardType.Password,
+                ImeAction.Done,
+                ::signIn,
+                password = true,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ActionButton("Sign in", ::signIn)
                 ActionButton("Use Quick Connect", ::quickConnect)
             }
             code?.let {
-                Text("In Jellyfin on a signed-in device, open your profile → Quick Connect and enter this code for ${server.name}.", fontSize = 13.sp, color = Palette.muted)
+                Text(
+                    "In Jellyfin on a signed-in device, open your profile → Quick Connect and enter this code for ${server.name}.",
+                    fontSize = 13.sp,
+                    color = Palette.muted,
+                )
                 Text(it, fontSize = 40.sp, fontWeight = FontWeight.Bold, color = Palette.text, letterSpacing = 8.sp)
                 Text("Waiting for approval…", fontSize = 13.sp, color = Palette.muted)
             }
@@ -183,10 +222,12 @@ fun Field(
         modifier = modifier.widthIn(max = 520.dp).fillMaxWidth().onFocusChanged { focused = it.isFocused },
         decorationBox = { field ->
             Box(
-                Modifier
-                    .height(44.dp)
+                Modifier.height(44.dp)
                     .background(Palette.surface, CircleShape)
-                    .border(BorderStroke(if (focused) 2.dp else 1.dp, if (focused) Palette.text else Palette.outline), CircleShape)
+                    .border(
+                        BorderStroke(if (focused) 2.dp else 1.dp, if (focused) Palette.text else Palette.outline),
+                        CircleShape,
+                    )
                     .padding(horizontal = 16.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
@@ -203,12 +244,19 @@ fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifie
         onClick = { if (enabled) onClick() },
         modifier = modifier.height(44.dp).alpha(if (enabled) 1f else 0.4f),
         shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors = ClickableSurfaceDefaults.colors(containerColor = Palette.surface, contentColor = Palette.text, focusedContainerColor = Palette.tint(0.12f), focusedContentColor = Palette.text),
+        colors =
+            ClickableSurfaceDefaults.colors(
+                containerColor = Palette.surface,
+                contentColor = Palette.text,
+                focusedContainerColor = Palette.tint(0.12f),
+                focusedContentColor = Palette.text,
+            ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border = ClickableSurfaceDefaults.border(
-            border = Border(BorderStroke(1.dp, Palette.outline), shape = CircleShape),
-            focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = CircleShape),
-        ),
+        border =
+            ClickableSurfaceDefaults.border(
+                border = Border(BorderStroke(1.dp, Palette.outline), shape = CircleShape),
+                focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = CircleShape),
+            ),
     ) {
         Box(Modifier.fillMaxHeight().padding(horizontal = 20.dp), contentAlignment = Alignment.Center) {
             Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)

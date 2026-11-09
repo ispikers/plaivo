@@ -4,12 +4,12 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.Canvas
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -28,35 +27,35 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import kotlin.math.floor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.plaivo_ffi.Card as MediaCard
+import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.Section
-import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.SignIn as Pin
 import uniffi.plaivo_ffi.cardScale
-import kotlin.math.floor
 
 class MainActivity : ComponentActivity() {
     private var resumes by mutableIntStateOf(0)
@@ -75,14 +74,25 @@ class MainActivity : ComponentActivity() {
                         session++
                     }
                     when {
-                        signedIn -> key(session) {
-                            Shell(resumes, ::play, onAccountChanged = {
-                                signedIn = core.hasServers()
-                                session++
-                            }, onPlexSignIn = { signedIn = false })
-                        }
+                        signedIn ->
+                            key(session) {
+                                Shell(
+                                    resumes,
+                                    ::play,
+                                    onAccountChanged = {
+                                        signedIn = core.hasServers()
+                                        session++
+                                    },
+                                    onPlexSignIn = { signedIn = false },
+                                )
+                            }
                         addingFirst -> AddServerScreen(onBack = { addingFirst = false }) { enter() }
-                        else -> SignInScreen(onJellyfin = { addingFirst = true }, onBack = if (core.hasServers()) enter else null, onDone = enter)
+                        else ->
+                            SignInScreen(
+                                onJellyfin = { addingFirst = true },
+                                onBack = if (core.hasServers()) enter else null,
+                                onDone = enter,
+                            )
                     }
                 }
             }
@@ -96,7 +106,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun play(card: MediaCard) {
-        startActivity(Intent(this, PlayerActivity::class.java).putExtra("server", card.server).putExtra("key", card.key))
+        startActivity(
+            Intent(this, PlayerActivity::class.java).putExtra("server", card.server).putExtra("key", card.key)
+        )
     }
 }
 
@@ -111,24 +123,26 @@ private fun SignInScreen(onJellyfin: () -> Unit, onBack: (() -> Unit)?, onDone: 
     var problem by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
-            val next = try {
-                withContext(Dispatchers.IO) { core.startSignIn() }
-            } catch (e: PlaivoException) {
-                problem = e.message
-                delay(RETRY_MS)
-                continue
-            }
+            val next =
+                try {
+                    withContext(Dispatchers.IO) { core.startSignIn() }
+                } catch (e: PlaivoException) {
+                    problem = e.message
+                    delay(RETRY_MS)
+                    continue
+                }
             pin = next
             problem = null
             val expires = System.currentTimeMillis() + next.expiresInS.toLong() * 1000
             while (System.currentTimeMillis() < expires) {
                 delay(POLL_MS)
-                val linked = try {
-                    withContext(Dispatchers.IO) { core.finishSignIn(next.id) }.also { problem = null }
-                } catch (e: PlaivoException) {
-                    problem = e.message
-                    false
-                }
+                val linked =
+                    try {
+                        withContext(Dispatchers.IO) { core.finishSignIn(next.id) }.also { problem = null }
+                    } catch (e: PlaivoException) {
+                        problem = e.message
+                        false
+                    }
                 if (linked) {
                     onDone()
                     return@LaunchedEffect
@@ -137,25 +151,46 @@ private fun SignInScreen(onJellyfin: () -> Unit, onBack: (() -> Unit)?, onDone: 
         }
     }
     val colors = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Text("Sign in to Plex", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(48.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.width(360.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("On your phone or computer, go to", style = MaterialTheme.typography.titleMedium, color = colors.onSurfaceVariant)
+                Text(
+                    "On your phone or computer, go to",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = colors.onSurfaceVariant,
+                )
                 Text("plex.tv/link", style = MaterialTheme.typography.headlineSmall, color = colors.primary)
                 Spacer(Modifier.height(24.dp))
-                Text("and enter this code", style = MaterialTheme.typography.titleMedium, color = colors.onSurfaceVariant)
+                Text(
+                    "and enter this code",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = colors.onSurfaceVariant,
+                )
                 Spacer(Modifier.height(8.dp))
                 Text(pin?.code ?: "····", style = MaterialTheme.typography.displayLarge, letterSpacing = 12.sp)
             }
             Column(Modifier.padding(horizontal = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.width(1.dp).height(88.dp).background(colors.border))
-                Text("OR", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant, modifier = Modifier.padding(vertical = 12.dp))
+                Text(
+                    "OR",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
                 Box(Modifier.width(1.dp).height(88.dp).background(colors.border))
             }
             Column(Modifier.width(360.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("Scan with your phone's camera", style = MaterialTheme.typography.titleMedium, color = colors.onSurfaceVariant)
+                Text(
+                    "Scan with your phone's camera",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = colors.onSurfaceVariant,
+                )
                 Spacer(Modifier.height(16.dp))
                 val qr = pin
                 if (qr != null) QrCode(qr.qrSize.toInt(), qr.qr, Modifier.size(220.dp))
@@ -180,7 +215,8 @@ fun QrCode(modules: Int, dark: List<Boolean>, modifier: Modifier) {
         val cell = floor(size.minDimension / (modules + quiet * 2))
         val origin = (size.minDimension - cell * modules) / 2
         for (y in 0 until modules) for (x in 0 until modules) {
-            if (dark[y * modules + x]) drawRect(Color.Black, Offset(origin + x * cell, origin + y * cell), Size(cell, cell))
+            if (dark[y * modules + x])
+                drawRect(Color.Black, Offset(origin + x * cell, origin + y * cell), Size(cell, cell))
         }
     }
 }
@@ -206,11 +242,15 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
     val open = { card: MediaCard ->
         when (card.kind) {
             "collection" -> pages = pages + SubPage.Collection(card.server, card.key, card.title)
-            "movie", "show", "season" -> pages = pages + SubPage.Detail(card.server, card.key)
+            "movie",
+            "show",
+            "season" -> pages = pages + SubPage.Detail(card.server, card.key)
             else -> play(card)
         }
     }
-    val openRow = { server: String, row: MediaRow -> pages = pages + SubPage.Hub(server, row.key, row.title, row.resume) }
+    val openRow = { server: String, row: MediaRow ->
+        pages = pages + SubPage.Hub(server, row.key, row.title, row.resume)
+    }
     fun reloadServers() {
         if (!core.hasServers()) return onAccountChanged()
         servers = core.servers()
@@ -223,59 +263,94 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
     LaunchedEffect(refresh) {
         if (libraries.isEmpty()) libraries = io { core.libraries(true) }
         if (serversLoaded && SystemClock.elapsedRealtime() - discoveredAt < REDISCOVER_MS) return@LaunchedEffect
-        io { runCatching { core.refreshServers() } }.onSuccess {
-            servers = it
-            discoveredAt = SystemClock.elapsedRealtime()
-        }
+        io { runCatching { core.refreshServers() } }
+            .onSuccess {
+                servers = it
+                discoveredAt = SystemClock.elapsedRealtime()
+            }
         serversLoaded = true
         libraries = io { core.libraries(false) }
     }
     val home = servers.firstOrNull { it.id == settings.homeServer } ?: servers.firstOrNull()
     val arranged = remember(libraries, settings.libraryOrder) { core.arrangeLibraries(libraries) }
-    val shown = remember(arranged, settings.hiddenLibraries, home) { arranged.filter { it.id !in settings.hiddenLibraries }.sortedBy { it.server != home?.id } }
+    val shown =
+        remember(arranged, settings.hiddenLibraries, home) {
+            arranged.filter { it.id !in settings.hiddenLibraries }.sortedBy { it.server != home?.id }
+        }
     val cardScale = remember(settings.density) { cardScale(settings.density) }
     val appearance = remember(settings) { appearanceOf(settings) }
     BackHandler(enabled = !inSidebar || screen != Screen.Home) {
         if (!inSidebar) runCatching { sidebarFocus.requestFocus() } else screen = Screen.Home
     }
-    val inset by animateDpAsState(if (pinned) Dims.sidebar else Dims.sidebarCompact, tween(180, easing = EaseOutQuart), label = "inset")
+    val inset by
+        animateDpAsState(
+            if (pinned) Dims.sidebar else Dims.sidebarCompact,
+            tween(180, easing = EaseOutQuart),
+            label = "inset",
+        )
     Box(Modifier.fillMaxSize().background(Palette.bg)) {
         Box(Modifier.fillMaxSize().padding(start = inset)) {
-            CompositionLocalProvider(LocalCardScale provides cardScale, LocalCardMenu provides openMenu, LocalPlay provides play, LocalAppearance provides appearance) {
+            CompositionLocalProvider(
+                LocalCardScale provides cardScale,
+                LocalCardMenu provides openMenu,
+                LocalPlay provides play,
+                LocalAppearance provides appearance,
+            ) {
                 when (val s = screen) {
-                    Screen.Home -> HomeScreen(home, serversLoaded, refresh + changes, focusHome, { focusHome = false }, open, { row -> home?.let { openRow(it.id, row) } }) { screen = Screen.Downloads }
+                    Screen.Home ->
+                        HomeScreen(
+                            home,
+                            serversLoaded,
+                            refresh + changes,
+                            focusHome,
+                            { focusHome = false },
+                            open,
+                            { row -> home?.let { openRow(it.id, row) } },
+                        ) {
+                            screen = Screen.Downloads
+                        }
                     Screen.Search -> SearchScreen(open)
                     Screen.Downloads -> DownloadsScreen(play)
                     Screen.WatchTogether -> WatchTogetherScreen()
-                    Screen.Settings -> SettingsScreen(
-                        servers,
-                        home,
-                        settings,
-                        arranged,
-                        onEdit = { change -> settings = editSettings(change) },
-                        onSignOut = {
-                            scope.launch {
-                                io { core.signOut() }
-                                onAccountChanged()
+                    Screen.Settings ->
+                        SettingsScreen(
+                            servers,
+                            home,
+                            settings,
+                            arranged,
+                            onEdit = { change -> settings = editSettings(change) },
+                            onSignOut = {
+                                scope.launch {
+                                    io { core.signOut() }
+                                    onAccountChanged()
+                                }
+                            },
+                            onPlexSignIn = onPlexSignIn,
+                            onServersChanged = ::reloadServers,
+                        )
+                    Screen.AddServer ->
+                        AddServerScreen(onBack = null) { name ->
+                            Toast.makeText(context, "Added $name", Toast.LENGTH_SHORT).show()
+                            reloadServers()
+                            focusHome = true
+                            screen = Screen.Home
+                        }
+                    is Screen.Browse ->
+                        key(s.library.id) {
+                            LibraryScreen(s.library, libTab, { libTab = it }, open) { row ->
+                                openRow(s.library.server, row)
                             }
-                        },
-                        onPlexSignIn = onPlexSignIn,
-                        onServersChanged = ::reloadServers,
-                    )
-                    Screen.AddServer -> AddServerScreen(onBack = null) { name ->
-                        Toast.makeText(context, "Added $name", Toast.LENGTH_SHORT).show()
-                        reloadServers()
-                        focusHome = true
-                        screen = Screen.Home
-                    }
-                    is Screen.Browse -> key(s.library.id) { LibraryScreen(s.library, libTab, { libTab = it }, open) { row -> openRow(s.library.server, row) } }
+                        }
                 }
                 pages.forEachIndexed { i, p ->
                     key(i, p) {
                         FullPage(onBack = { pages = pages.take(i) }) {
                             when (p) {
                                 is SubPage.Hub -> HubListScreen(p.server, p.key, p.title, if (p.resume) play else open)
-                                is SubPage.Detail -> DetailScreen(p.server, p.key, changes, open, { row -> openRow(p.server, row) }) { changes++ }
+                                is SubPage.Detail ->
+                                    DetailScreen(p.server, p.key, changes, open, { row -> openRow(p.server, row) }) {
+                                        changes++
+                                    }
                                 is SubPage.Collection -> CollectionScreen(p.server, p.key, p.title, open)
                             }
                         }
@@ -298,6 +373,8 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
 
 sealed interface SubPage {
     data class Hub(val server: String, val key: String, val title: String, val resume: Boolean) : SubPage
+
     data class Detail(val server: String, val key: String) : SubPage
+
     data class Collection(val server: String, val key: String, val title: String) : SubPage
 }

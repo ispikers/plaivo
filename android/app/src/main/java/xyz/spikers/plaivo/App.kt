@@ -26,12 +26,13 @@ class App : Application() {
         val prefs = getSharedPreferences("settings", MODE_PRIVATE)
         if (prefs.getBoolean(MIGRATED, false)) return
         background.launch { cacheDir.resolve("meta").deleteRecursively() }
-        val saved = core.migrateAndroidPrefs(
-            prefs.getBoolean("sidebar_compact", true),
-            prefs.getString("home_server", null),
-            if (prefs.contains("quality")) prefs.getInt("quality", 0) else null,
-            prefs.getString("scale", null),
-        )
+        val saved =
+            core.migrateAndroidPrefs(
+                prefs.getBoolean("sidebar_compact", true),
+                prefs.getString("home_server", null),
+                if (prefs.contains("quality")) prefs.getInt("quality", 0) else null,
+                prefs.getString("scale", null),
+            )
         if (!saved) return
         prefs.edit {
             clear()
@@ -45,7 +46,8 @@ class App : Application() {
     }
 }
 
-val core: Plaivo get() = App.instance.core
+val core: Plaivo
+    get() = App.instance.core
 
 val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -53,15 +55,16 @@ private val settingsWriter = Dispatchers.IO.limitedParallelism(1)
 private val settingsLock = Any()
 private var pendingSettings: Settings? = null
 
-fun editSettings(change: (Settings) -> Settings): Settings = synchronized(settingsLock) {
-    val next = change(pendingSettings ?: core.settings())
-    pendingSettings = next
-    Palette.theme = next.theme
-    background.launch(settingsWriter) {
-        core.setSettings(next)
-        synchronized(settingsLock) { if (pendingSettings === next) pendingSettings = null }
+fun editSettings(change: (Settings) -> Settings): Settings =
+    synchronized(settingsLock) {
+        val next = change(pendingSettings ?: core.settings())
+        pendingSettings = next
+        Palette.theme = next.theme
+        background.launch(settingsWriter) {
+            core.setSettings(next)
+            synchronized(settingsLock) { if (pendingSettings === next) pendingSettings = null }
+        }
+        next
     }
-    next
-}
 
 suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }

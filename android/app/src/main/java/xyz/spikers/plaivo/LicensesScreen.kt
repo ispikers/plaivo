@@ -49,21 +49,27 @@ import uniffi.plaivo_ffi.rustLicenses
 
 private class Notice(val name: String, val detail: String, val text: () -> String)
 
-private fun detail(version: String, license: String) = listOf(version, license).filter { it.isNotBlank() }.joinToString(" · ")
+private fun detail(version: String, license: String) =
+    listOf(version, license).filter { it.isNotBlank() }.joinToString(" · ")
 
 private fun loadNotices(context: Context): List<Notice> {
-    val json = JSONObject(context.resources.openRawResource(R.raw.aboutlibraries).bufferedReader().use { it.readText() })
+    val json =
+        JSONObject(context.resources.openRawResource(R.raw.aboutlibraries).bufferedReader().use { it.readText() })
     val texts = json.getJSONObject("licenses")
     val libraries = json.getJSONArray("libraries")
-    val maven = (0 until libraries.length()).map { i ->
-        val lib = libraries.getJSONObject(i)
-        val ids = lib.optJSONArray("licenses")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
-        val name = lib.optString("name").ifBlank { lib.getString("uniqueId") }
-        Notice(name, detail(lib.optString("artifactVersion"), ids.joinToString(" OR "))) {
-            ids.joinToString("\n\n") { texts.optJSONObject(it)?.optString("content").orEmpty() }
+    val maven =
+        (0 until libraries.length()).map { i ->
+            val lib = libraries.getJSONObject(i)
+            val ids = lib.optJSONArray("licenses")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+            val name = lib.optString("name").ifBlank { lib.getString("uniqueId") }
+            Notice(name, detail(lib.optString("artifactVersion"), ids.joinToString(" OR "))) {
+                ids.joinToString("\n\n") { texts.optJSONObject(it)?.optString("content").orEmpty() }
+            }
         }
-    }
-    val rust = rustLicenses().mapIndexed { i, l -> Notice(l.name, detail(l.version, l.license)) { rustLicenseText(i.toUInt()) } }
+    val rust =
+        rustLicenses().mapIndexed { i, l ->
+            Notice(l.name, detail(l.version, l.license)) { rustLicenseText(i.toUInt()) }
+        }
     return (maven + rust).sortedBy { it.name.lowercase() }
 }
 
@@ -81,17 +87,27 @@ fun LicensesScreen(onBack: () -> Unit) {
     val items = notices ?: return
     val shown = open?.let { items.getOrNull(it) }
     Column(
-        Modifier.fillMaxSize().onFocusChanged { focused = it.hasFocus }.padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
+        Modifier.fillMaxSize()
+            .onFocusChanged { focused = it.hasFocus }
+            .padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (shown == null) {
             Heading("Open-source licenses")
             LazyColumn(state = list, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 itemsIndexed(items) { i, n ->
-                    SettingsRow(null, n.name, n.detail, if (i == last) Modifier.focusRequester(target) else Modifier, onClick = {
-                        last = i
-                        open = i
-                    }) { GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted) }
+                    SettingsRow(
+                        null,
+                        n.name,
+                        n.detail,
+                        if (i == last) Modifier.focusRequester(target) else Modifier,
+                        onClick = {
+                            last = i
+                            open = i
+                        },
+                    ) {
+                        GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
+                    }
                 }
             }
         } else {
@@ -113,17 +129,18 @@ private fun LicenseText(text: String, modifier: Modifier) {
             .clip(RoundedCornerShape(12.dp))
             .background(Palette.surface)
             .onPreviewKeyEvent { e ->
-                val step = when (e.key) {
-                    Key.DirectionDown -> 1
-                    Key.DirectionUp -> -1
-                    else -> return@onPreviewKeyEvent false
-                }
+                val step =
+                    when (e.key) {
+                        Key.DirectionDown -> 1
+                        Key.DirectionUp -> -1
+                        else -> return@onPreviewKeyEvent false
+                    }
                 if (e.type == KeyEventType.KeyDown) scope.launch { scroll.animateScrollBy(step * 360f) }
                 true
             }
             .focusable()
             .verticalScroll(scroll)
-            .padding(20.dp),
+            .padding(20.dp)
     ) {
         Text(text, fontSize = 13.sp, color = Palette.text)
     }

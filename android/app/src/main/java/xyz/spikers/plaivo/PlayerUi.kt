@@ -2,10 +2,9 @@
 
 package xyz.spikers.plaivo
 
-import androidx.annotation.OptIn
-import androidx.media3.common.util.UnstableApi
 import android.text.format.DateFormat
 import androidx.activity.compose.BackHandler
+import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -68,19 +67,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.CaptionStyleCompat
-import androidx.media3.ui.SubtitleView
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.SubtitleView
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
-import kotlinx.coroutines.delay
 import java.util.Date
 import kotlin.math.ceil
-import uniffi.plaivo_ffi.Settings
+import kotlinx.coroutines.delay
 import uniffi.plaivo_ffi.Card as MediaCard
+import uniffi.plaivo_ffi.Settings
 import uniffi.plaivo_ffi.SkipMode
 import uniffi.plaivo_ffi.WatchConnection
 
@@ -98,7 +98,11 @@ private enum class Panel(val title: String, val parent: Panel? = null) {
     Queue("Queue"),
 }
 
-private enum class Target { Play, Timeline, Skip }
+private enum class Target {
+    Play,
+    Timeline,
+    Skip,
+}
 
 private val white = Color.White
 
@@ -153,9 +157,17 @@ fun PlayerScreen(player: PlayerActivity) {
     }
     val skipState = remember {
         derivedStateOf {
-            player.playback?.markers?.withIndex()?.firstOrNull { (i, m) ->
-                position >= m.startMs.toLong() && position < m.endMs.toLong() - 1000 && (m.mode == SkipMode.BUTTON || (m.mode == SkipMode.AUTO && (i in player.autoSkipped || player.watching())))
-            }?.value?.takeIf { upNext == null }
+            player.playback
+                ?.markers
+                ?.withIndex()
+                ?.firstOrNull { (i, m) ->
+                    position >= m.startMs.toLong() &&
+                        position < m.endMs.toLong() - 1000 &&
+                        (m.mode == SkipMode.BUTTON ||
+                            (m.mode == SkipMode.AUTO && (i in player.autoSkipped || player.watching())))
+                }
+                ?.value
+                ?.takeIf { upNext == null }
         }
     }
     val skip = skipState.value
@@ -207,8 +219,7 @@ fun PlayerScreen(player: PlayerActivity) {
     }
 
     Box(
-        Modifier
-            .fillMaxSize()
+        Modifier.fillMaxSize()
             .background(Color.Black)
             .onPreviewKeyEvent { e ->
                 lastInput = System.nanoTime()
@@ -221,28 +232,53 @@ fun PlayerScreen(player: PlayerActivity) {
                 }
                 if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (e.key) {
-                    Key.MediaPlayPause, Key.MediaPlay, Key.MediaPause -> {
-                        if (e.key == Key.MediaPlayPause) player.togglePause() else player.setPlaying(e.key == Key.MediaPlay)
+                    Key.MediaPlayPause,
+                    Key.MediaPlay,
+                    Key.MediaPause -> {
+                        if (e.key == Key.MediaPlayPause) player.togglePause()
+                        else player.setPlaying(e.key == Key.MediaPlay)
                         show(Target.Play)
                         return@onPreviewKeyEvent true
                     }
-                    Key.MediaFastForward -> { player.seekBy(large); return@onPreviewKeyEvent true }
-                    Key.MediaRewind -> { player.seekBy(-large); return@onPreviewKeyEvent true }
-                    Key.MediaNext -> { player.neighbor(1)?.let { player.play(it.server, it.key) }; return@onPreviewKeyEvent true }
-                    Key.MediaPrevious -> { player.neighbor(-1)?.let { player.play(it.server, it.key) }; return@onPreviewKeyEvent true }
+                    Key.MediaFastForward -> {
+                        player.seekBy(large)
+                        return@onPreviewKeyEvent true
+                    }
+                    Key.MediaRewind -> {
+                        player.seekBy(-large)
+                        return@onPreviewKeyEvent true
+                    }
+                    Key.MediaNext -> {
+                        player.neighbor(1)?.let { player.play(it.server, it.key) }
+                        return@onPreviewKeyEvent true
+                    }
+                    Key.MediaPrevious -> {
+                        player.neighbor(-1)?.let { player.play(it.server, it.key) }
+                        return@onPreviewKeyEvent true
+                    }
                 }
                 if (controls) return@onPreviewKeyEvent false
                 swallow = e.key
                 val step = seekStep(e, small, large)
                 when (e.key) {
-                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> when {
-                        upNext != null -> player.playNext()
-                        skip != null -> player.seekTo(skip.endMs.toLong())
-                        else -> show(Target.Play)
+                    Key.DirectionCenter,
+                    Key.Enter,
+                    Key.NumPadEnter ->
+                        when {
+                            upNext != null -> player.playNext()
+                            skip != null -> player.seekTo(skip.endMs.toLong())
+                            else -> show(Target.Play)
+                        }
+                    Key.DirectionLeft -> {
+                        if (step != 0L) player.seekBy(-step)
+                        show(Target.Timeline)
                     }
-                    Key.DirectionLeft -> { if (step != 0L) player.seekBy(-step); show(Target.Timeline) }
-                    Key.DirectionRight -> { if (step != 0L) player.seekBy(step); show(Target.Timeline) }
-                    Key.DirectionUp, Key.DirectionDown -> show(Target.Play)
+                    Key.DirectionRight -> {
+                        if (step != 0L) player.seekBy(step)
+                        show(Target.Timeline)
+                    }
+                    Key.DirectionUp,
+                    Key.DirectionDown -> show(Target.Play)
                     else -> {
                         swallow = null
                         return@onPreviewKeyEvent false
@@ -251,7 +287,7 @@ fun PlayerScreen(player: PlayerActivity) {
                 true
             }
             .focusRequester(root)
-            .focusable(),
+            .focusable()
     ) {
         AndroidView(
             factory = { ctx ->
@@ -270,40 +306,135 @@ fun PlayerScreen(player: PlayerActivity) {
 
         AnimatedVisibility(controls, enter = fadeIn(), exit = fadeOut()) {
             Box(Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxWidth().height(140.dp).background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent))))
-                Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(220.dp).background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)))))
-                Row(Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 24.dp), verticalAlignment = Alignment.Top) {
+                Box(
+                    Modifier.fillMaxWidth()
+                        .height(140.dp)
+                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.75f), Color.Transparent)))
+                )
+                Box(
+                    Modifier.align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))))
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 24.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
                     Column(Modifier.weight(1f)) {
-                        Text(p?.title ?: "", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = white, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        p?.subtitle?.takeIf { it.isNotEmpty() }?.let { Text(it, fontSize = 14.sp, color = white.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        Text(
+                            p?.title ?: "",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = white,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        p?.subtitle
+                            ?.takeIf { it.isNotEmpty() }
+                            ?.let {
+                                Text(
+                                    it,
+                                    fontSize = 14.sp,
+                                    color = white.copy(alpha = 0.7f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                     }
                     room?.let { WatchPill(it, Modifier.padding(end = 16.dp)) }
-                    Text(timeFormat.format(Date(now)), fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = white)
+                    Text(
+                        timeFormat.format(Date(now)),
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = white,
+                    )
                 }
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(start = 40.dp, end = 40.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(fmtTime(position), fontSize = 13.sp, color = white, modifier = Modifier.widthIn(min = 48.dp))
-                        Timeline(position, buffered, duration, small, large, Modifier.weight(1f).focusRequester(timeline), onSeek = { player.seekBy(it); position = (position + it).coerceIn(0, duration) }, onToggle = player::togglePause)
-                        Text("-${fmtTime((duration - position).coerceAtLeast(0))}", fontSize = 13.sp, color = white, modifier = Modifier.widthIn(min = 52.dp))
+                Column(
+                    Modifier.align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(start = 40.dp, end = 40.dp, bottom = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            fmtTime(position),
+                            fontSize = 13.sp,
+                            color = white,
+                            modifier = Modifier.widthIn(min = 48.dp),
+                        )
+                        Timeline(
+                            position,
+                            buffered,
+                            duration,
+                            small,
+                            large,
+                            Modifier.weight(1f).focusRequester(timeline),
+                            onSeek = {
+                                player.seekBy(it)
+                                position = (position + it).coerceIn(0, duration)
+                            },
+                            onToggle = player::togglePause,
+                        )
+                        Text(
+                            "-${fmtTime((duration - position).coerceAtLeast(0))}",
+                            fontSize = 13.sp,
+                            color = white,
+                            modifier = Modifier.widthIn(min = 52.dp),
+                        )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
                         val episodic = player.queue.isNotEmpty() && player.neighbor(0) != null
                         val prev = player.neighbor(-1)
                         val next = player.neighbor(1)
-                        if (episodic) Control(Glyph.SkipPrevious, enabled = prev != null) { prev?.let { player.play(it.server, it.key) } }
+                        if (episodic)
+                            Control(Glyph.SkipPrevious, enabled = prev != null) {
+                                prev?.let { player.play(it.server, it.key) }
+                            }
                         Control(Glyph.Replay, badge = "${small / 1000}") { player.seekBy(-small) }
-                        Control(if (paused) Glyph.Play else Glyph.Pause, size = 52.dp, icon = 30.dp, modifier = Modifier.focusRequester(playButton)) { player.togglePause() }
+                        Control(
+                            if (paused) Glyph.Play else Glyph.Pause,
+                            size = 52.dp,
+                            icon = 30.dp,
+                            modifier = Modifier.focusRequester(playButton),
+                        ) {
+                            player.togglePause()
+                        }
                         Control(Glyph.Forward, badge = "${small / 1000}") { player.seekBy(small) }
-                        if (episodic) Control(Glyph.SkipNext, enabled = next != null) { next?.let { player.play(it.server, it.key) } }
+                        if (episodic)
+                            Control(Glyph.SkipNext, enabled = next != null) {
+                                next?.let { player.play(it.server, it.key) }
+                            }
                         Control(Glyph.Stop) { player.finish() }
                         if (duration > 0) {
                             val ends = System.currentTimeMillis() + ((duration - position) / player.speed).toLong()
-                            Text("Ends at ${timeFormat.format(Date(ends))}", fontSize = 13.sp, color = white.copy(alpha = 0.7f), modifier = Modifier.padding(start = 12.dp))
+                            Text(
+                                "Ends at ${timeFormat.format(Date(ends))}",
+                                fontSize = 13.sp,
+                                color = white.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(start = 12.dp),
+                            )
                         }
                         Spacer(Modifier.weight(1f))
-                        Control(Glyph.Tune, selected = panel?.let { it == Panel.Settings || it.parent == Panel.Settings } == true) { panel = if (panel == Panel.Settings) null else Panel.Settings }
-                        Control(Glyph.Subtitles, selected = panel == Panel.Tracks) { panel = if (panel == Panel.Tracks) null else Panel.Tracks }
-                        if (episodic) Control(Glyph.Queue, selected = panel == Panel.Queue) { panel = if (panel == Panel.Queue) null else Panel.Queue }
+                        Control(
+                            Glyph.Tune,
+                            selected = panel?.let { it == Panel.Settings || it.parent == Panel.Settings } == true,
+                        ) {
+                            panel = if (panel == Panel.Settings) null else Panel.Settings
+                        }
+                        Control(Glyph.Subtitles, selected = panel == Panel.Tracks) {
+                            panel = if (panel == Panel.Tracks) null else Panel.Tracks
+                        }
+                        if (episodic)
+                            Control(Glyph.Queue, selected = panel == Panel.Queue) {
+                                panel = if (panel == Panel.Queue) null else Panel.Queue
+                            }
                         Control(player.scale.glyph) {
                             val s = player.cycleScale()
                             hint = s.glyph to s.label
@@ -312,7 +443,17 @@ fun PlayerScreen(player: PlayerActivity) {
                 }
                 panel?.let { open ->
                     Box(Modifier.align(Alignment.BottomEnd).padding(end = 40.dp, bottom = 128.dp)) {
-                        key(open) { PanelView(open, player, onOpen = { panel = it }, onClose = { panel = null; target = Target.Play }) }
+                        key(open) {
+                            PanelView(
+                                open,
+                                player,
+                                onOpen = { panel = it },
+                                onClose = {
+                                    panel = null
+                                    target = Target.Play
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -325,13 +466,29 @@ fun PlayerScreen(player: PlayerActivity) {
         if (skip != null && panel == null) {
             Surface(
                 onClick = { player.seekTo(skip.endMs.toLong()) },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp).focusRequester(skipButton),
+                modifier =
+                    Modifier.align(Alignment.BottomEnd)
+                        .padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp)
+                        .focusRequester(skipButton),
                 shape = ClickableSurfaceDefaults.shape(CircleShape),
-                colors = ClickableSurfaceDefaults.colors(containerColor = Palette.text, contentColor = Palette.bg, focusedContainerColor = Palette.text, focusedContentColor = Palette.bg),
+                colors =
+                    ClickableSurfaceDefaults.colors(
+                        containerColor = Palette.text,
+                        contentColor = Palette.bg,
+                        focusedContainerColor = Palette.text,
+                        focusedContentColor = Palette.bg,
+                    ),
                 scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-                border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, white), inset = 3.dp, shape = CircleShape)),
+                border =
+                    ClickableSurfaceDefaults.border(
+                        focusedBorder = Border(BorderStroke(2.dp, white), inset = 3.dp, shape = CircleShape)
+                    ),
             ) {
-                Row(Modifier.height(44.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.height(44.dp).padding(horizontal = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     GlyphIcon(Glyph.FastForward, 20.dp, Palette.bg)
                     Text(skip.label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.bg)
                 }
@@ -341,12 +498,22 @@ fun PlayerScreen(player: PlayerActivity) {
         val next = player.neighbor(1)
         val left = upNext
         if (left != null && next != null && panel == null) {
-            UpNext(next, left, controls, player::playNext, player::cancelUpNext, Modifier.align(Alignment.BottomEnd).padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp))
+            UpNext(
+                next,
+                left,
+                controls,
+                player::playNext,
+                player::cancelUpNext,
+                Modifier.align(Alignment.BottomEnd).padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp),
+            )
         }
 
         hint?.let { (glyph, label) ->
             Row(
-                Modifier.align(Alignment.TopCenter).padding(top = 32.dp).background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(12.dp)).padding(horizontal = 16.dp, vertical = 10.dp),
+                Modifier.align(Alignment.TopCenter)
+                    .padding(top = 32.dp)
+                    .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -358,26 +525,43 @@ fun PlayerScreen(player: PlayerActivity) {
 }
 
 @Composable
-private fun Control(glyph: Glyph, modifier: Modifier = Modifier, size: Dp = 44.dp, icon: Dp = 24.dp, badge: String? = null, enabled: Boolean = true, selected: Boolean = false, onClick: () -> Unit) {
+private fun Control(
+    glyph: Glyph,
+    modifier: Modifier = Modifier,
+    size: Dp = 44.dp,
+    icon: Dp = 24.dp,
+    badge: String? = null,
+    enabled: Boolean = true,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
     Surface(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.size(size).alpha(if (enabled) 1f else 0.4f),
         shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (selected) white.copy(alpha = 0.18f) else Color.Transparent,
-            contentColor = white,
-            focusedContainerColor = white.copy(alpha = 0.22f),
-            focusedContentColor = white,
-            disabledContainerColor = Color.Transparent,
-            disabledContentColor = white,
-        ),
+        colors =
+            ClickableSurfaceDefaults.colors(
+                containerColor = if (selected) white.copy(alpha = 0.18f) else Color.Transparent,
+                contentColor = white,
+                focusedContainerColor = white.copy(alpha = 0.22f),
+                focusedContentColor = white,
+                disabledContainerColor = Color.Transparent,
+                disabledContentColor = white,
+            ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, white), shape = CircleShape)),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             GlyphIcon(glyph, icon, white)
-            if (badge != null) Text(badge, fontSize = 7.sp, fontWeight = FontWeight.Bold, color = white, modifier = Modifier.padding(top = 3.dp))
+            if (badge != null)
+                Text(
+                    badge,
+                    fontSize = 7.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = white,
+                    modifier = Modifier.padding(top = 3.dp),
+                )
         }
     }
 }
@@ -388,13 +572,38 @@ private fun seekStep(e: KeyEvent, small: Long, large: Long): Long {
 }
 
 @Composable
-private fun UpNext(next: MediaCard, left: Double, controls: Boolean, onPlay: () -> Unit, onCancel: () -> Unit, modifier: Modifier) {
-    Column(modifier.width(440.dp).background(Palette.surface.copy(alpha = 0.97f), RoundedCornerShape(12.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+private fun UpNext(
+    next: MediaCard,
+    left: Double,
+    controls: Boolean,
+    onPlay: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier,
+) {
+    Column(
+        modifier
+            .width(440.dp)
+            .background(Palette.surface.copy(alpha = 0.97f), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(model = next.image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.width(128.dp).height(72.dp).clip(RoundedCornerShape(6.dp)).background(Palette.bg))
+            AsyncImage(
+                model = next.image,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.width(128.dp).height(72.dp).clip(RoundedCornerShape(6.dp)).background(Palette.bg),
+            )
             Column(Modifier.weight(1f)) {
                 Text("Up next in ${ceil(left).toInt().coerceAtLeast(0)}s", fontSize = 12.sp, color = Palette.muted)
-                Text(next.subtitle, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(
+                    next.subtitle,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Palette.text,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 if (!controls) Text("OK plays now · Back cancels", fontSize = 12.sp, color = Palette.muted)
             }
         }
@@ -408,7 +617,16 @@ private fun UpNext(next: MediaCard, left: Double, controls: Boolean, onPlay: () 
 }
 
 @Composable
-private fun Timeline(position: Long, buffered: Long, duration: Long, small: Long, large: Long, modifier: Modifier, onSeek: (Long) -> Unit, onToggle: () -> Unit) {
+private fun Timeline(
+    position: Long,
+    buffered: Long,
+    duration: Long,
+    small: Long,
+    large: Long,
+    modifier: Modifier,
+    onSeek: (Long) -> Unit,
+    onToggle: () -> Unit,
+) {
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier
@@ -418,9 +636,20 @@ private fun Timeline(position: Long, buffered: Long, duration: Long, small: Long
                 if (e.type != KeyEventType.KeyDown) return@onKeyEvent false
                 val step = seekStep(e, small, large)
                 when (e.key) {
-                    Key.DirectionLeft -> { if (step != 0L) onSeek(-step); true }
-                    Key.DirectionRight -> { if (step != 0L) onSeek(step); true }
-                    Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> { onToggle(); true }
+                    Key.DirectionLeft -> {
+                        if (step != 0L) onSeek(-step)
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        if (step != 0L) onSeek(step)
+                        true
+                    }
+                    Key.DirectionCenter,
+                    Key.Enter,
+                    Key.NumPadEnter -> {
+                        onToggle()
+                        true
+                    }
                     else -> false
                 }
             }
@@ -435,7 +664,11 @@ private fun Timeline(position: Long, buffered: Long, duration: Long, small: Long
             drawRoundRect(white.copy(alpha = 0.2f), Offset(0f, y), Size(size.width, bar), r)
             drawRoundRect(white.copy(alpha = 0.4f), Offset(0f, y), Size(size.width * frac(buffered), bar), r)
             drawRoundRect(white, Offset(0f, y), Size(size.width * frac(position), bar), r)
-            drawCircle(white, radius = if (focused) 9.dp.toPx() else 6.dp.toPx(), center = Offset(size.width * frac(position), size.height / 2))
+            drawCircle(
+                white,
+                radius = if (focused) 9.dp.toPx() else 6.dp.toPx(),
+                center = Offset(size.width * frac(position), size.height / 2),
+            )
         }
     }
 }
@@ -447,13 +680,22 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
         delay(16)
         runCatching { first.requestFocus() }
     }
-    val width = when (panel) {
-        Panel.Tracks -> 600.dp
-        Panel.Queue -> 440.dp
-        else -> 360.dp
-    }
-    Column(Modifier.width(width).background(Palette.surface.copy(alpha = 0.97f), RoundedCornerShape(16.dp)).padding(vertical = 10.dp)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    val width =
+        when (panel) {
+            Panel.Tracks -> 600.dp
+            Panel.Queue -> 440.dp
+            else -> 360.dp
+        }
+    Column(
+        Modifier.width(width)
+            .background(Palette.surface.copy(alpha = 0.97f), RoundedCornerShape(16.dp))
+            .padding(vertical = 10.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             if (panel.parent != null) GlyphIcon(Glyph.ChevronLeft, 20.dp, Palette.muted)
             Text(panel.title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Palette.text)
         }
@@ -461,8 +703,18 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
             Panel.Settings -> {
                 val selected = player.qualities.firstOrNull { it.kbps.toInt() == player.quality }
                 val source = player.playback?.source.orEmpty()
-                val quality = selected?.let { "${it.label} · ${it.bitrate}" } ?: if (source.isEmpty()) "Original" else "Original · $source"
-                PanelRow(Glyph.HighQuality, "Quality", quality, chevron = true, modifier = Modifier.focusRequester(first)) { onOpen(Panel.Quality) }
+                val quality =
+                    selected?.let { "${it.label} · ${it.bitrate}" }
+                        ?: if (source.isEmpty()) "Original" else "Original · $source"
+                PanelRow(
+                    Glyph.HighQuality,
+                    "Quality",
+                    quality,
+                    chevron = true,
+                    modifier = Modifier.focusRequester(first),
+                ) {
+                    onOpen(Panel.Quality)
+                }
                 PanelRow(Glyph.Speed, "Playback Speed", fmtSpeed(player.speed), chevron = true) { onOpen(Panel.Speed) }
                 PanelRow(Glyph.Info, "File Info", "", chevron = true) { onOpen(Panel.Info) }
             }
@@ -470,29 +722,51 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
                 val original = player.qualities.none { it.kbps.toInt() == player.quality }
                 LazyColumn(Modifier.heightIn(max = 420.dp)) {
                     item {
-                        PanelRow(null, "Original", player.playback?.source.orEmpty(), selected = original, modifier = if (original) Modifier.focusRequester(first) else Modifier) {
+                        PanelRow(
+                            null,
+                            "Original",
+                            player.playback?.source.orEmpty(),
+                            selected = original,
+                            modifier = if (original) Modifier.focusRequester(first) else Modifier,
+                        ) {
                             player.changeQuality(0)
                             onOpen(Panel.Settings)
                         }
                     }
                     itemsIndexed(player.qualities) { _, q ->
                         val isSelected = q.kbps.toInt() == player.quality
-                        PanelRow(null, q.label, q.bitrate, selected = isSelected, modifier = if (isSelected) Modifier.focusRequester(first) else Modifier) {
+                        PanelRow(
+                            null,
+                            q.label,
+                            q.bitrate,
+                            selected = isSelected,
+                            modifier = if (isSelected) Modifier.focusRequester(first) else Modifier,
+                        ) {
                             player.changeQuality(q.kbps.toInt())
                             onOpen(Panel.Settings)
                         }
                     }
                 }
             }
-            Panel.Speed -> SPEEDS.forEach { s ->
-                PanelRow(null, fmtSpeed(s), "", selected = s == player.speed, modifier = if (s == player.speed) Modifier.focusRequester(first) else Modifier) {
-                    player.changeSpeed(s)
-                    onOpen(Panel.Settings)
+            Panel.Speed ->
+                SPEEDS.forEach { s ->
+                    PanelRow(
+                        null,
+                        fmtSpeed(s),
+                        "",
+                        selected = s == player.speed,
+                        modifier = if (s == player.speed) Modifier.focusRequester(first) else Modifier,
+                    ) {
+                        player.changeSpeed(s)
+                        onOpen(Panel.Settings)
+                    }
                 }
-            }
             Panel.Info -> {
                 val rows = remember(player.tracksVersion, player.videoDecoder) { player.fileInfo() }
-                Column(Modifier.padding(horizontal = 18.dp, vertical = 8.dp).focusRequester(first).focusable(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    Modifier.padding(horizontal = 18.dp, vertical = 8.dp).focusRequester(first).focusable(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     rows.forEach { (k, v) ->
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text(k, fontSize = 13.sp, color = Palette.muted, modifier = Modifier.width(84.dp))
@@ -508,15 +782,40 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
                 Row(Modifier.heightIn(max = 380.dp)) {
                     LazyColumn(Modifier.weight(1f)) {
                         item { ColumnTitle("Audio") }
-                        if (audio.isEmpty()) item { Text("No audio tracks", fontSize = 13.sp, color = Palette.muted, modifier = Modifier.padding(horizontal = 18.dp)) }
+                        if (audio.isEmpty())
+                            item {
+                                Text(
+                                    "No audio tracks",
+                                    fontSize = 13.sp,
+                                    color = Palette.muted,
+                                    modifier = Modifier.padding(horizontal = 18.dp),
+                                )
+                            }
                         itemsIndexed(audio) { i, t ->
-                            PanelRow(null, t.label, t.detail, selected = t.selected, modifier = if (t.selected || (i == 0 && audio.none { it.selected })) Modifier.focusRequester(first) else Modifier) { player.select(C.TRACK_TYPE_AUDIO, t) }
+                            PanelRow(
+                                null,
+                                t.label,
+                                t.detail,
+                                selected = t.selected,
+                                modifier =
+                                    if (t.selected || (i == 0 && audio.none { it.selected }))
+                                        Modifier.focusRequester(first)
+                                    else Modifier,
+                            ) {
+                                player.select(C.TRACK_TYPE_AUDIO, t)
+                            }
                         }
                     }
                     LazyColumn(Modifier.weight(1f)) {
                         item { ColumnTitle("Subtitles") }
-                        item { PanelRow(null, "Off", "", selected = textOff) { player.select(C.TRACK_TYPE_TEXT, null) } }
-                        itemsIndexed(text) { _, t -> PanelRow(null, t.label, t.detail, selected = t.selected && !textOff) { player.select(C.TRACK_TYPE_TEXT, t) } }
+                        item {
+                            PanelRow(null, "Off", "", selected = textOff) { player.select(C.TRACK_TYPE_TEXT, null) }
+                        }
+                        itemsIndexed(text) { _, t ->
+                            PanelRow(null, t.label, t.detail, selected = t.selected && !textOff) {
+                                player.select(C.TRACK_TYPE_TEXT, t)
+                            }
+                        }
                     }
                 }
             }
@@ -525,7 +824,11 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
                 val list = rememberLazyListState(initialFirstVisibleItemIndex = (current - 1).coerceAtLeast(0))
                 LazyColumn(Modifier.heightIn(max = 420.dp), state = list) {
                     itemsIndexed(player.queue, key = { _, c -> c.key }) { i, card ->
-                        QueueRow(card, playing = i == current, modifier = if (i == current) Modifier.focusRequester(first) else Modifier) {
+                        QueueRow(
+                            card,
+                            playing = i == current,
+                            modifier = if (i == current) Modifier.focusRequester(first) else Modifier,
+                        ) {
                             if (i != current) player.play(card.server, card.key)
                             onClose()
                         }
@@ -538,23 +841,54 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
 
 @Composable
 private fun ColumnTitle(text: String) {
-    Text(text.uppercase(), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted, modifier = Modifier.padding(start = 18.dp, top = 6.dp, bottom = 4.dp))
+    Text(
+        text.uppercase(),
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = Palette.muted,
+        modifier = Modifier.padding(start = 18.dp, top = 6.dp, bottom = 4.dp),
+    )
 }
 
 @Composable
-private fun PanelRow(glyph: Glyph?, label: String, detail: String, modifier: Modifier = Modifier, selected: Boolean = false, chevron: Boolean = false, onClick: () -> Unit) {
+private fun PanelRow(
+    glyph: Glyph?,
+    label: String,
+    detail: String,
+    modifier: Modifier = Modifier,
+    selected: Boolean = false,
+    chevron: Boolean = false,
+    onClick: () -> Unit,
+) {
     Surface(
         onClick = onClick,
         modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp),
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-        colors = ClickableSurfaceDefaults.colors(containerColor = Color.Transparent, contentColor = Palette.text, focusedContainerColor = Palette.tint(0.12f), focusedContentColor = Palette.text),
+        colors =
+            ClickableSurfaceDefaults.colors(
+                containerColor = Color.Transparent,
+                contentColor = Palette.text,
+                focusedContainerColor = Palette.tint(0.12f),
+                focusedContentColor = Palette.text,
+            ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
     ) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             if (glyph != null) GlyphIcon(glyph, 20.dp, Palette.muted)
             Column(Modifier.weight(1f)) {
                 Text(label, fontSize = 14.sp, color = Palette.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (detail.isNotEmpty() && !chevron) Text(detail, fontSize = 12.sp, color = Palette.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (detail.isNotEmpty() && !chevron)
+                    Text(
+                        detail,
+                        fontSize = 12.sp,
+                        color = Palette.muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
             }
             if (chevron && detail.isNotEmpty()) Text(detail, fontSize = 13.sp, color = Palette.muted)
             if (chevron) GlyphIcon(Glyph.ChevronRight, 18.dp, Palette.muted)
@@ -569,24 +903,65 @@ private fun QueueRow(card: MediaCard, playing: Boolean, modifier: Modifier, onCl
         onClick = onClick,
         modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp),
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-        colors = ClickableSurfaceDefaults.colors(containerColor = if (playing) Palette.tint(0.08f) else Color.Transparent, contentColor = Palette.text, focusedContainerColor = Palette.tint(0.12f), focusedContentColor = Palette.text),
+        colors =
+            ClickableSurfaceDefaults.colors(
+                containerColor = if (playing) Palette.tint(0.08f) else Color.Transparent,
+                contentColor = Palette.text,
+                focusedContainerColor = Palette.tint(0.12f),
+                focusedContentColor = Palette.text,
+            ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
     ) {
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             Box(Modifier.width(112.dp).height(63.dp).background(Palette.bg, RoundedCornerShape(6.dp))) {
-                AsyncImage(model = card.image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(6.dp)))
+                AsyncImage(
+                    model = card.image,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(6.dp)),
+                )
                 if (playing) {
-                    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Play, 24.dp, white) }
+                    Box(
+                        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(6.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        GlyphIcon(Glyph.Play, 24.dp, white)
+                    }
                 } else if (card.watched) {
-                    Box(Modifier.align(Alignment.TopEnd).padding(3.dp).size(18.dp).background(Palette.text, CircleShape), contentAlignment = Alignment.Center) { GlyphIcon(Glyph.Check, 12.dp, Palette.bg) }
+                    Box(
+                        Modifier.align(Alignment.TopEnd)
+                            .padding(3.dp)
+                            .size(18.dp)
+                            .background(Palette.text, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        GlyphIcon(Glyph.Check, 12.dp, Palette.bg)
+                    }
                 }
                 if (card.progress > 0f && !card.watched && !playing) {
-                    Box(Modifier.align(Alignment.BottomCenter).padding(6.dp).fillMaxWidth().height(3.dp).background(Palette.surface, CircleShape)) {
+                    Box(
+                        Modifier.align(Alignment.BottomCenter)
+                            .padding(6.dp)
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .background(Palette.surface, CircleShape)
+                    ) {
                         Box(Modifier.fillMaxWidth(card.progress).height(3.dp).background(Palette.text, CircleShape))
                     }
                 }
             }
-            Text(card.subtitle, fontSize = 13.sp, color = Palette.text, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(
+                card.subtitle,
+                fontSize = 13.sp,
+                color = Palette.text,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -601,7 +976,11 @@ private fun styleSubtitles(view: SubtitleView, s: Settings) {
     val color = (s.subtitleColor.toIntOrNull(16) ?: 0xFFFFFF) or 0xFF000000.toInt()
     val back = android.graphics.Color.argb(s.subtitleBackground.toInt().coerceIn(0, 100) * 255 / 100, 0, 0, 0)
     val edge = if (s.subtitleOutline > 0u) CaptionStyleCompat.EDGE_TYPE_OUTLINE else CaptionStyleCompat.EDGE_TYPE_NONE
-    view.setStyle(CaptionStyleCompat(color, back, android.graphics.Color.TRANSPARENT, edge, android.graphics.Color.BLACK, null))
+    view.setStyle(
+        CaptionStyleCompat(color, back, android.graphics.Color.TRANSPARENT, edge, android.graphics.Color.BLACK, null)
+    )
     view.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * s.subtitleSize.toFloat() / 100f)
-    view.setBottomPaddingFraction(SubtitleView.DEFAULT_BOTTOM_PADDING_FRACTION + (100 - s.subtitlePosition.toInt().coerceAtMost(100)) / 100f)
+    view.setBottomPaddingFraction(
+        SubtitleView.DEFAULT_BOTTOM_PADDING_FRACTION + (100 - s.subtitlePosition.toInt().coerceAtMost(100)) / 100f
+    )
 }

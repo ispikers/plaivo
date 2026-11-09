@@ -9,7 +9,6 @@ import android.os.Build
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,27 +24,25 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.tv.material3.Text
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,7 +53,6 @@ import uniffi.plaivo_ffi.Download
 import uniffi.plaivo_ffi.DownloadListener
 import uniffi.plaivo_ffi.DownloadScope
 import uniffi.plaivo_ffi.DownloadState
-import java.io.File
 
 object DownloadQueue : DownloadListener {
     private val signal = Channel<Unit>(Channel.CONFLATED)
@@ -86,13 +82,17 @@ fun fmtSize(bytes: ULong): String = Formatter.formatShortFileSize(App.instance, 
 
 private fun Download.detail(available: Boolean): String {
     val size = if (total > 0uL) "${fmtSize(bytes)} of ${fmtSize(total)}" else ""
-    val status = when (state) {
-        DownloadState.DOWNLOADING -> listOf(if (total > 0uL) "${bytes * 100uL / total}%" else "Starting", size).filter(String::isNotEmpty).joinToString(" · ")
-        DownloadState.QUEUED -> if (available) "Queued" else "Server unavailable"
-        DownloadState.PAUSED -> listOf("Paused", size).filter(String::isNotEmpty).joinToString(" · ")
-        DownloadState.FAILED -> "Failed: $error"
-        DownloadState.DONE -> "Downloaded"
-    }
+    val status =
+        when (state) {
+            DownloadState.DOWNLOADING ->
+                listOf(if (total > 0uL) "${bytes * 100uL / total}%" else "Starting", size)
+                    .filter(String::isNotEmpty)
+                    .joinToString(" · ")
+            DownloadState.QUEUED -> if (available) "Queued" else "Server unavailable"
+            DownloadState.PAUSED -> listOf("Paused", size).filter(String::isNotEmpty).joinToString(" · ")
+            DownloadState.FAILED -> "Failed: $error"
+            DownloadState.DONE -> "Downloaded"
+        }
     return listOf(subtitle, status).filter(String::isNotEmpty).joinToString(" · ")
 }
 
@@ -116,10 +116,10 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
         val next = keys.getOrNull(index.coerceAtMost(keys.lastIndex))?.let { requesters[it] }
         if (next == null || runCatching { next.requestFocus() }.isFailure) runCatching { header.requestFocus() }
     }
-    fun Modifier.tracked(key: String, index: Int) = focusRequester(requesters.getOrPut(key) { FocusRequester() }).onFocusChanged {
-        if (it.hasFocus) focused = key to index
-        else if (focused?.first == key && key in latestKeys) focused = null
-    }
+    fun Modifier.tracked(key: String, index: Int) =
+        focusRequester(requesters.getOrPut(key) { FocusRequester() }).onFocusChanged {
+            if (it.hasFocus) focused = key to index else if (focused?.first == key && key in latestKeys) focused = null
+        }
     LazyVerticalGrid(
         columns = GridCells.FixedSize(Dims.poster * LocalCardScale.current + LocalAppearance.current.gap),
         modifier = Modifier.fillMaxSize(),
@@ -130,27 +130,48 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
             Column(Modifier.padding(start = 7.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Heading("Downloads")
-                    val status = if (entries.isEmpty()) "Nothing downloaded yet. Hold OK on a poster to download it." else "${library.size} downloaded · ${queue.size} in queue"
+                    val status =
+                        if (entries.isEmpty()) "Nothing downloaded yet. Hold OK on a poster to download it."
+                        else "${library.size} downloaded · ${queue.size} in queue"
                     Text("$status · ${fmtSize(free)} free", fontSize = 13.sp, color = Palette.muted)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    val running = queue.any { it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING }
+                    val running =
+                        queue.any { it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING }
                     val stopped = queue.any { it.state == DownloadState.PAUSED || it.state == DownloadState.FAILED }
-                    ActionButton("Pause all", { background.launch { core.pauseAllDownloads() } }, Modifier.focusRequester(header), running)
+                    ActionButton(
+                        "Pause all",
+                        { background.launch { core.pauseAllDownloads() } },
+                        Modifier.focusRequester(header),
+                        running,
+                    )
                     ActionButton("Resume all", { background.launch { core.resumeAllDownloads() } }, enabled = stopped)
                 }
             }
         }
-        itemsIndexed(queue, key = { _, d -> "q/${d.server}/${d.key}" }, span = { _, _ -> GridItemSpan(maxLineSpan) }) { i, d ->
+        itemsIndexed(queue, key = { _, d -> "q/${d.server}/${d.key}" }, span = { _, _ -> GridItemSpan(maxLineSpan) }) {
+            i,
+            d ->
             QueueRow(d, d.server in servers, Modifier.tracked("q/${d.server}/${d.key}", i))
         }
         if (library.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Text("Downloaded", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted, modifier = Modifier.padding(start = 7.dp, top = 8.dp))
+                Text(
+                    "Downloaded",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Palette.muted,
+                    modifier = Modifier.padding(start = 7.dp, top = 8.dp),
+                )
             }
         }
         itemsIndexed(library, key = { _, card -> "${card.server}/${card.key}" }) { i, card ->
-            Box(Modifier.fillMaxWidth().tracked("${card.server}/${card.key}", queue.size + i), contentAlignment = Alignment.TopCenter) { MediaTile(card, wide = false) { play(card) } }
+            Box(
+                Modifier.fillMaxWidth().tracked("${card.server}/${card.key}", queue.size + i),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                MediaTile(card, wide = false) { play(card) }
+            }
         }
     }
 }
@@ -158,29 +179,57 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
 @Composable
 private fun QueueRow(d: Download, available: Boolean, modifier: Modifier) {
     val running = d.state == DownloadState.QUEUED || d.state == DownloadState.DOWNLOADING
-    Row(modifier.padding(horizontal = 7.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        SettingsRow(Glyph.Download, d.title, d.detail(available), Modifier.weight(1f), onClick = {
-            background.launch { if (running) core.pauseDownload(d.server, d.key) else core.resumeDownload(d.server, d.key) }
-        }) {
+    Row(
+        modifier.padding(horizontal = 7.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        SettingsRow(
+            Glyph.Download,
+            d.title,
+            d.detail(available),
+            Modifier.weight(1f),
+            onClick = {
+                background.launch {
+                    if (running) core.pauseDownload(d.server, d.key) else core.resumeDownload(d.server, d.key)
+                }
+            },
+        ) {
             if (d.total > 0uL) {
                 Box(Modifier.width(120.dp).height(4.dp).background(Palette.tint(0.2f), CircleShape)) {
-                    Box(Modifier.fillMaxWidth((d.bytes.toDouble() / d.total.toDouble()).toFloat().coerceIn(0f, 1f)).height(4.dp).background(Palette.text, CircleShape))
+                    Box(
+                        Modifier.fillMaxWidth((d.bytes.toDouble() / d.total.toDouble()).toFloat().coerceIn(0f, 1f))
+                            .height(4.dp)
+                            .background(Palette.text, CircleShape)
+                    )
                 }
             }
-            Text(if (running) "Pause" else if (d.state == DownloadState.FAILED) "Retry" else "Resume", fontSize = 14.sp, color = Palette.muted)
+            Text(
+                if (running) "Pause" else if (d.state == DownloadState.FAILED) "Retry" else "Resume",
+                fontSize = 14.sp,
+                color = Palette.muted,
+            )
         }
         MoveButton(Glyph.Close, true) { background.launch { core.removeDownload(d.server, d.key) } }
     }
 }
 
 fun download(context: Context, card: MediaCard, scope: DownloadScope) {
-    if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+    if (
+        Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+    ) {
         (context as? Activity)?.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
     }
     background.launch {
         val error = runCatching { core.download(card.server, card.key, scope) }.exceptionOrNull()
         withContext(Dispatchers.Main) {
-            Toast.makeText(context, error?.let { "Could not download: ${it.message}" } ?: "Added to Downloads", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                    context,
+                    error?.let { "Could not download: ${it.message}" } ?: "Added to Downloads",
+                    Toast.LENGTH_SHORT,
+                )
+                .show()
         }
     }
 }

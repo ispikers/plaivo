@@ -41,13 +41,23 @@ val LocalCardMenu = staticCompositionLocalOf<((MediaCard) -> Unit)?> { null }
 val LocalPlay = staticCompositionLocalOf<(MediaCard) -> Unit> { {} }
 
 @Composable
-fun MediaTile(card: MediaCard, wide: Boolean, modifier: Modifier = Modifier, dim: Boolean = false, onFocus: () -> Unit = {}, onClick: () -> Unit) {
+fun MediaTile(
+    card: MediaCard,
+    wide: Boolean,
+    modifier: Modifier = Modifier,
+    dim: Boolean = false,
+    onFocus: () -> Unit = {},
+    onClick: () -> Unit,
+) {
     val menu = LocalCardMenu.current
     Column(modifier.width((if (wide) Dims.wide else Dims.poster) * LocalCardScale.current)) {
         Card(
             onClick = onClick,
             onLongClick = menu?.let { { it(card) } },
-            modifier = Modifier.fillMaxWidth().aspectRatio(if (wide) 16f / 9f else 2f / 3f).onFocusChanged { if (it.isFocused) onFocus() },
+            modifier =
+                Modifier.fillMaxWidth().aspectRatio(if (wide) 16f / 9f else 2f / 3f).onFocusChanged {
+                    if (it.isFocused) onFocus()
+                },
             shape = CardDefaults.shape(cardShape),
             colors = CardDefaults.colors(containerColor = Palette.surface, focusedContainerColor = Palette.surface),
             scale = CardDefaults.scale(focusedScale = 1f),
@@ -55,28 +65,65 @@ fun MediaTile(card: MediaCard, wide: Boolean, modifier: Modifier = Modifier, dim
             glow = CardDefaults.glow(),
         ) {
             Box(Modifier.fillMaxSize()) {
-                AsyncImage(model = card.image, contentDescription = card.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                AsyncImage(
+                    model = card.image,
+                    contentDescription = card.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
                 if (dim) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
                 if (card.progress > 0f && !card.watched) {
-                    Box(Modifier.align(Alignment.BottomCenter).padding(6.dp).fillMaxWidth().height(4.dp).background(Palette.surface, CircleShape)) {
+                    Box(
+                        Modifier.align(Alignment.BottomCenter)
+                            .padding(6.dp)
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .background(Palette.surface, CircleShape)
+                    ) {
                         Box(Modifier.fillMaxWidth(card.progress).height(4.dp).background(Palette.text, CircleShape))
                     }
                 }
                 if (card.watched && LocalAppearance.current.watchedIndicators) {
-                    Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(22.dp).shadow(4.dp, CircleShape).background(Palette.text, CircleShape), contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier.align(Alignment.TopEnd)
+                            .padding(4.dp)
+                            .size(22.dp)
+                            .shadow(4.dp, CircleShape)
+                            .background(Palette.text, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         GlyphIcon(Glyph.Check, 15.dp, Palette.bg)
                     }
                 } else if (!card.watched && card.unwatched > 0uL) {
                     Box(
-                        Modifier.align(Alignment.TopEnd).padding(4.dp).height(22.dp).widthIn(min = 22.dp).shadow(4.dp, CircleShape).background(Palette.text, CircleShape).padding(horizontal = 6.dp),
+                        Modifier.align(Alignment.TopEnd)
+                            .padding(4.dp)
+                            .height(22.dp)
+                            .widthIn(min = 22.dp)
+                            .shadow(4.dp, CircleShape)
+                            .background(Palette.text, CircleShape)
+                            .padding(horizontal = 6.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(if (card.unwatched > 999uL) "999+" else card.unwatched.toString(), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Palette.bg)
+                        Text(
+                            if (card.unwatched > 999uL) "999+" else card.unwatched.toString(),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Palette.bg,
+                        )
                     }
                 }
             }
         }
-        Text(card.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, modifier = Modifier.padding(top = 6.dp))
+        Text(
+            card.title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Palette.text,
+            modifier = Modifier.padding(top = 6.dp),
+        )
         Text(card.subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, color = Palette.muted)
     }
 }
@@ -93,7 +140,11 @@ fun SeeAll(wide: Boolean, dim: Boolean, onClick: () -> Unit) {
             border = CardDefaults.border(focusedBorder = Border(BorderStroke(2.5.dp, Palette.text), shape = cardShape)),
             glow = CardDefaults.glow(),
         ) {
-            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 val tint = Palette.text.copy(alpha = if (dim) 0.54f else 1f)
                 GlyphIcon(Glyph.ChevronRight, 28.dp, tint)
                 Text("See all", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = tint)

@@ -24,10 +24,14 @@ class DownloadService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val list = DownloadQueue.entries.value
-        ServiceCompat.startForeground(this, NOTIFICATION, notification(this, list), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION,
+            notification(this, list),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
         running = this
-        if (intent?.action == PAUSE) background.launch { core.pauseAllDownloads() }
-        else if (!active(list)) stopSelf()
+        if (intent?.action == PAUSE) background.launch { core.pauseAllDownloads() } else if (!active(list)) stopSelf()
         return START_NOT_STICKY
     }
 
@@ -46,49 +50,80 @@ class DownloadService : Service() {
         private const val NOTIFICATION = 1
         private const val PAUSE = "pause"
 
-        @Volatile
-        private var running: DownloadService? = null
+        @Volatile private var running: DownloadService? = null
 
-        @Volatile
-        private var blocked = false
+        @Volatile private var blocked = false
 
         fun unblock() {
             blocked = false
         }
 
         fun createChannel(context: Context) {
-            NotificationManagerCompat.from(context).createNotificationChannel(
-                NotificationChannelCompat.Builder(CHANNEL, NotificationManagerCompat.IMPORTANCE_LOW).setName("Downloads").build(),
-            )
+            NotificationManagerCompat.from(context)
+                .createNotificationChannel(
+                    NotificationChannelCompat.Builder(CHANNEL, NotificationManagerCompat.IMPORTANCE_LOW)
+                        .setName("Downloads")
+                        .build()
+                )
         }
 
         fun sync(context: Context, list: List<Download>) {
             val service = running
             when {
                 !active(list) -> service?.stopSelf()
-                service == null -> if (!blocked) runCatching { ContextCompat.startForegroundService(context, Intent(context, DownloadService::class.java)) }.onFailure {
-                    blocked = true
-                    android.util.Log.w("Plaivo", "download service not started until the app is opened again: $it")
-                }
-                Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED ->
+                service == null ->
+                    if (!blocked)
+                        runCatching {
+                                ContextCompat.startForegroundService(
+                                    context,
+                                    Intent(context, DownloadService::class.java),
+                                )
+                            }
+                            .onFailure {
+                                blocked = true
+                                android.util.Log.w(
+                                    "Plaivo",
+                                    "download service not started until the app is opened again: $it",
+                                )
+                            }
+                Build.VERSION.SDK_INT < 33 ||
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                        PackageManager.PERMISSION_GRANTED ->
                     NotificationManagerCompat.from(context).notify(NOTIFICATION, notification(context, list))
             }
         }
 
         private fun active(list: List<Download>): Boolean {
             val servers by lazy { core.servers().map { it.id }.toSet() }
-            return list.any { it.state == DownloadState.DOWNLOADING || (it.state == DownloadState.QUEUED && it.server in servers) }
+            return list.any {
+                it.state == DownloadState.DOWNLOADING || (it.state == DownloadState.QUEUED && it.server in servers)
+            }
         }
 
         private fun notification(context: Context, list: List<Download>): Notification {
             val current = list.firstOrNull { it.state == DownloadState.DOWNLOADING }
             val waiting = list.count { it.state == DownloadState.QUEUED }
             val percent = current?.takeIf { it.total > 0uL }?.let { (it.bytes * 100uL / it.total).toInt() }
-            val pause = PendingIntent.getService(context, 0, Intent(context, DownloadService::class.java).setAction(PAUSE), PendingIntent.FLAG_IMMUTABLE)
-            val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            val pause =
+                PendingIntent.getService(
+                    context,
+                    0,
+                    Intent(context, DownloadService::class.java).setAction(PAUSE),
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
+            val open =
+                PendingIntent.getActivity(
+                    context,
+                    0,
+                    Intent(context, MainActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
             return NotificationCompat.Builder(context, CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle(current?.let { listOf(it.title, it.subtitle).filter(String::isNotEmpty).joinToString(" · ") } ?: "Waiting to download")
+                .setContentTitle(
+                    current?.let { listOf(it.title, it.subtitle).filter(String::isNotEmpty).joinToString(" · ") }
+                        ?: "Waiting to download"
+                )
                 .setContentText(if (waiting > 0) "$waiting more in the queue" else null)
                 .setProgress(100, percent ?: 0, percent == null)
                 .setOngoing(true)
