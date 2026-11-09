@@ -30,12 +30,8 @@ fn trakt_id() -> Option<&'static str> {
     env(option_env!("PLAIVO_TRAKT_ID"))
 }
 
-fn trakt_secret() -> Option<&'static str> {
-    env(option_env!("PLAIVO_TRAKT_SECRET"))
-}
-
-fn relay() -> Option<&'static str> {
-    env(option_env!("PLAIVO_OAUTH_RELAY"))
+fn relay() -> &'static str {
+    env(option_env!("PLAIVO_OAUTH_RELAY")).unwrap_or("https://relay.plaivo.app")
 }
 
 fn now() -> u64 {
@@ -71,8 +67,8 @@ impl Service {
 
     pub fn configured(self) -> bool {
         match self {
-            Service::Trakt => trakt_id().is_some() && trakt_secret().is_some(),
-            Service::Mal | Service::Anilist => relay().is_some(),
+            Service::Trakt => trakt_id().is_some(),
+            Service::Mal | Service::Anilist => true,
         }
     }
 }
@@ -414,7 +410,7 @@ impl Trackers {
         }
         let req = match service {
             Service::Trakt => trakt::device_code_request(trakt_id().unwrap_or_default()),
-            s => lists::start_request(relay().unwrap_or_default(), s),
+            s => lists::start_request(relay(), s),
         };
         let resp = send(&req)?;
         let v = resp.json();
@@ -440,8 +436,8 @@ impl Trackers {
     pub fn poll_sign_in(&self, sign_in: &mut SignIn) -> Poll {
         let s = sign_in.service;
         let req = match s {
-            Service::Trakt => trakt::device_token_request(trakt_id().unwrap_or_default(), trakt_secret().unwrap_or_default(), &sign_in.secret),
-            _ => lists::result_request(relay().unwrap_or_default(), &sign_in.secret),
+            Service::Trakt => trakt::device_token_request(trakt_id().unwrap_or_default(), &sign_in.secret),
+            _ => lists::result_request(relay(), &sign_in.secret),
         };
         let Ok(resp) = send(&req) else { return Poll::Pending };
         match (s, resp.status) {
@@ -544,8 +540,8 @@ impl Inner {
 
     fn refresh(&self, s: Service, token: &Token) -> Result<Token, Outcome> {
         let req = match (s, &token.refresh) {
-            (Service::Trakt, Some(r)) => trakt::refresh_request(trakt_id().unwrap_or_default(), trakt_secret().unwrap_or_default(), r),
-            (Service::Mal, Some(r)) => lists::refresh_request(relay().unwrap_or_default(), s, r),
+            (Service::Trakt, Some(r)) => trakt::refresh_request(trakt_id().unwrap_or_default(), r),
+            (Service::Mal, Some(r)) => lists::refresh_request(relay(), s, r),
             _ => {
                 log::warn!("{} sign-in expired", s.key());
                 self.replace_token(s, token, None);
@@ -795,11 +791,10 @@ mod tests {
 
         let r = trakt::device_code_request("cid");
         assert_eq!((r.url.as_str(), r.body), ("https://api.trakt.tv/oauth/device/code", Body::Json(json!({ "client_id": "cid" }))));
-        let r = trakt::device_token_request("cid", "sec", "dev");
-        assert_eq!(r.body, Body::Json(json!({ "code": "dev", "client_id": "cid", "client_secret": "sec" })));
-        let r = trakt::refresh_request("cid", "sec", "ref");
-        assert_eq!(r.url, "https://api.trakt.tv/oauth/token");
-        assert_eq!(r.body, Body::Json(json!({ "refresh_token": "ref", "client_id": "cid", "client_secret": "sec", "redirect_uri": "urn:ietf:wg:oauth:2.0:oob", "grant_type": "refresh_token" })));
+        let r = trakt::device_token_request("cid", "dev");
+        assert_eq!((r.url.as_str(), r.body), ("https://api.trakt.tv/oauth/device/token", Body::Json(json!({ "code": "dev", "client_id": "cid" }))));
+        let r = trakt::refresh_request("cid", "ref");
+        assert_eq!((r.url.as_str(), r.body), ("https://api.trakt.tv/oauth/token", Body::Json(json!({ "refresh_token": "ref", "client_id": "cid", "redirect_uri": "urn:ietf:wg:oauth:2.0:oob", "grant_type": "refresh_token" }))));
     }
 
     #[test]

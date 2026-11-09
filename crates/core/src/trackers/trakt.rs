@@ -13,15 +13,14 @@ pub(super) fn device_code_request(client_id: &str) -> Request {
     api(Request::post(format!("{API}/oauth/device/code"), json!({ "client_id": client_id })), client_id)
 }
 
-pub(super) fn device_token_request(client_id: &str, secret: &str, device_code: &str) -> Request {
-    api(Request::post(format!("{API}/oauth/device/token"), json!({ "code": device_code, "client_id": client_id, "client_secret": secret })), client_id)
+pub(super) fn device_token_request(client_id: &str, device_code: &str) -> Request {
+    api(Request::post(format!("{API}/oauth/device/token"), json!({ "code": device_code, "client_id": client_id })), client_id)
 }
 
-pub(super) fn refresh_request(client_id: &str, secret: &str, refresh_token: &str) -> Request {
+pub(super) fn refresh_request(client_id: &str, refresh_token: &str) -> Request {
     let body = json!({
         "refresh_token": refresh_token,
         "client_id": client_id,
-        "client_secret": secret,
         "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
         "grant_type": "refresh_token",
     });
