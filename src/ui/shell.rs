@@ -74,7 +74,7 @@ impl Plaivo {
         }
         if self.page != Page::Player {
             let sub_page = match self.page {
-                Page::Detail | Page::Licenses => true,
+                Page::Detail | Page::HubList | Page::Licenses => true,
                 Page::Settings => self.settings_page.is_some(),
                 Page::Downloads => self.offline_view.is_some(),
                 _ => false,
@@ -128,6 +128,7 @@ impl Plaivo {
             Page::Servers => self.render_servers(cx),
             Page::Home => self.render_home(window, cx),
             Page::Library => self.render_library(window, cx),
+            Page::HubList => self.render_hub_list(window, cx),
             Page::Search => self.render_search(window, cx),
             Page::Detail => self.render_detail(window, cx),
             Page::Settings => self.render_settings_page(window, cx),
@@ -137,7 +138,7 @@ impl Plaivo {
             Page::Watch => self.render_watch(window, cx),
             _ => div().into_any_element(),
         };
-        let sidebar = (self.page != Page::Detail).then(|| self.render_sidebar(window, cx));
+        let sidebar = (!matches!(self.page, Page::Detail | Page::HubList)).then(|| self.render_sidebar(window, cx));
         div()
             .size_full()
             .flex()
@@ -184,7 +185,14 @@ impl Plaivo {
         };
         let groups = self.sections_in_order(false);
         let multi = groups.len() > 1;
-        let active = self.library.as_ref().filter(|_| self.page == Page::Library).map(|l| (l.key.server.as_str(), l.key.section.as_str()));
+        let active = if self.page == Page::Library {
+            self.nav.iter().rev().take_while(|n| matches!(n, Nav::Library(..) | Nav::Collection(..))).find_map(|n| match n {
+                Nav::Library(server, section) => Some((server.as_str(), section.as_str())),
+                _ => None,
+            })
+        } else {
+            None
+        };
         let mut libs = div().id("libs").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(2.));
         let mut n = 0usize;
         for (server_name, rows) in groups {

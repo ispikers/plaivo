@@ -44,6 +44,7 @@ pub enum Page {
     Servers,
     Home,
     Library,
+    HubList,
     Search,
     Detail,
     Settings,
@@ -59,6 +60,8 @@ pub enum Nav {
     Home,
     Servers,
     Library(String, String),
+    Collection(String, String, String),
+    Hub(String, String, String, bool),
     Search,
     Detail(String, String, Option<String>),
     Settings(Option<Category>),
@@ -143,6 +146,8 @@ pub struct Choice {
 
 pub struct Hub {
     pub title: SharedString,
+    pub key: SharedString,
+    pub server: SharedString,
     pub resume: bool,
     pub wide: bool,
     pub items: Vec<Card>,
@@ -150,11 +155,52 @@ pub struct Hub {
     pub slide: Option<(f32, f32, Instant)>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Listing {
+    Items,
+    Collections,
+    Collection,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LibTab {
+    Recommended,
+    Browse,
+    Collections,
+}
+
+pub const LIB_TABS: [(LibTab, &str); 3] = [(LibTab::Recommended, "Recommended"), (LibTab::Browse, "Browse"), (LibTab::Collections, "Collections")];
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LibKey {
     pub server: String,
     pub section: String,
     pub sort: String,
+    pub listing: Listing,
+}
+
+pub struct HubList {
+    pub server: String,
+    pub key: String,
+    pub title: SharedString,
+    pub resume: bool,
+    pub sort: String,
+    items: Vec<Item>,
+    pub cards: Vec<Card>,
+    pub loaded: bool,
+    pub scroll: UniformListScrollHandle,
+}
+
+impl HubList {
+    fn rebuild(&mut self) {
+        let mut items: Vec<&Item> = self.items.iter().collect();
+        sort_items(&mut items, &self.sort);
+        self.cards = items.into_iter().map(|it| Card { resume: self.resume, ..card_for(it, false, &self.server) }).collect();
+    }
+
+    pub fn has_added(&self) -> bool {
+        self.items.iter().any(|it| it.added_at.is_some()) || initial_sort(&self.key) == "addedAt:desc"
+    }
 }
 
 pub struct Library {
@@ -271,6 +317,11 @@ pub struct Plaivo {
     pub suggestions: Vec<Card>,
     pub library: Option<Library>,
     library_cache: Vec<Library>,
+    pub lib_tab: LibTab,
+    pub lib_hubs: Option<Vec<Hub>>,
+    lib_hubs_for: (String, String),
+    pub lib_hubs_scroll: ScrollHandle,
+    pub hub_list: Option<HubList>,
     pub sort_open: bool,
     pub search: Entity<TextInput>,
     pub results: Vec<Card>,
@@ -359,6 +410,45 @@ pub fn card_for(it: &Item, wide: bool, server: &str) -> Card {
         server: server.to_owned().into(),
         thumb: thumb(server, art).map(|t| Thumb { blur, ..t }),
         ..Default::default()
+    }
+}
+
+fn hub_rows(hubs: &[plex::Hub], server: &str, old: &[Hub]) -> Vec<Hub> {
+    hubs.iter()
+        .enumerate()
+        .map(|(i, h)| {
+            let wide = wide_hub(h);
+            let items = h.metadata.iter().map(|it| Card { resume: h.is_continue(), ..card_for(it, wide, server) }).collect();
+            Hub {
+                title: h.title.clone().into(),
+                key: h.key.clone().into(),
+                server: server.to_owned().into(),
+                resume: h.is_continue(),
+                wide,
+                items,
+                scroll: old.get(i).map(|h| h.scroll.clone()).unwrap_or_default(),
+                slide: None,
+            }
+        })
+        .collect()
+}
+
+fn initial_sort(key: &str) -> String {
+    let param = key.split(['?', '&']).find_map(|p| p.strip_prefix("sort="));
+    if let Some((id, _)) = SORTS.iter().find(|(id, _)| Some(*id) == param) {
+        return (*id).to_owned();
+    }
+    if key.starts_with("latest:") || key.to_ascii_lowercase().contains("recentlyadded") { "addedAt:desc".to_owned() } else { String::new() }
+}
+
+fn sort_items(items: &mut [&Item], sort: &str) {
+    use std::cmp::Reverse;
+    match sort {
+        "titleSort" => items.sort_by_cached_key(|it| first(&[&it.grandparent_title, &it.title]).to_lowercase()),
+        "addedAt:desc" => items.sort_by_key(|it| Reverse(it.added_at)),
+        "originallyAvailableAt:desc" => items.sort_by_cached_key(|it| Reverse(if it.originally_available_at.is_empty() { it.year.map(|y| y.to_string()).unwrap_or_default() } else { it.originally_available_at.clone() })),
+        "audienceRating:desc" => items.sort_by(|a, b| b.audience_rating.partial_cmp(&a.audience_rating).unwrap_or(std::cmp::Ordering::Equal)),
+        _ => {}
     }
 }
 
@@ -551,6 +641,11 @@ impl Plaivo {
             suggestions: Vec::new(),
             library: None,
             library_cache: Vec::new(),
+            lib_tab: LibTab::Recommended,
+            lib_hubs: None,
+            lib_hubs_for: Default::default(),
+            lib_hubs_scroll: ScrollHandle::new(),
+            hub_list: None,
             sort_open: false,
             search,
             results: Vec::new(),
@@ -971,6 +1066,9 @@ impl Plaivo {
         self.results.clear();
         self.library = None;
         self.library_cache.clear();
+        self.lib_hubs = None;
+        self.lib_hubs_for = Default::default();
+        self.hub_list = None;
         self.detail = None;
         self.home_ready = false;
         for img in self.lru.drain() {
@@ -993,17 +1091,28 @@ impl Plaivo {
             self.stop_playback(cx);
         }
         let stale_page = match self.page {
-            Page::Library => self.library.as_ref().is_none_or(|l| !known.contains(&l.key.server)),
+            Page::Library => match self.nav.last() {
+                Some(Nav::Library(server, _) | Nav::Collection(server, _, _)) => !known.contains(server),
+                _ => true,
+            },
+            Page::HubList => self.hub_list.as_ref().is_none_or(|l| !known.contains(&l.server)),
             Page::Detail => !known.contains(&self.detail_id.0),
             _ => false,
         };
         self.nav.retain(|n| match n {
-            Nav::Library(server, _) | Nav::Detail(server, _, _) => known.contains(server),
+            Nav::Library(server, _) | Nav::Collection(server, _, _) | Nav::Hub(server, _, _, _) | Nav::Detail(server, _, _) => known.contains(server),
             _ => true,
         });
         self.library_cache.retain(|l| known.contains(&l.key.server));
         if self.library.as_ref().is_some_and(|l| !known.contains(&l.key.server)) {
             self.library = None;
+        }
+        if !known.contains(&self.lib_hubs_for.0) {
+            self.lib_hubs = None;
+            self.lib_hubs_for = Default::default();
+        }
+        if self.hub_list.as_ref().is_some_and(|l| !known.contains(&l.server)) {
+            self.hub_list = None;
         }
         if !known.contains(&self.detail_id.0) {
             self.detail = None;
@@ -1224,8 +1333,25 @@ impl Plaivo {
             Nav::Watch => self.page = Page::Watch,
             Nav::Library(server, section) => {
                 self.page = Page::Library;
-                let sort = self.library.as_ref().filter(|l| l.key.server == server && l.key.section == section).map(|l| l.key.sort.clone());
-                self.show_library(LibKey { server, section, sort: sort.unwrap_or_else(|| SORTS[0].0.to_owned()) }, cx);
+                match self.lib_tab {
+                    LibTab::Recommended => self.load_lib_hubs(server, section, cx),
+                    LibTab::Browse => {
+                        let sort = self.library.iter().chain(&self.library_cache).find(|l| l.key.listing == Listing::Items && l.key.server == server && l.key.section == section).map(|l| l.key.sort.clone());
+                        self.show_library(LibKey { server, section, sort: sort.unwrap_or_else(|| SORTS[0].0.to_owned()), listing: Listing::Items }, SharedString::default(), cx);
+                    }
+                    LibTab::Collections => self.show_library(LibKey { server, section, sort: String::new(), listing: Listing::Collections }, SharedString::default(), cx),
+                }
+            }
+            Nav::Collection(server, key, title) => {
+                self.page = Page::Library;
+                self.show_library(LibKey { server, section: key, sort: String::new(), listing: Listing::Collection }, title.into(), cx);
+            }
+            Nav::Hub(server, key, title, resume) => {
+                self.page = Page::HubList;
+                if self.hub_list.as_ref().is_none_or(|l| l.server != server || l.key != key) {
+                    self.hub_list = Some(HubList { server, sort: initial_sort(&key), key, title: title.into(), resume, items: Vec::new(), cards: Vec::new(), loaded: false, scroll: UniformListScrollHandle::new() });
+                }
+                self.load_hub_list(cx);
             }
             Nav::Detail(server, key, season) => {
                 self.page = Page::Detail;
@@ -1261,6 +1387,7 @@ impl Plaivo {
         }
         let nav = match card.kind.as_ref() {
             "season" if !card.parent.is_empty() => Nav::Detail(card.server.to_string(), card.parent.to_string(), Some(card.key.to_string())),
+            "collection" => Nav::Collection(card.server.to_string(), card.key.to_string(), card.title.to_string()),
             _ => Nav::Detail(card.server.to_string(), card.key.to_string(), None),
         };
         self.navigate(nav, true, cx);
@@ -1309,24 +1436,7 @@ impl Plaivo {
             .map(|it| hero_card(it, server))
             .collect();
         self.hero_index = self.hero_index.min(self.hero.len().saturating_sub(1));
-        let old_scroll: Vec<ScrollHandle> = self.hubs.iter().map(|h| h.scroll.clone()).collect();
-        self.hubs = hubs
-            .iter()
-            .enumerate()
-            .map(|(i, h)| {
-                let wide = wide_hub(h);
-                let items = h
-                    .metadata
-                    .iter()
-                    .map(|it| {
-                        let mut c = card_for(it, wide, server);
-                        c.resume = h.is_continue();
-                        c
-                    })
-                    .collect();
-                Hub { title: h.title.clone().into(), resume: h.is_continue(), wide, items, scroll: old_scroll.get(i).cloned().unwrap_or_default(), slide: None }
-            })
-            .collect();
+        self.hubs = hub_rows(&hubs, server, &self.hubs);
         let mut seen = HashSet::new();
         self.suggestions = hubs
             .iter()
@@ -1379,15 +1489,72 @@ impl Plaivo {
         }
     }
 
+    pub fn set_lib_tab(&mut self, tab: LibTab, cx: &mut Context<Self>) {
+        self.lib_tab = tab;
+        if let Some(nav @ Nav::Library(..)) = self.nav.last().cloned() {
+            self.navigate(nav, false, cx);
+        }
+    }
+
+    fn load_lib_hubs(&mut self, server: String, section: String, cx: &mut Context<Self>) {
+        let Some(srv) = self.server(&server) else { return };
+        let kind = self.sections.iter().find(|s| s.server == server && s.key == section).map(|s| s.kind.clone()).unwrap_or_default();
+        let key = (server, section.clone());
+        if self.lib_hubs_for != key {
+            self.lib_hubs = None;
+            self.lib_hubs_scroll = ScrollHandle::new();
+            self.lib_hubs_for = key.clone();
+        }
+        self.load(cx, move |c| srv.section_hubs(c, &section, &kind), move |this, r, cx| {
+            if this.lib_hubs_for != key {
+                return;
+            }
+            match r {
+                Ok(hubs) => this.lib_hubs = Some(hub_rows(&hubs, &key.0, this.lib_hubs.as_deref().unwrap_or_default())),
+                Err(e) => {
+                    this.lib_hubs.get_or_insert_default();
+                    this.toast(format!("Could not load recommendations: {e}"), cx);
+                }
+            }
+        });
+    }
+
+    fn load_hub_list(&mut self, cx: &mut Context<Self>) {
+        let Some(l) = &self.hub_list else { return };
+        let Some(srv) = self.server(&l.server) else { return };
+        let (server, key) = (l.server.clone(), l.key.clone());
+        let k = key.clone();
+        self.load(cx, move |c| srv.hub_items(c, &k), move |this, r, cx| {
+            let Some(l) = this.hub_list.as_mut().filter(|l| l.server == server && l.key == key) else { return };
+            l.loaded = true;
+            match r {
+                Ok(items) => {
+                    l.items = items;
+                    l.rebuild();
+                }
+                Err(e) => this.toast(format!("Could not load list: {e}"), cx),
+            }
+        });
+    }
+
+    pub fn set_hub_sort(&mut self, sort: &str, cx: &mut Context<Self>) {
+        self.sort_open = false;
+        if let Some(l) = &mut self.hub_list {
+            l.sort = sort.to_owned();
+            l.rebuild();
+        }
+        cx.notify();
+    }
+
     pub fn set_sort(&mut self, sort: &str, cx: &mut Context<Self>) {
         self.sort_open = false;
         if let Some(mut key) = self.library.as_ref().map(|l| l.key.clone()) {
             key.sort = sort.to_owned();
-            self.show_library(key, cx);
+            self.show_library(key, SharedString::default(), cx);
         }
     }
 
-    fn show_library(&mut self, key: LibKey, cx: &mut Context<Self>) {
+    fn show_library(&mut self, key: LibKey, title: SharedString, cx: &mut Context<Self>) {
         if self.library.as_ref().is_some_and(|l| l.key == key) {
             return self.refresh_library_page(0, cx);
         }
@@ -1398,7 +1565,6 @@ impl Plaivo {
                 self.library_cache.remove(0);
             }
         }
-        let title = self.sections.iter().find(|s| s.server == key.server && s.key == key.section).map(|s| s.title.clone()).unwrap_or_default();
         self.library = Some(match self.library_cache.iter().position(|l| l.key == key) {
             Some(i) => self.library_cache.remove(i),
             None => Library { key, title, items: vec![None; 48], pages: HashSet::new(), scroll: UniformListScrollHandle::new() },
@@ -1427,7 +1593,12 @@ impl Plaivo {
         let Some(srv) = self.server(&key.server) else { return };
         let k = key.clone();
         let summaries = self.settings.view_mode == ViewMode::List;
-        self.load(cx, move |c| srv.section_items(c, &k.section, page * PAGE, PAGE, &k.sort, summaries), move |this, r, cx| match r {
+        let fetch = move |c: &Ctx| match k.listing {
+            Listing::Items => srv.section_items(c, &k.section, page * PAGE, PAGE, &k.sort, summaries),
+            Listing::Collections => srv.collections(c, &k.section, page * PAGE, PAGE),
+            Listing::Collection => srv.collection_items(c, &k.section, page * PAGE, PAGE, summaries),
+        };
+        self.load(cx, fetch, move |this, r, cx| match r {
             Ok((items, total)) => {
                 let Some(lib) = this.library.as_mut().filter(|l| l.key == key).or_else(|| this.library_cache.iter_mut().find(|l| l.key == key)) else { return };
                 if page == 0 && (first_load || lib.items.len() != total) {
@@ -1658,6 +1829,9 @@ impl Plaivo {
         self.settings.save();
         self.library = None;
         self.library_cache.clear();
+        self.lib_hubs = None;
+        self.lib_hubs_for = Default::default();
+        self.hub_list = None;
         self.load_home(cx);
         cx.notify();
     }
@@ -1690,6 +1864,32 @@ mod tests {
 
     fn item(key: &str, kind: &str, title: &str, guid: &str) -> Item {
         Item { rating_key: key.into(), kind: kind.into(), title: title.into(), guid: guid.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn recent_hub_lists_open_on_their_date_sort() {
+        assert_eq!(initial_sort("/library/sections/1/all?sort=originallyAvailableAt:desc&originallyAvailableAt>=-1y"), "originallyAvailableAt:desc");
+        assert_eq!(initial_sort("/hubs/home/recentlyAdded?type=1&sectionID=1"), "addedAt:desc");
+        assert_eq!(initial_sort("latest:abc"), "addedAt:desc");
+        assert_eq!(initial_sort("/library/sections/1/all?sort=lastViewedAt:desc"), "");
+        assert_eq!(initial_sort("/hubs/continueWatching/items"), "");
+    }
+
+    #[test]
+    fn hub_lists_sort_with_missing_values_last() {
+        let a = Item { added_at: Some(5), audience_rating: Some(7.), year: Some(1999), ..item("a", "movie", "beta", "") };
+        let b = Item { audience_rating: Some(9.), originally_available_at: "2005-01-02".into(), ..item("b", "movie", "Alpha", "") };
+        let c = Item { added_at: Some(9), grandparent_title: "Gamma".into(), ..item("c", "episode", "Aardvark", "") };
+        let keys = |sort: &str| {
+            let mut v = vec![&a, &b, &c];
+            sort_items(&mut v, sort);
+            v.iter().map(|it| it.rating_key.as_str()).collect::<String>()
+        };
+        assert_eq!(keys(""), "abc");
+        assert_eq!(keys("titleSort"), "bac");
+        assert_eq!(keys("addedAt:desc"), "cab");
+        assert_eq!(keys("originallyAvailableAt:desc"), "bac");
+        assert_eq!(keys("audienceRating:desc"), "bac");
     }
 
     #[test]

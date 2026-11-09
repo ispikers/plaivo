@@ -1,4 +1,4 @@
-use crate::app::{Plaivo, Shape};
+use crate::app::{Hub, Plaivo, Shape};
 use crate::ui::shell::{ease_out, progress};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, overlay_button, pill, scrollbar, skeleton};
@@ -12,7 +12,7 @@ const SWIPE: f32 = 60.;
 const SLIDE_ANIM: Duration = Duration::from_millis(320);
 
 pub fn content_width(this: &Plaivo, window: &Window) -> f32 {
-    let sidebar = if this.page == crate::app::Page::Detail {
+    let sidebar = if matches!(this.page, crate::app::Page::Detail | crate::app::Page::HubList) {
         0.
     } else if this.settings.sidebar_compact {
         theme::SIDEBAR_COMPACT
@@ -64,17 +64,8 @@ impl Plaivo {
         let hubs: Vec<AnyElement> = if self.hubs.is_empty() {
             (0..3).map(|i| self.render_hub_skeleton(i, cw)).collect()
         } else {
-            let scrolled = -f32::from(self.home_scroll.offset().y);
-            let mut top = if self.hero.is_empty() { 0. } else { vh * 0.75 + 16. };
-            (0..self.hubs.len())
-                .map(|i| {
-                    let w = card_width(cw, self.hubs[i].wide, self.settings.card_scale());
-                    let height = 38. + card_height(w, self.hubs[i].wide, self.settings.card_pad());
-                    let near = top + height > scrolled - vh && top < scrolled + 2. * vh;
-                    top += height + 16.;
-                    self.render_hub(i, cw, near, window, cx)
-                })
-                .collect()
+            let top = if self.hero.is_empty() { 0. } else { vh * 0.75 + 16. };
+            self.render_hubs(false, cw, top, window, cx)
         };
         let page = div()
             .id("home")
@@ -206,7 +197,29 @@ impl Plaivo {
         }
     }
 
-    fn render_hub_skeleton(&self, i: usize, cw: f32) -> AnyElement {
+    fn hub_vec(&mut self, lib: bool) -> &mut Vec<Hub> {
+        match (lib, &mut self.lib_hubs) {
+            (true, Some(h)) => h,
+            _ => &mut self.hubs,
+        }
+    }
+
+    pub fn render_hubs(&mut self, lib: bool, cw: f32, mut top: f32, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let vh = f32::from(window.viewport_size().height);
+        let scrolled = -f32::from(if lib { &self.lib_hubs_scroll } else { &self.home_scroll }.offset().y);
+        (0..self.hub_vec(lib).len())
+            .map(|i| {
+                let wide = self.hub_vec(lib)[i].wide;
+                let w = card_width(cw, wide, self.settings.card_scale());
+                let height = 38. + card_height(w, wide, self.settings.card_pad());
+                let near = top + height > scrolled - vh && top < scrolled + 2. * vh;
+                top += height + 16.;
+                self.render_hub(lib, i, cw, near, window, cx)
+            })
+            .collect()
+    }
+
+    pub fn render_hub_skeleton(&self, i: usize, cw: f32) -> AnyElement {
         let wide = i == 0;
         let w = card_width(cw, wide, self.settings.card_scale());
         let pad = self.settings.card_pad();
@@ -222,25 +235,25 @@ impl Plaivo {
             .into_any_element()
     }
 
-    fn render_hub(&mut self, i: usize, cw: f32, near: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let (title, resume, wide, scroll) = {
-            let h = &self.hubs[i];
-            (h.title.clone(), h.resume, h.wide, h.scroll.clone())
+    fn render_hub(&mut self, lib: bool, i: usize, cw: f32, near: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let (title, resume, wide, scroll, key, server) = {
+            let h = &self.hub_vec(lib)[i];
+            (h.title.clone(), h.resume, h.wide, h.scroll.clone(), h.key.clone(), h.server.clone())
         };
         let w = card_width(cw, wide, self.settings.card_scale());
         let pad = self.settings.card_pad();
         let hovered = self.view.hub_hover == Some(i);
-        if let Some((from, to, t0)) = self.hubs[i].slide {
+        if let Some((from, to, t0)) = self.hub_vec(lib)[i].slide {
             let p = ease_out(progress(Some(t0), SLIDE_ANIM, window));
             scroll.set_offset(point(px(from + (to - from) * p), px(0.)));
             if p >= 1. {
-                self.hubs[i].slide = None;
+                self.hub_vec(lib)[i].slide = None;
             }
         }
         let offset = f32::from(scroll.offset().x);
         let first = ((-offset - cw) / w).floor().max(0.) as usize;
         let last = if near { ((-offset + 2. * cw) / w).ceil() as usize } else { 0 };
-        let items = std::mem::take(&mut self.hubs[i].items);
+        let items = std::mem::take(&mut self.hub_vec(lib)[i].items);
         let cards: Vec<AnyElement> = items
             .iter()
             .enumerate()
@@ -252,8 +265,8 @@ impl Plaivo {
                 }
             })
             .collect();
-        self.hubs[i].items = items;
-        let base = self.hubs[i].slide.map_or(offset, |(_, to, _)| to);
+        self.hub_vec(lib)[i].items = items;
+        let base = self.hub_vec(lib)[i].slide.map_or(offset, |(_, to, _)| to);
         let max = f32::from(scroll.max_offset().x);
         let page = (cw - 16.) * 0.8;
         let arrow_y = if wide { (w - 2. * pad) * 9. / 32. } else { (w - 2. * pad) * 0.75 } - 24. + pad;
@@ -269,14 +282,20 @@ impl Plaivo {
                 cx.notify();
             }))
             .child(
-                div()
-                    .h(px(34.))
-                    .pl(px(12.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(icon(if resume { Icon::PlayCircle } else { Icon::Sparkle }, 24., theme::text()))
-                    .child(div().text_size(px(22.)).child(title)),
+                div().h(px(34.)).pl(px(12.)).flex().items_center().child(
+                    div()
+                        .id(("hub-title", i))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon(if resume { Icon::PlayCircle } else { Icon::Sparkle }, 24., theme::text()))
+                        .child(div().text_size(px(22.)).child(title.clone()))
+                        .when(!key.is_empty(), |d| {
+                            d.cursor_pointer().child(icon(Icon::ChevronRight, 22., theme::muted())).on_click(cx.listener(move |this, _, _, cx| {
+                                this.navigate(crate::app::Nav::Hub(server.to_string(), key.to_string(), title.to_string(), resume), true, cx)
+                            }))
+                        }),
+                ),
             )
             .child(
                 div()
@@ -286,7 +305,7 @@ impl Plaivo {
                         d.child(
                             div().absolute().left(px(8.)).top(px(arrow_y)).child(
                                 overlay_button(("hub-left", i), Icon::ChevronLeft, 48., 32., theme::black(0.7), theme::black(0.9), rgb(0xFFFFFF)).on_click(cx.listener(move |this, _, _, cx| {
-                                    this.hubs[i].slide = Some((offset, (base + page).min(0.), Instant::now()));
+                                    this.hub_vec(lib)[i].slide = Some((offset, (base + page).min(0.), Instant::now()));
                                     cx.notify();
                                 })),
                             ),
@@ -296,7 +315,7 @@ impl Plaivo {
                         d.child(
                             div().absolute().right(px(8.)).top(px(arrow_y)).child(
                                 overlay_button(("hub-right", i), Icon::ChevronRight, 48., 32., theme::black(0.7), theme::black(0.9), rgb(0xFFFFFF)).on_click(cx.listener(move |this, _, _, cx| {
-                                    this.hubs[i].slide = Some((offset, (base - page).max(-max), Instant::now()));
+                                    this.hub_vec(lib)[i].slide = Some((offset, (base - page).max(-max), Instant::now()));
                                     cx.notify();
                                 })),
                             ),

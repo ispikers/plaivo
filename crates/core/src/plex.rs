@@ -147,6 +147,7 @@ pub struct Directory {
 #[serde(default)]
 pub struct Hub {
     pub title: String,
+    pub key: String,
     #[serde(rename = "hubIdentifier")]
     pub id: String,
     #[serde(rename = "type")]
@@ -187,6 +188,7 @@ pub struct Item {
     pub child_count: Option<u64>,
     pub studio: String,
     pub originally_available_at: String,
+    pub added_at: Option<i64>,
     pub user_rating: Option<f64>,
     #[serde(rename = "librarySectionID", deserialize_with = "flex_string")]
     pub library_section_id: String,
@@ -387,7 +389,7 @@ pub struct Stream {
 impl Hub {
     pub fn is_continue(&self) -> bool {
         let id = self.id.to_ascii_lowercase();
-        id.contains("continue") || id.contains("ondeck")
+        id.contains("continue") || id.contains("ondeck") || id.contains("inprogress")
     }
 
     pub fn wide(&self) -> bool {
@@ -524,6 +526,8 @@ pub fn resolve_playable(srv: &Server, cx: &Ctx, key: &str) -> R<Item> {
 
 static DOWN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
+pub const HUB_MAX: usize = 1000;
+
 pub fn is_down(server_id: &str) -> bool {
     DOWN.lock().unwrap_or_else(|e| e.into_inner()).contains(server_id)
 }
@@ -548,6 +552,10 @@ pub(crate) fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect()
+}
+
+fn escape_uri(path: &str) -> String {
+    path.bytes().map(|b| if b.is_ascii_graphic() && !b"<>\"{}|\\^`".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
 fn watchlisted_in(v: &serde_json::Value) -> bool {
@@ -798,10 +806,55 @@ impl Server {
             return jellyfin::section_items(self, c, key, start, size, sort, summaries);
         }
         let exclude = if summaries { "" } else { "&excludeFields=summary" };
-        let ct: Container = self.get(
-            c,
-            &format!("/library/sections/{key}/all?sort={sort}{exclude}&X-Plex-Container-Start={start}&X-Plex-Container-Size={size}"),
-        )?;
+        self.paged(c, &format!("/library/sections/{key}/all?sort={sort}{exclude}"), start, size)
+    }
+
+    pub fn section_hubs(&self, c: &Ctx, key: &str, kind: &str) -> R<Vec<Hub>> {
+        if self.is_jellyfin() {
+            return jellyfin::section_hubs(self, c, key, kind);
+        }
+        let mut hubs = self.get::<Container>(c, &format!("/hubs/sections/{key}?count=20&includeLibraryPlaylists=0"))?.hub;
+        hubs.retain(|h| !h.metadata.is_empty() && matches!(h.kind.as_str(), "movie" | "show" | "season" | "episode" | "mixed" | "clip"));
+        if let Some(i) = hubs.iter().position(Hub::is_continue) {
+            let h = hubs.remove(i);
+            hubs.insert(0, h);
+        }
+        Ok(hubs)
+    }
+
+    pub fn collections(&self, c: &Ctx, section: &str, start: usize, size: usize) -> R<(Vec<Item>, usize)> {
+        if self.is_jellyfin() {
+            return jellyfin::collections(self, c, start, size);
+        }
+        self.paged(c, &format!("/library/sections/{section}/collections"), start, size)
+    }
+
+    pub fn collection_items(&self, c: &Ctx, key: &str, start: usize, size: usize, summaries: bool) -> R<(Vec<Item>, usize)> {
+        if self.is_jellyfin() {
+            return jellyfin::collection_items(self, c, key, start, size, summaries);
+        }
+        self.paged(c, &format!("/library/collections/{key}/children"), start, size)
+    }
+
+    pub fn hub_items(&self, c: &Ctx, key: &str) -> R<Vec<Item>> {
+        if self.is_jellyfin() {
+            return jellyfin::hub_items(self, c, key);
+        }
+        let key = escape_uri(key);
+        let mut out = Vec::new();
+        loop {
+            let (items, total) = self.paged(c, &key, out.len(), 100)?;
+            let done = items.is_empty() || out.len() + items.len() >= total.min(HUB_MAX);
+            out.extend(items);
+            if done {
+                return Ok(out);
+            }
+        }
+    }
+
+    fn paged(&self, c: &Ctx, path: &str, start: usize, size: usize) -> R<(Vec<Item>, usize)> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let ct: Container = self.get(c, &format!("{path}{sep}X-Plex-Container-Start={start}&X-Plex-Container-Size={size}"))?;
         let total = ct.total_size.unwrap_or(start + ct.size);
         Ok((ct.metadata, total))
     }
@@ -1052,8 +1105,13 @@ mod tests {
     }
 
     #[test]
+    fn hub_keys_escape_only_characters_invalid_in_uris() {
+        assert_eq!(escape_uri("/library/sections/1/all?sort=a:desc&originallyAvailableAt>=-1y&t=a b%20"), "/library/sections/1/all?sort=a:desc&originallyAvailableAt%3E=-1y&t=a%20b%20");
+    }
+
+    #[test]
     fn continue_hubs_detected_by_any_id() {
-        for id in ["home.continue", "continueWatching", "home.ondeck", "home.onDeck"] {
+        for id in ["home.continue", "continueWatching", "home.ondeck", "home.onDeck", "movie.inprogress.1", "tv.ondeck.2"] {
             assert!(Hub { id: id.into(), ..Default::default() }.is_continue(), "{id}");
         }
         assert!(!Hub { id: "home.movies.recent".into(), ..Default::default() }.is_continue());

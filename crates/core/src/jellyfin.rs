@@ -225,6 +225,7 @@ impl Dto {
             "Series" => "show".to_owned(),
             "Season" => "season".to_owned(),
             "Episode" => "episode".to_owned(),
+            "BoxSet" => "collection".to_owned(),
             k => k.to_ascii_lowercase(),
         };
         let backdrop = self.backdrop_image_tags.first().map(|t| image(&self.id, "Backdrop/0", t)).unwrap_or_default();
@@ -341,11 +342,11 @@ fn section_kind(collection_type: &str) -> Option<&'static str> {
     }
 }
 
-fn continue_hub(resume: Vec<Item>, next_up: Vec<Item>) -> Hub {
+fn continue_hub(resume: Vec<Item>, next_up: Vec<Item>, parent: &str) -> Hub {
     let shows: HashSet<String> = resume.iter().map(|i| i.grandparent_rating_key.clone()).filter(|k| !k.is_empty()).collect();
     let mut metadata = resume;
     metadata.extend(next_up.into_iter().filter(|i| !shows.contains(&i.grandparent_rating_key)));
-    Hub { title: "Continue Watching".into(), id: "continueWatching".into(), kind: "mixed".into(), metadata }
+    Hub { title: "Continue Watching".into(), key: format!("continue:{parent}"), id: "continueWatching".into(), kind: "mixed".into(), metadata }
 }
 
 pub fn sections(srv: &Server, c: &Ctx) -> R<Vec<Directory>> {
@@ -371,9 +372,10 @@ pub fn hubs(srv: &Server, c: &Ctx) -> R<Vec<Hub>> {
         (views, ok(resume.join()), ok(next_up.join()), latest.into_iter().map(|j| j.join().ok().and_then(Result::ok).unwrap_or_default()).collect::<Vec<_>>())
     });
     let views = views?;
-    let mut hubs = vec![continue_hub(resume, next_up)];
+    let mut hubs = vec![continue_hub(resume, next_up, "")];
     hubs.extend(views.into_iter().zip(latest).map(|(v, dtos)| Hub {
         title: format!("Recently Added in {}", v.title),
+        key: format!("latest:{}", v.key),
         id: format!("latest.{}", v.key),
         kind: v.kind,
         metadata: dtos.into_iter().map(Dto::into_item).collect(),
@@ -394,18 +396,56 @@ fn sort_params(sort: &str) -> (&'static str, &'static str) {
 }
 
 pub fn section_items(srv: &Server, c: &Ctx, key: &str, start: usize, size: usize, sort: &str, summaries: bool) -> R<(Vec<Item>, usize)> {
-    let overview = if summaries { ",Overview" } else { "" };
     let (by, order) = sort_params(sort);
+    paged(srv, c, &format!("ParentId={key}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy={by},SortName&SortOrder={order}"), start, size, summaries)
+}
+
+pub fn collections(srv: &Server, c: &Ctx, start: usize, size: usize) -> R<(Vec<Item>, usize)> {
+    // BoxSets live in one server-wide folder; Jellyfin ignores ParentId for them.
+    paged(srv, c, "IncludeItemTypes=BoxSet&Recursive=true&SortBy=SortName&SortOrder=Ascending", start, size, false)
+}
+
+pub fn collection_items(srv: &Server, c: &Ctx, key: &str, start: usize, size: usize, summaries: bool) -> R<(Vec<Item>, usize)> {
+    paged(srv, c, &format!("ParentId={key}"), start, size, summaries)
+}
+
+fn paged(srv: &Server, c: &Ctx, query: &str, start: usize, size: usize, summaries: bool) -> R<(Vec<Item>, usize)> {
+    let overview = if summaries { ",Overview" } else { "" };
     let page: Page = get(
         srv,
         c,
-        &format!(
-            "/Items?userId={}&ParentId={key}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy={by},SortName&SortOrder={order}&StartIndex={start}&Limit={size}&Fields={LIST_FIELDS}{overview}&ImageTypeLimit=1&EnableTotalRecordCount=true",
-            srv.user_id
-        ),
+        &format!("/Items?userId={}&{query}&StartIndex={start}&Limit={size}&Fields={LIST_FIELDS}{overview}&ImageTypeLimit=1&EnableTotalRecordCount=true", srv.user_id),
     )?;
     let total = page.total_record_count.unwrap_or(start + page.items.len());
-    Ok((page.items.into_iter().map(Dto::into_item).collect(), total))
+    Ok((into_items(page), total))
+}
+
+pub fn section_hubs(srv: &Server, c: &Ctx, key: &str, kind: &str) -> R<Vec<Hub>> {
+    let u = &srv.user_id;
+    let (resume, next_up, latest) = std::thread::scope(|s| {
+        let resume = s.spawn(|| items(srv, c, &format!("/UserItems/Resume?userId={u}&ParentId={key}&Limit=20&MediaTypes=Video&Fields={LIST_FIELDS}")));
+        let next_up = s.spawn(|| if kind == "show" { items(srv, c, &format!("/Shows/NextUp?UserId={u}&ParentId={key}&Limit=20&Fields={LIST_FIELDS}")) } else { Ok(Vec::new()) });
+        let latest = get::<Vec<Dto>>(srv, c, &format!("/Items/Latest?userId={u}&ParentId={key}&Limit=20&GroupItems=true&Fields={LIST_FIELDS}"));
+        let ok = |r: std::thread::Result<R<Vec<Item>>>| r.ok().and_then(Result::ok).unwrap_or_default();
+        (ok(resume.join()), ok(next_up.join()), latest)
+    });
+    let latest = Hub { title: "Recently Added".into(), key: format!("latest:{key}"), id: format!("latest.{key}"), kind: kind.into(), metadata: latest?.into_iter().map(Dto::into_item).collect() };
+    let mut hubs = vec![continue_hub(resume, next_up, key), latest];
+    hubs.retain(|h| !h.metadata.is_empty());
+    Ok(hubs)
+}
+
+pub fn hub_items(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Item>> {
+    let u = &srv.user_id;
+    let max = crate::plex::HUB_MAX;
+    if let Some(parent) = key.strip_prefix("continue:") {
+        let scope = if parent.is_empty() { String::new() } else { format!("&ParentId={parent}") };
+        let resume = items(srv, c, &format!("/UserItems/Resume?userId={u}{scope}&Limit={max}&MediaTypes=Video&Fields={LIST_FIELDS}"))?;
+        let next_up = items(srv, c, &format!("/Shows/NextUp?UserId={u}{scope}&Limit={max}&Fields={LIST_FIELDS}")).unwrap_or_default();
+        return Ok(continue_hub(resume, next_up, parent).metadata);
+    }
+    let parent = key.strip_prefix("latest:").ok_or("Unknown list")?;
+    Ok(get::<Vec<Dto>>(srv, c, &format!("/Items/Latest?userId={u}&ParentId={parent}&Limit={max}&GroupItems=true&Fields={LIST_FIELDS}"))?.into_iter().map(Dto::into_item).collect())
 }
 
 pub fn metadata(srv: &Server, c: &Ctx, key: &str) -> R<Item> {
@@ -430,7 +470,7 @@ pub fn metadata(srv: &Server, c: &Ctx, key: &str) -> R<Item> {
 
 pub fn related(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Hub>> {
     let metadata = items(srv, c, &format!("/Items/{key}/Similar?userId={}&Limit=20&Fields={LIST_FIELDS}", srv.user_id))?;
-    Ok((!metadata.is_empty()).then(|| Hub { title: "More Like This".into(), id: "similar".into(), kind: "mixed".into(), metadata }).into_iter().collect())
+    Ok((!metadata.is_empty()).then(|| Hub { title: "More Like This".into(), key: String::new(), id: "similar".into(), kind: "mixed".into(), metadata }).into_iter().collect())
 }
 
 pub fn clear_progress(srv: &Server, c: &Client, key: &str) -> R<()> {
@@ -822,7 +862,7 @@ mod tests {
         let resume = page("resume");
         assert_eq!(resume.iter().map(|i| i.kind.as_str()).collect::<Vec<_>>(), ["movie", "episode"]);
         let next_up = page("episodes");
-        let hub = continue_hub(resume, next_up);
+        let hub = continue_hub(resume, next_up, "");
         assert!(hub.is_continue() && hub.wide());
         assert_eq!(hub.metadata.len(), 2, "next-up episodes of a show already resuming are dropped");
         let latest: Vec<Dto> = fixture("latest");

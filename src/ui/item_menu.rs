@@ -245,7 +245,7 @@ impl Plaivo {
     fn refresh_page(&mut self, cx: &mut Context<Self>) {
         match self.nav.last().cloned() {
             Some(Nav::Detail(server, key, _)) => self.navigate(Nav::Detail(server, key, self.season.clone()), false, cx),
-            Some(nav @ Nav::Library(..)) => self.navigate(nav, false, cx),
+            Some(nav @ (Nav::Library(..) | Nav::Collection(..) | Nav::Hub(..))) => self.navigate(nav, false, cx),
             Some(Nav::Home) => self.load_home(cx),
             _ => {}
         }

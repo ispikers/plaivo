@@ -431,7 +431,7 @@ impl Plaivo {
     }
 
     fn known_card(&self, server: &str, key: &str) -> Option<Card> {
-        let hubs = self.hubs.iter().flat_map(|h| h.items.iter());
+        let hubs = self.hubs.iter().chain(self.lib_hubs.iter().flatten()).flat_map(|h| h.items.iter()).chain(self.hub_list.iter().flat_map(|l| l.cards.iter()));
         let library = self.library.iter().flat_map(|l| l.items.iter().flatten());
         let related = self.detail.iter().flat_map(|d| d.related.iter().flat_map(|(_, cards)| cards.iter()));
         hubs.chain(library).chain(&self.results).chain(&self.player.queue).chain(related).find(|c| *c.key == *key && *c.server == *server).cloned()
@@ -525,7 +525,7 @@ impl Plaivo {
         let hdr = || shaders::is_hdr(&m.get("video-params/primaries").unwrap_or_default(), &m.get("video-params/gamma").unwrap_or_default());
         let preset = shaders::find(&self.player.shader).filter(|p| p.id != shaders::NVSCALER || !hdr());
         let id = preset.map_or("", |p| p.id);
-        if id == self.player.shader_applied || id == self.player.shader_failed {
+        if id == self.player.shader_applied || (!id.is_empty() && id == self.player.shader_failed) {
             return;
         }
         let dir = shaders::dir();
