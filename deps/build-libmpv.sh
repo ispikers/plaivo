@@ -25,10 +25,10 @@ case "$(uname -s)" in
 esac
 
 cd "$work"
-git clone --depth 1 --branch "$FFMPEG" https://github.com/FFmpeg/FFmpeg ffmpeg
-git clone --depth 1 --branch "$MPV" https://github.com/mpv-player/mpv mpv
+git clone -q --depth 1 --branch "$FFMPEG" https://github.com/FFmpeg/FFmpeg ffmpeg
+git clone -q --depth 1 --branch "$MPV" https://github.com/mpv-player/mpv mpv
 git -C mpv apply "$deps/mpv-macos-embed.patch"
-git clone --depth 1 --branch "$LIBPLACEBO" --recurse-submodules --shallow-submodules \
+git clone -q --depth 1 --branch "$LIBPLACEBO" --recurse-submodules=3rdparty --shallow-submodules \
   https://code.videolan.org/videolan/libplacebo.git libplacebo
 
 (
