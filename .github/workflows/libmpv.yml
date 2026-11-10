@@ -28,7 +28,7 @@ jobs:
           path: libmpv-windows-x64.tar.gz
 
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - run: brew install meson ninja nasm pkgconf dav1d libass little-cms2 shaderc molten-vk vulkan-loader vulkan-headers uchardet dylibbundler
