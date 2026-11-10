@@ -10,7 +10,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -22,7 +22,7 @@ jobs:
             vulkan-headers:p vulkan-loader:p uchardet:p
       - run: bash deps/build-libmpv.sh out
       - run: cd out && tar -czf ../libmpv-windows-x64.tar.gz *
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: libmpv-windows-x64.tar.gz
@@ -30,11 +30,11 @@ jobs:
   macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: brew install meson ninja nasm pkgconf dav1d libass little-cms2 shaderc molten-vk vulkan-loader vulkan-headers uchardet dylibbundler
       - run: bash deps/build-libmpv.sh out
       - run: cd out && tar -czf ../libmpv-macos-arm64.tar.gz *
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: libmpv-macos-arm64.tar.gz
@@ -45,8 +45,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
       - env:
