@@ -778,6 +778,13 @@ impl Plaivo {
                         .child(text),
                 )
         });
+        self.view.player_bare = hide
+            && self.player.video_ready
+            && !self.player.buffering
+            && hint.is_none()
+            && skip.is_none()
+            && up_next.is_none()
+            && panel.is_none();
         div()
             .id("player")
             .size_full()

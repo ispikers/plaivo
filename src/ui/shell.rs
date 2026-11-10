@@ -1,4 +1,5 @@
 use crate::app::{Choice, Nav, Page, Plaivo, Status};
+use crate::menu;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, shadow};
 use gpui::{
@@ -58,6 +59,14 @@ impl Render for Plaivo {
             _ if mini => None,
             _ => Some(theme::bg().into()),
         };
+        // Nothing drawn over the video: hiding GPUI's layer lets macOS scan the video out without blending the UI.
+        let bare = self.page == Page::Player && self.view.player_bare && self.toast.is_none();
+        if bare != self.view.ui_hidden
+            && let Some(host) = &self.player.host
+        {
+            self.view.ui_hidden = bare;
+            host.set_ui_hidden(bare);
+        }
         div()
             .id("root")
             .size_full()
@@ -67,6 +76,14 @@ impl Render for Plaivo {
             .text_size(px(14.))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .on_action(cx.listener(|this, _: &menu::OpenSettings, _, cx| {
+                if !matches!(this.page, Page::Splash | Page::Auth) {
+                    this.open_from_player(Nav::Settings(None), cx);
+                }
+            }))
+            .on_action(|_: &menu::ToggleFullScreen, window, _| window.toggle_fullscreen())
+            .on_action(|_: &menu::Minimize, window, _| window.minimize_window())
+            .on_action(|_: &menu::Zoom, window, _| window.zoom_window())
             .when_some(background, |d, bg| d.bg(bg))
             .child(content)
             .children(overlays)

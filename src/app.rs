@@ -293,6 +293,8 @@ pub struct ViewState {
     pub volume_drag: bool,
     pub hub_hover: Option<usize>,
     pub cursor_hidden: bool,
+    pub player_bare: bool,
+    pub ui_hidden: bool,
 }
 
 pub struct Plaivo {
@@ -768,6 +770,8 @@ impl Plaivo {
             if let Ok(h) = _window.window_handle() {
                 crate::video_host::hide_window(h.as_raw());
             }
+            #[cfg(target_os = "macos")]
+            cx.hide();
             cx.quit();
             false
         });

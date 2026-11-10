@@ -48,6 +48,12 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("enter", Submit, ctx),
     ]);
+    if MAC {
+        cx.bind_keys([
+            KeyBinding::new("cmd-left", Home, ctx),
+            KeyBinding::new("cmd-right", End, ctx),
+        ]);
+    }
 }
 
 pub enum InputEvent {

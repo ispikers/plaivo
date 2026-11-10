@@ -4,6 +4,7 @@ mod app;
 mod clock;
 mod images;
 mod logging;
+mod menu;
 mod mpv;
 mod player;
 mod shaders;
@@ -12,13 +13,11 @@ mod video_host;
 mod watch;
 
 use gpui::{
-    App, AppContext, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, px, size,
+    App, AppContext, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
+    WindowOptions, px, size,
 };
 use plaivo_core::{downloads, plex, prefs, settings, store};
 use std::sync::Arc;
-
-actions!(plaivo, [Quit]);
 
 fn main() {
     let settings = settings::Settings::load();
@@ -37,11 +36,7 @@ fn main() {
         .run(move |cx: &mut App| {
             ui::input::bind_keys(cx);
             if cfg!(target_os = "macos") {
-                cx.on_action(|_: &Quit, cx| cx.quit());
-                cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-                cx.set_menus(vec![
-                    Menu::new("Plaivo").items([MenuItem::action("Quit Plaivo", Quit)]),
-                ]);
+                menu::install(cx);
             }
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(

@@ -115,6 +115,9 @@ mod imp {
                 })
             };
         }
+
+        // GPUI doesn't expose its DirectComposition visual, so the UI stays composited over the video here.
+        pub fn set_ui_hidden(&self, _hidden: bool) {}
     }
 
     pub fn hide_window(raw: RawWindowHandle) {
@@ -186,6 +189,7 @@ mod imp {
     // transparent view in the same window, so the video moves, resizes, goes full screen and composites with the UI natively.
     pub struct VideoHost {
         view: Retained<NSView>,
+        ui: Retained<NSView>,
     }
 
     impl VideoHost {
@@ -195,16 +199,13 @@ mod imp {
             };
             let mtm =
                 MainThreadMarker::new().ok_or("video host must be created on the main thread")?;
-            let gpui: &NSView = unsafe { h.ns_view.cast::<NSView>().as_ref() };
-            let content = unsafe { gpui.superview() }.ok_or("GPUI view has no superview")?;
+            let ui = unsafe { Retained::retain(h.ns_view.cast::<NSView>().as_ptr()) }
+                .ok_or("no GPUI view")?;
+            let content = unsafe { ui.superview() }.ok_or("GPUI view has no superview")?;
             let view = NSView::initWithFrame(mtm.alloc(), content.bounds());
             view.setHidden(true);
-            content.addSubview_positioned_relativeTo(
-                &view,
-                NSWindowOrderingMode::Below,
-                Some(gpui),
-            );
-            let host = Self { view };
+            content.addSubview_positioned_relativeTo(&view, NSWindowOrderingMode::Below, Some(&ui));
+            let host = Self { view, ui };
             host.set_region(None);
             Ok(host)
         }
@@ -243,6 +244,13 @@ mod imp {
         pub fn set_cursor_hidden(&self, hidden: bool) {
             if hidden {
                 NSCursor::setHiddenUntilMouseMoves(true);
+            }
+        }
+
+        // Only the layer: the view keeps its tracking area and first responder, so mouse moves and keys still reach GPUI.
+        pub fn set_ui_hidden(&self, hidden: bool) {
+            if let Some(layer) = self.ui.layer() {
+                layer.setHidden(hidden);
             }
         }
     }

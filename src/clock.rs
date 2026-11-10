@@ -29,33 +29,12 @@ pub fn local_time_in(secs: f64) -> String {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub fn local_time_in(secs: f64) -> String {
-    #[repr(C)]
-    struct Tm {
-        sec: i32,
-        min: i32,
-        hour: i32,
-        rest: [i32; 6],
-        gmtoff: i64,
-        zone: *const std::ffi::c_char,
-    }
-    unsafe extern "C" {
-        fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    let t = now + secs.max(0.0) as i64;
-    let mut tm: Tm = unsafe { std::mem::zeroed() };
-    unsafe { localtime_r(&t, &mut tm) };
-    let h = match tm.hour % 12 {
-        0 => 12,
-        h => h,
-    };
-    format!(
-        "{h}:{:02} {}",
-        tm.min,
-        if tm.hour < 12 { "AM" } else { "PM" }
-    )
+    use objc2_foundation::{NSDate, NSDateFormatter, NSDateFormatterStyle};
+    let f = NSDateFormatter::new();
+    f.setDateStyle(NSDateFormatterStyle::NoStyle);
+    f.setTimeStyle(NSDateFormatterStyle::ShortStyle);
+    f.stringFromDate(&NSDate::dateWithTimeIntervalSinceNow(secs.max(0.0)))
+        .to_string()
 }
