@@ -1,5 +1,7 @@
 #[path = "licenses/generate.rs"]
 mod licenses;
+#[path = "deps/libmpv.rs"]
+mod libmpv;
 
 use std::path::{Path, PathBuf};
 
@@ -20,20 +22,26 @@ fn copy_runtime_libs(root: &Path, out: &Path) {
     let Some(profile_dir) = out.ancestors().nth(3) else {
         return;
     };
-    let src = root.join("deps").join(os);
-    if !copy_files(&src, profile_dir) {
-        println!(
-            "cargo:warning={} is missing; put libmpv there or playback will not work",
-            src.display()
-        );
-    }
+    let deps = root.join("deps");
+    let src = deps.join(os);
+    copy_files(&src, profile_dir);
     copy_files(&root.join("shaders"), &profile_dir.join("shaders"));
+    println!("cargo:rerun-if-changed={}", deps.join("libmpv.env").display());
+    match libmpv::read(&deps, os) {
+        Some(pin) if !libmpv::installed(&src, &pin) => println!(
+            "cargo:warning={} is not {}; run `cargo run -p xtask -- libmpv` or playback may not work",
+            src.display(),
+            pin.tag
+        ),
+        None => println!("cargo:warning=deps/libmpv.env is missing"),
+        _ => {}
+    }
 }
 
-fn copy_files(src: &Path, dst: &Path) -> bool {
+fn copy_files(src: &Path, dst: &Path) {
     println!("cargo:rerun-if-changed={}", src.display());
     let Ok(entries) = std::fs::read_dir(src) else {
-        return false;
+        return;
     };
     let _ = std::fs::create_dir_all(dst);
     for entry in entries.flatten() {
@@ -54,5 +62,4 @@ fn copy_files(src: &Path, dst: &Path) -> bool {
             );
         }
     }
-    true
 }

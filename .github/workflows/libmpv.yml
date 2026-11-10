@@ -1,0 +1,70 @@
+name: libmpv
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: git make diffutils
+          pacboy: >-
+            gcc:p meson:p ninja:p nasm:p pkgconf:p
+            dav1d:p libass:p lcms2:p shaderc:p spirv-cross:p
+            vulkan-headers:p vulkan-loader:p uchardet:p
+      - run: bash deps/build-libmpv.sh out
+      - run: cd out && tar -czf ../libmpv-windows-x64.tar.gz *
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: libmpv-windows-x64.tar.gz
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install meson ninja nasm pkgconf dav1d libass little-cms2 shaderc molten-vk vulkan-loader vulkan-headers uchardet dylibbundler
+      - run: bash deps/build-libmpv.sh out
+      - run: cd out && tar -czf ../libmpv-macos-arm64.tar.gz *
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: libmpv-macos-arm64.tar.gz
+
+  release:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          source deps/libmpv.env
+          gh release create "$TAG" libmpv-*.tar.gz --title "$TAG" \
+            --notes "LGPL libmpv: mpv $MPV, FFmpeg $FFMPEG, libplacebo $LIBPLACEBO, built by deps/build-libmpv.sh at $GITHUB_SHA."
+          {
+            echo "Paste into deps/libmpv.env:"
+            echo '```'
+            echo "WINDOWS_SHA256=$(sha256sum libmpv-windows-x64.tar.gz | cut -d' ' -f1)"
+            echo "MACOS_SHA256=$(sha256sum libmpv-macos-arm64.tar.gz | cut -d' ' -f1)"
+            echo '```'
+            for f in libmpv-*.tar.gz; do
+              echo "$f:"
+              echo '```'
+              tar -tzf "$f"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
