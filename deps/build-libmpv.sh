@@ -13,10 +13,12 @@ export PKG_CONFIG_PATH=$prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH
 case "$(uname -s)" in
   MINGW*)
     ffmpeg_os=(--enable-d3d11va --enable-dxva2 --enable-schannel)
+    placebo_os=(-Dd3d11=enabled)
     mpv_os=(-Dd3d11=enabled -Dd3d-hwaccel=enabled -Dshaderc=enabled -Dspirv-cross=enabled -Dvulkan=enabled)
     ;;
   Darwin)
     ffmpeg_os=(--enable-videotoolbox --enable-audiotoolbox --enable-securetransport --enable-iconv)
+    placebo_os=(-Dd3d11=disabled)
     mpv_os=(-Dcocoa=enabled -Dswift-build=enabled -Dvulkan=enabled)
     ;;
   *) echo "unsupported host: $(uname -s)" >&2; exit 1 ;;
@@ -26,7 +28,7 @@ cd "$work"
 git clone --depth 1 --branch "$FFMPEG" https://github.com/FFmpeg/FFmpeg ffmpeg
 git clone --depth 1 --branch "$MPV" https://github.com/mpv-player/mpv mpv
 git clone --depth 1 --branch "$LIBPLACEBO" --recurse-submodules --shallow-submodules \
-  https://code.videolan.org/videolan/libplacebo.git mpv/subprojects/libplacebo
+  https://code.videolan.org/videolan/libplacebo.git libplacebo
 
 (
   cd ffmpeg
@@ -36,7 +38,12 @@ git clone --depth 1 --branch "$LIBPLACEBO" --recurse-submodules --shallow-submod
   make -j"$jobs" install
 )
 
-meson setup mpv/build mpv --prefix="$prefix" --buildtype=release --force-fallback-for=libplacebo \
+# Installed rather than an mpv subproject: mpv's Swift build can't see the subproject's generated config.h.
+meson setup libplacebo/build libplacebo --prefix="$prefix" --buildtype=release \
+  -Ddemos=false -Dtests=false -Dvulkan=enabled -Dshaderc=enabled -Dlcms=enabled "${placebo_os[@]}"
+meson install -C libplacebo/build
+
+meson setup mpv/build mpv --prefix="$prefix" --buildtype=release \
   -Dgpl=false -Dlibmpv=true -Dcplayer=false -Dtests=false \
   -Dlua=disabled -Djavascript=disabled -Dlibarchive=disabled -Dlibbluray=disabled -Ddvdnav=disabled \
   -Dcdda=disabled -Dmanpage-build=disabled -Duchardet=enabled -Dlcms2=enabled "${mpv_os[@]}"
