@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[repr(C)]
 struct Handle(c_void);
@@ -38,9 +39,10 @@ struct Api {
     initialize: unsafe extern "C" fn(*mut Handle) -> c_int,
     terminate_destroy: unsafe extern "C" fn(*mut Handle),
     set_option_string: unsafe extern "C" fn(*mut Handle, *const c_char, *const c_char) -> c_int,
-    set_property_string: unsafe extern "C" fn(*mut Handle, *const c_char, *const c_char) -> c_int,
+    set_property_async:
+        unsafe extern "C" fn(*mut Handle, u64, *const c_char, c_int, *mut c_void) -> c_int,
     get_property_string: unsafe extern "C" fn(*mut Handle, *const c_char) -> *mut c_char,
-    command: unsafe extern "C" fn(*mut Handle, *const *const c_char) -> c_int,
+    command_async: unsafe extern "C" fn(*mut Handle, u64, *const *const c_char) -> c_int,
     observe_property: unsafe extern "C" fn(*mut Handle, u64, *const c_char, c_int) -> c_int,
     wait_event: unsafe extern "C" fn(*mut Handle, f64) -> *mut RawEvent,
     free: unsafe extern "C" fn(*mut c_void),
@@ -48,7 +50,7 @@ struct Api {
     request_log_messages: unsafe extern "C" fn(*mut Handle, *const c_char) -> c_int,
 }
 
-const FORMAT_NONE: c_int = 0;
+const FORMAT_STRING: c_int = 1;
 const FORMAT_FLAG: c_int = 3;
 const FORMAT_DOUBLE: c_int = 5;
 const EVENT_SHUTDOWN: c_int = 1;
@@ -100,9 +102,9 @@ fn api() -> Result<&'static Api, String> {
             initialize: sym!("mpv_initialize"),
             terminate_destroy: sym!("mpv_terminate_destroy"),
             set_option_string: sym!("mpv_set_option_string"),
-            set_property_string: sym!("mpv_set_property_string"),
+            set_property_async: sym!("mpv_set_property_async"),
             get_property_string: sym!("mpv_get_property_string"),
-            command: sym!("mpv_command"),
+            command_async: sym!("mpv_command_async"),
             observe_property: sym!("mpv_observe_property"),
             wait_event: sym!("mpv_wait_event"),
             free: sym!("mpv_free"),
@@ -137,15 +139,45 @@ const OBSERVED: &[(&str, c_int)] = &[
     ("paused-for-cache", FORMAT_FLAG),
     ("volume", FORMAT_DOUBLE),
     ("mute", FORMAT_FLAG),
-    ("track-list", FORMAT_NONE),
+    ("track-list", FORMAT_STRING),
+    ("audio-device-list", FORMAT_STRING),
 ];
 
 struct Ctx {
     api: &'static Api,
     h: *mut Handle,
+    cache: Mutex<HashMap<&'static str, String>>,
+}
+
+impl Ctx {
+    fn read(&self, name: &str) -> Option<String> {
+        unsafe {
+            let p = (self.api.get_property_string)(self.h, cstr(name).as_ptr());
+            if p.is_null() {
+                return None;
+            }
+            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+            (self.api.free)(p.cast());
+            Some(s)
+        }
+    }
+
+    fn store(&self, name: &'static str, value: Option<String>) {
+        let mut cache = self.cache.lock().unwrap();
+        match value {
+            Some(v) => cache.insert(name, v),
+            None => cache.remove(name),
+        };
+    }
+
+    fn fetch(&self, name: &'static str) {
+        self.store(name, self.read(name));
+    }
 }
 
 // libmpv's client API is thread-safe; the handle is only freed by the event thread after SHUTDOWN.
+// Only the event thread makes blocking calls: on macOS mpv's video output waits on the main thread while it
+// (re)configures, so a blocking call from the main thread can deadlock.
 unsafe impl Send for Ctx {}
 unsafe impl Sync for Ctx {}
 
@@ -165,7 +197,11 @@ impl Mpv {
         if h.is_null() {
             return Err("mpv_create failed".into());
         }
-        let ctx = Arc::new(Ctx { api, h });
+        let ctx = Arc::new(Ctx {
+            api,
+            h,
+            cache: Mutex::default(),
+        });
         for (k, v) in options {
             unsafe { (api.set_option_string)(h, cstr(k).as_ptr(), cstr(v).as_ptr()) };
         }
@@ -203,43 +239,26 @@ impl Mpv {
         let owned: Vec<CString> = args.iter().map(|a| cstr(a)).collect();
         let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(std::ptr::null());
-        unsafe { (self.0.api.command)(self.0.h, ptrs.as_ptr()) };
+        unsafe { (self.0.api.command_async)(self.0.h, 0, ptrs.as_ptr()) };
     }
 
     pub fn set(&self, name: &str, value: &str) {
+        let value = cstr(value);
+        let mut data = value.as_ptr();
         unsafe {
-            (self.0.api.set_property_string)(self.0.h, cstr(name).as_ptr(), cstr(value).as_ptr())
+            (self.0.api.set_property_async)(
+                self.0.h,
+                0,
+                cstr(name).as_ptr(),
+                FORMAT_STRING,
+                (&raw mut data).cast(),
+            )
         };
     }
 
     pub fn get(&self, name: &str) -> Option<String> {
-        unsafe {
-            let p = (self.0.api.get_property_string)(self.0.h, cstr(name).as_ptr());
-            if p.is_null() {
-                return None;
-            }
-            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
-            (self.0.api.free)(p.cast());
-            Some(s)
-        }
+        self.0.cache.lock().unwrap().get(name).cloned()
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct Build {
-    pub mpv: String,
-    pub ffmpeg: String,
-    pub gpl: bool,
-}
-
-pub fn build_info() -> Result<Build, String> {
-    let m = Mpv::new(&[("vo", "null"), ("ao", "null")], |_| {})?;
-    let config = m.get("mpv-configuration").unwrap_or_default();
-    Ok(Build {
-        mpv: m.get("mpv-version").unwrap_or_default(),
-        ffmpeg: m.get("ffmpeg-version").unwrap_or_default(),
-        gpl: !(config.contains("-Dgpl=false") || config.contains("--enable-lgpl")),
-    })
 }
 
 impl Drop for Mpv {
@@ -278,8 +297,15 @@ fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
                 };
                 log::log!(target: "mpv", level, "[{prefix}] {}", text.trim_end());
             }
-            EVENT_FILE_LOADED => on_event(Event::Loaded),
-            EVENT_PLAYBACK_RESTART => on_event(Event::Started),
+            EVENT_FILE_LOADED => {
+                ctx.fetch("track-list");
+                on_event(Event::Loaded);
+            }
+            EVENT_PLAYBACK_RESTART => {
+                ctx.fetch("video-params/primaries");
+                ctx.fetch("video-params/gamma");
+                on_event(Event::Started);
+            }
             EVENT_END_FILE => {
                 let end = unsafe { &*(e.data as *const RawEndFile) };
                 let error = (end.reason == END_ERROR).then(|| error_string(ctx.api, end.error));
@@ -295,15 +321,36 @@ fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
                     || (p.format == FORMAT_DOUBLE).then(|| unsafe { *(p.data as *const f64) });
                 let flag =
                     || (p.format == FORMAT_FLAG).then(|| unsafe { *(p.data as *const c_int) } != 0);
+                let string = || {
+                    (p.format == FORMAT_STRING).then(|| {
+                        unsafe { CStr::from_ptr(*(p.data as *const *const c_char)) }
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                };
                 let ev = match name {
                     b"time-pos" => double().map(Event::Time),
                     b"duration" => double().map(Event::Duration),
                     b"demuxer-cache-time" => double().map(Event::Cached),
                     b"volume" => double().map(Event::Volume),
                     b"pause" => flag().map(Event::Pause),
-                    b"paused-for-cache" => flag().map(Event::Buffering),
+                    b"paused-for-cache" => {
+                        let f = flag();
+                        ctx.store(
+                            "paused-for-cache",
+                            f.map(|b| if b { "yes" } else { "no" }.into()),
+                        );
+                        f.map(Event::Buffering)
+                    }
                     b"mute" => flag().map(Event::Mute),
-                    b"track-list" => Some(Event::Tracks),
+                    b"track-list" => {
+                        ctx.store("track-list", string());
+                        Some(Event::Tracks)
+                    }
+                    b"audio-device-list" => {
+                        ctx.store("audio-device-list", string());
+                        None
+                    }
                     _ => None,
                 };
                 if let Some(ev) = ev {

@@ -179,17 +179,13 @@ mod imp {
     use super::{RawWindowHandle, Region};
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
-    use objc2_app_kit::{
-        NSBackingStoreType, NSColor, NSView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
-    };
+    use objc2_app_kit::{NSAutoresizingMaskOptions, NSCursor, NSView, NSWindowOrderingMode};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
-    use std::cell::Cell;
 
+    // mpv hosts its Metal layer in this view (deps/mpv-macos-embed.patch adds --wid to macvk). It sits below GPUI's
+    // transparent view in the same window, so the video moves, resizes, goes full screen and composites with the UI natively.
     pub struct VideoHost {
-        parent: Retained<NSWindow>,
-        child: Retained<NSWindow>,
         view: Retained<NSView>,
-        region: Cell<Option<Region>>,
     }
 
     impl VideoHost {
@@ -199,31 +195,18 @@ mod imp {
             };
             let mtm =
                 MainThreadMarker::new().ok_or("video host must be created on the main thread")?;
-            unsafe {
-                let ns_view: &NSView = h.ns_view.cast::<NSView>().as_ref();
-                let parent = ns_view.window().ok_or("view has no window")?;
-                let frame = parent.contentRectForFrameRect(parent.frame());
-                let child = NSWindow::initWithContentRect_styleMask_backing_defer(
-                    mtm.alloc(),
-                    frame,
-                    NSWindowStyleMask::Borderless,
-                    NSBackingStoreType::Buffered,
-                    false,
-                );
-                child.setReleasedWhenClosed(false);
-                child.setBackgroundColor(Some(&NSColor::blackColor()));
-                child.setIgnoresMouseEvents(true);
-                child.setHasShadow(false);
-                let view = child
-                    .contentView()
-                    .ok_or("child window has no content view")?;
-                Ok(Self {
-                    parent,
-                    child,
-                    view,
-                    region: Cell::new(None),
-                })
-            }
+            let gpui: &NSView = unsafe { h.ns_view.cast::<NSView>().as_ref() };
+            let content = unsafe { gpui.superview() }.ok_or("GPUI view has no superview")?;
+            let view = NSView::initWithFrame(mtm.alloc(), content.bounds());
+            view.setHidden(true);
+            content.addSubview_positioned_relativeTo(
+                &view,
+                NSWindowOrderingMode::Below,
+                Some(gpui),
+            );
+            let host = Self { view };
+            host.set_region(None);
+            Ok(host)
         }
 
         pub fn wid(&self) -> i64 {
@@ -231,42 +214,35 @@ mod imp {
         }
 
         pub fn set_visible(&self, on: bool) {
-            unsafe {
-                if on {
-                    self.sync();
-                    // A child window ordered below its parent moves with it and stays directly underneath the UI.
-                    self.parent
-                        .addChildWindow_ordered(&self.child, NSWindowOrderingMode::Below);
-                } else {
-                    self.parent.removeChildWindow(&self.child);
-                    self.child.orderOut(None);
-                }
-            }
-        }
-
-        pub fn sync(&self) {
-            let content = self.parent.contentRectForFrameRect(self.parent.frame());
-            let frame = match self.region.get() {
-                None => content,
-                Some(r) => NSRect::new(
-                    NSPoint::new(
-                        content.origin.x + r.x as f64,
-                        content.origin.y + r.bottom as f64,
-                    ),
-                    NSSize::new(r.w as f64, r.h as f64),
-                ),
-            };
-            self.child.setFrame_display(frame, true);
+            self.view.setHidden(!on);
         }
 
         pub fn set_region(&self, region: Option<Region>) {
-            self.region.set(region);
-            self.sync();
+            let Some(content) = (unsafe { self.view.superview() }) else {
+                return;
+            };
+            let (frame, mask) = match region {
+                None => (
+                    content.bounds(),
+                    NSAutoresizingMaskOptions::ViewWidthSizable
+                        | NSAutoresizingMaskOptions::ViewHeightSizable,
+                ),
+                Some(r) => (
+                    NSRect::new(
+                        NSPoint::new(r.x as f64, r.bottom as f64),
+                        NSSize::new(r.w as f64, r.h as f64),
+                    ),
+                    NSAutoresizingMaskOptions::ViewMaxXMargin
+                        | NSAutoresizingMaskOptions::ViewMaxYMargin,
+                ),
+            };
+            self.view.setAutoresizingMask(mask);
+            self.view.setFrame(frame);
         }
 
         pub fn set_cursor_hidden(&self, hidden: bool) {
             if hidden {
-                objc2_app_kit::NSCursor::setHiddenUntilMouseMoves(true);
+                NSCursor::setHiddenUntilMouseMoves(true);
             }
         }
     }

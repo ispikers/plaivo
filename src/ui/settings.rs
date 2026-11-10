@@ -8,7 +8,7 @@ use crate::ui::widgets::{
     chip, icon, nav_row, overlay_button, pill, round_button, row, scrollbar, section, stepper,
     toggle,
 };
-use crate::{logging, mpv, plex, shaders};
+use crate::{logging, plex, shaders};
 use gpui::{
     AnyElement, Context, Div, FontWeight, MouseButton, MouseMoveEvent, SharedString, Stateful,
     Window, div, prelude::*, px,
@@ -16,6 +16,14 @@ use gpui::{
 
 const MPV_SOURCE: &str = "https://github.com/mpv-player/mpv";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MPV_VERSION: &str = env!("PLAIVO_MPV_VERSION");
+const MPV_INFO: &str = concat!(
+    "mpv ",
+    env!("PLAIVO_MPV_VERSION"),
+    " · FFmpeg ",
+    env!("PLAIVO_FFMPEG_VERSION"),
+    " · LGPL-2.1-or-later"
+);
 const CATEGORIES: [Category; 10] = [
     Category::General,
     Category::Appearance,
@@ -43,39 +51,6 @@ fn density_label(density: u32) -> &'static str {
 }
 
 impl Plaivo {
-    pub fn load_mpv_build(&mut self, cx: &mut Context<Self>) {
-        if self.mpv_build.is_some() || self.mpv_build_task.is_some() {
-            return;
-        }
-        let job = cx.background_executor().spawn(async { mpv::build_info() });
-        self.mpv_build_task = Some(cx.spawn(async move |this, cx| {
-            let build = job.await;
-            let _ = this.update(cx, |this, cx| {
-                this.mpv_build = Some(build);
-                this.mpv_build_task = None;
-                cx.notify();
-            });
-        }));
-    }
-
-    fn mpv_info(&self) -> SharedString {
-        match &self.mpv_build {
-            None => "Checking…".into(),
-            Some(Ok(b)) => format!(
-                "{} · FFmpeg {} · {}",
-                b.mpv,
-                b.ffmpeg,
-                if b.gpl {
-                    "GPL-2.0-or-later"
-                } else {
-                    "LGPL-2.1-or-later"
-                }
-            )
-            .into(),
-            Some(Err(e)) => e.clone().into(),
-        }
-    }
-
     fn summary(&self, c: Category) -> String {
         match c {
             Category::General => self.home_server().map_or("No home server".into(), |s| {
@@ -130,10 +105,7 @@ impl Plaivo {
                     count(self.account.jellyfin.len())
                 )
             }
-            Category::About => match &self.mpv_build {
-                Some(Ok(b)) => format!("Version {VERSION} · libmpv {}", b.mpv),
-                _ => format!("Version {VERSION}"),
-            },
+            Category::About => format!("Version {VERSION} · libmpv {MPV_VERSION}"),
         }
     }
 
@@ -433,7 +405,7 @@ impl Plaivo {
             Some(Category::Connections) => self.render_connections(cx),
             Some(Category::About) => section("Plaivo")
                 .child(row("version", Some(Icon::PlayCircle), "Plaivo", format!("Version {VERSION}")))
-                .child(row("libmpv", Some(Icon::Movie), "libmpv", self.mpv_info()).child(pill("mpv-source", "Source", Some(Icon::OpenInNew), false).on_click(|_, _, _| open_url(MPV_SOURCE))))
+                .child(row("libmpv", Some(Icon::Movie), "libmpv", MPV_INFO).child(pill("mpv-source", "Source", Some(Icon::OpenInNew), false).on_click(|_, _, _| open_url(MPV_SOURCE))))
                 .child(
                     nav_row("licenses", Icon::Info, "Open-source licenses", format!("libmpv, FFmpeg and {} more", LICENSES.len() - 2))
                         .on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Licenses(None), true, cx))),

@@ -4,6 +4,8 @@ pub const STAMP: &str = ".libmpv";
 
 pub struct Pin {
     pub tag: String,
+    pub mpv: String,
+    pub ffmpeg: String,
     pub sha256: String,
 }
 
@@ -17,6 +19,8 @@ pub fn read(deps: &Path, os: &str) -> Option<Pin> {
     };
     Some(Pin {
         tag: get("TAG"),
+        mpv: get("MPV"),
+        ffmpeg: get("FFMPEG"),
         sha256: get(&format!("{}_SHA256", os.to_uppercase())),
     })
 }

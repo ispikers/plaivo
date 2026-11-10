@@ -1,2 +1,3 @@
 deps/build-libmpv.sh text eol=lf
 deps/libmpv.env text eol=lf
+deps/*.patch text eol=lf

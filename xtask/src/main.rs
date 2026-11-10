@@ -3,7 +3,7 @@ mod pin;
 
 use std::ffi::OsStr;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, bail, ensure};
@@ -12,10 +12,104 @@ use sha2::{Digest, Sha256};
 const REPO: &str = "ispikers/plaivo";
 
 fn main() -> anyhow::Result<()> {
-    match std::env::args().nth(1).as_deref() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |f: &str| args.iter().any(|a| a == f);
+    match args.first().map(String::as_str) {
         Some("libmpv") => libmpv(),
-        _ => bail!("usage: cargo run -p xtask -- libmpv"),
+        Some("bundle") => bundle(flag("--release"), flag("--open")),
+        _ => bail!("usage: cargo run -p xtask -- libmpv | bundle [--release] [--open]"),
     }
+}
+
+fn bundle(release: bool, open: bool) -> anyhow::Result<()> {
+    ensure!(
+        cfg!(target_os = "macos"),
+        "bundle builds the macOS Plaivo.app"
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = Command::new(cargo)
+        .args(["build", "-p", "plaivo"])
+        .args(release.then_some("--release"))
+        .current_dir(root)
+        .status()?;
+    ensure!(status.success(), "cargo build failed");
+
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target"))
+        .join(if release { "release" } else { "debug" });
+    let app = target.join("Plaivo.app");
+    let contents = app.join("Contents");
+    let exe_dir = contents.join("MacOS");
+    if app.exists() {
+        std::fs::remove_dir_all(&app)?;
+    }
+    std::fs::create_dir_all(exe_dir.join("shaders"))?;
+    std::fs::copy(target.join("plaivo"), exe_dir.join("plaivo"))?;
+    copy_files(&root.join("deps/macos"), &exe_dir)?;
+    copy_files(&root.join("shaders"), &exe_dir.join("shaders"))?;
+
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml"))?;
+    let version = manifest
+        .lines()
+        .find_map(|l| l.strip_prefix("version = \""))
+        .and_then(|v| v.strip_suffix('"'))
+        .context("no version in Cargo.toml")?;
+    std::fs::write(contents.join("Info.plist"), info_plist(version))?;
+
+    let status = Command::new("codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(&app)
+        .status()?;
+    ensure!(status.success(), "codesign failed");
+    println!("{}", app.display());
+    if open {
+        Command::new("open").arg(&app).status()?;
+    }
+    Ok(())
+}
+
+fn copy_files(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
+        let path = entry?.path();
+        if path.is_file() && !path.file_name().unwrap().to_string_lossy().starts_with('.') {
+            std::fs::copy(&path, dst.join(path.file_name().unwrap()))?;
+        }
+    }
+    Ok(())
+}
+
+fn info_plist(version: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Plaivo</string>
+    <key>CFBundleDisplayName</key>
+    <string>Plaivo</string>
+    <key>CFBundleIdentifier</key>
+    <string>xyz.spikers.plaivo</string>
+    <key>CFBundleExecutable</key>
+    <string>plaivo</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>{version}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>{version}</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.entertainment</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+"#
+    )
 }
 
 fn libmpv() -> anyhow::Result<()> {
@@ -64,7 +158,10 @@ fn libmpv() -> anyhow::Result<()> {
     std::fs::remove_file(dir.join(asset))?;
     ensure!(status.success(), "tar could not extract {asset}");
     std::fs::write(dir.join(pin::STAMP), &pin.sha256)?;
-    println!("installed {} into deps/{os}", pin.tag);
+    println!(
+        "installed {} (mpv {}, FFmpeg {}) into deps/{os}",
+        pin.tag, pin.mpv, pin.ffmpeg
+    );
     Ok(())
 }
 

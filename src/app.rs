@@ -375,8 +375,6 @@ pub struct Plaivo {
     requested: HashSet<String>,
     failed: HashSet<String>,
     pub player: Player,
-    pub mpv_build: Option<Result<crate::mpv::Build, String>>,
-    pub mpv_build_task: Option<Task<()>>,
 }
 
 pub fn open_url(url: &str) {
@@ -761,8 +759,6 @@ impl Plaivo {
             requested: HashSet::new(),
             failed: HashSet::new(),
             player: Player::default(),
-            mpv_build: None,
-            mpv_build_task: None,
         };
         // Quit before Windows destroys the HWND; tearing down GPUI's composition target afterwards logs spurious errors.
         window.on_window_should_close(cx, |_window, cx| {
@@ -1573,7 +1569,6 @@ impl Plaivo {
                 }
                 self.page = Page::Settings;
                 self.settings_page = category;
-                self.load_mpv_build(cx);
             }
             Nav::Licenses(license) => {
                 self.license_scroll = ScrollHandle::new();

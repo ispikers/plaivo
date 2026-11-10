@@ -1,0 +1,149 @@
+--- a/video/out/mac_common.swift
++++ b/video/out/mac_common.swift
+@@ -24,6 +24,9 @@
+     var timer: PreciseTimer?
+     var swapTime: UInt64 = 0
+     let swapLock: NSCondition = NSCondition()
++    @objc var host: NSView?
++    @objc var hostSize: CGSize = .zero
++    var hostObservers: [NSObjectProtocol] = []
+ 
+     @objc init(_ vo: UnsafeMutablePointer<vo>) {
+         let log = LogHelper(mp_log_new(vo, vo.pointee.log, "mac"))
+@@ -45,7 +48,9 @@
+ 
+         DispatchQueue.main.sync {
+             let previousActiveApp = getActiveApp()
+-            initApp()
++            if option.vo.WinID <= 0 {
++                initApp()
++            }
+ 
+             let (screen, wr, forcePosition) = getInitProperties(vo)
+             guard let layer = self.layer else {
+@@ -53,10 +58,14 @@
+                 exit(1)
+             }
+ 
+-            if window == nil {
+-                initView(vo, layer)
+-                initWindow(vo, previousActiveApp)
+-                initWindowState()
++            if window == nil && host == nil {
++                if option.vo.WinID > 0, let wid = UnsafeRawPointer(bitPattern: Int(option.vo.WinID)) {
++                    embed(in: Unmanaged<NSView>.fromOpaque(wid).takeUnretainedValue(), layer)
++                } else {
++                    initView(vo, layer)
++                    initWindow(vo, previousActiveApp)
++                    initWindowState()
++                }
+             }
+ 
+             if forcePosition {
+@@ -84,6 +93,10 @@
+         DispatchQueue.main.sync {
+             window?.delegate = nil
+             window?.close()
++            hostObservers.forEach { NotificationCenter.default.removeObserver($0) }
++            hostObservers = []
++            host?.layer = nil
++            host = nil
+ 
+             uninitCommon()
+         }
+@@ -110,13 +123,15 @@
+     }
+ 
+     @objc func isVisible() -> Bool {
+-        return window?.occlusionState.contains(.visible) ?? false ||
++        let visibleWindow: NSWindow? = window ?? host?.window
++        return visibleWindow?.occlusionState.contains(.visible) ?? false ||
+                option.vo.force_render ||
+                needsInitialDraw
+     }
+ 
+     @objc func update(alpha: Bool) {
+         layer?.wantsAlpha = alpha
++        if window == nil { return }
+         DispatchQueue.main.sync {
+             window?.isOpaque = !alpha
+             window?.backgroundColor = alpha ? NSColor.clear : nil
+@@ -158,10 +173,55 @@
+     }
+ 
+     override func updateDisplaylink() {
+-        super.updateDisplaylink()
++        if let screen = host?.window?.screen, let link = link {
++            CVDisplayLinkSetCurrentCGDisplay(link, screen.displayID)
++            flagEvents(VO_EVENT_WIN_STATE)
++        } else {
++            super.updateDisplaylink()
++        }
+         timer?.updatePolicy(periodSeconds: 1 / currentFps())
+     }
+ 
++    override func getCurrentScreen() -> NSScreen? {
++        return host?.window?.screen ?? super.getCurrentScreen()
++    }
++
++    func embed(in host: NSView, _ layer: MetalLayer) {
++        self.host = host
++        host.layer = layer
++        host.wantsLayer = true
++        host.layerContentsPlacement = .scaleProportionallyToFit
++        layer.delegate = host
++        host.postsFrameChangedNotifications = true
++
++        let center = NotificationCenter.default
++        hostObservers = [
++            center.addObserver(forName: NSView.frameDidChangeNotification, object: host, queue: .main) {
++                [weak self] _ in self?.hostDidResize()
++            },
++            center.addObserver(forName: NSWindow.didChangeBackingPropertiesNotification, object: host.window, queue: .main) {
++                [weak self] _ in self?.hostDidResize()
++            },
++            center.addObserver(forName: NSWindow.didChangeScreenNotification, object: host.window, queue: .main) {
++                [weak self] _ in
++                self?.updateDisplaylink()
++                self?.updateICCProfile()
++            },
++            center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: host.window, queue: .main) {
++                [weak self] _ in self?.windowDidChangeOcclusionState()
++            },
++        ]
++        updateDisplaylink()
++        hostDidResize()
++    }
++
++    func hostDidResize() {
++        guard let host = host else { return }
++        layer?.contentsScale = host.window?.backingScaleFactor ?? 1
++        hostSize = host.convertToBacking(host.bounds).size
++        windowDidResize()
++    }
++
+     override func updateICCProfile() {
+         flagEvents(VO_EVENT_ICC_PROFILE_CHANGED)
+     }
+--- a/video/out/vulkan/context_mac.m
++++ b/video/out/vulkan/context_mac.m
+@@ -114,10 +114,16 @@
+ {
+     struct priv *p = ctx->priv;
+ 
+-    if (!p->vo_mac.window) {
+-        return false;
++    CGSize size = p->vo_mac.hostSize;
++    if (p->vo_mac.host) {
++        if (size.width < 1 || size.height < 1)
++            return true;
++    } else {
++        if (!p->vo_mac.window) {
++            return false;
++        }
++        size = p->vo_mac.window.framePixel.size;
+     }
+-    CGSize size = p->vo_mac.window.framePixel.size;
+ 
+     return ra_vk_ctx_resize(ctx, (int)size.width, (int)size.height);
+ }
