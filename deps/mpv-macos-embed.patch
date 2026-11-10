@@ -68,7 +68,7 @@
          DispatchQueue.main.sync {
              window?.isOpaque = !alpha
              window?.backgroundColor = alpha ? NSColor.clear : nil
-@@ -158,10 +173,55 @@
+@@ -158,10 +173,54 @@
      }
  
      override func updateDisplaylink() {
@@ -91,7 +91,6 @@
 +        host.layer = layer
 +        host.wantsLayer = true
 +        host.layerContentsPlacement = .scaleProportionallyToFit
-+        layer.delegate = host
 +        host.postsFrameChangedNotifications = true
 +
 +        let center = NotificationCenter.default
