@@ -1,6 +1,8 @@
 use raw_window_handle::RawWindowHandle;
 
 pub use imp::VideoHost;
+#[cfg(windows)]
+pub use imp::hide_window;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Region {
@@ -112,6 +114,12 @@ mod imp {
                     LoadCursorW(std::ptr::null_mut(), IDC_ARROW)
                 })
             };
+        }
+    }
+
+    pub fn hide_window(raw: RawWindowHandle) {
+        if let RawWindowHandle::Win32(h) = raw {
+            unsafe { ShowWindow(h.hwnd.get() as HWND, SW_HIDE) };
         }
     }
 

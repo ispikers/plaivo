@@ -50,6 +50,8 @@ sealed interface Screen {
 
     data object Search : Screen
 
+    data object Watchlist : Screen
+
     data object Downloads : Screen
 
     data object WatchTogether : Screen
@@ -68,6 +70,7 @@ fun Sidebar(
     pinned: Boolean,
     screen: Screen,
     libraries: List<Section>,
+    watchlist: Boolean,
     focus: FocusRequester,
     onTogglePin: () -> Unit,
     onNavigate: (Screen) -> Unit,
@@ -122,6 +125,15 @@ fun Sidebar(
             { onNavigate(Screen.Search) },
             Modifier.selectedFocus(screen == Screen.Search),
         )
+        if (watchlist)
+            NavItem(
+                Glyph.Bookmark,
+                "Watchlist",
+                screen == Screen.Watchlist,
+                labelAlpha,
+                { onNavigate(Screen.Watchlist) },
+                Modifier.selectedFocus(screen == Screen.Watchlist),
+            )
         NavItem(
             Glyph.Download,
             "Downloads",

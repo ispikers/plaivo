@@ -182,6 +182,7 @@ object Watch : WatchListener {
 @Composable
 fun WatchTogetherScreen() {
     val s = Watch.state
+    val touch = LocalTouch.current
     val connection = s?.connection ?: WatchConnection.IDLE
     val anchor = remember { FocusRequester() }
     var focused by remember { mutableStateOf(false) }
@@ -200,7 +201,10 @@ fun WatchTogetherScreen() {
         Modifier.fillMaxSize()
             .onFocusChanged { focused = it.hasFocus }
             .verticalScroll(rememberScrollState())
-            .padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
+            .padding(
+                if (touch) PaddingValues(horizontal = Dims.gutter, vertical = 16.dp)
+                else PaddingValues(horizontal = Dims.edge, vertical = 28.dp)
+            ),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Heading("Watch Together")
@@ -209,7 +213,7 @@ fun WatchTogetherScreen() {
                 Text("Room code", fontSize = 13.sp, color = Palette.muted)
                 Text(
                     s.displayCode,
-                    fontSize = 64.sp,
+                    fontSize = if (touch) 44.sp else 64.sp,
                     fontWeight = FontWeight.Bold,
                     color = Palette.text,
                     letterSpacing = 6.sp,
@@ -222,7 +226,7 @@ fun WatchTogetherScreen() {
                 val media = s.media
                 if (media == null) {
                     Note(
-                        if (s.host) "Hold OK on any poster and choose Watch together."
+                        if (s.host) "${if (touch) "Long-press" else "Hold OK on"} any poster and choose Watch together."
                         else "Waiting for the host to pick something."
                     )
                 } else {
@@ -244,16 +248,8 @@ fun WatchTogetherScreen() {
                 SectionTitle("People")
                 s.peers.forEach { p ->
                     key(p.peerId) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            SettingsRow(
-                                Glyph.Person,
-                                if (p.me) "${p.name} (you)" else p.name,
-                                p.status,
-                                Modifier.weight(1f),
-                            ) {
+                        val peer: @Composable (Modifier) -> Unit = { m ->
+                            SettingsRow(Glyph.Person, if (p.me) "${p.name} (you)" else p.name, p.status, m) {
                                 if (p.host)
                                     Text(
                                         "Host",
@@ -265,11 +261,23 @@ fun WatchTogetherScreen() {
                                                 .padding(horizontal = 10.dp, vertical = 3.dp),
                                     )
                             }
-                            if (s.host && !p.me) {
-                                ActionButton("Make host", { core.watchTransferHost(p.peerId) })
-                                ActionButton("Remove", { core.watchKick(p.peerId) })
-                            }
                         }
+                        val actions = s.host && !p.me
+                        val hostActions: @Composable () -> Unit = {
+                            ActionButton("Make host", { core.watchTransferHost(p.peerId) })
+                            ActionButton("Remove", { core.watchKick(p.peerId) })
+                        }
+                        if (touch) {
+                            peer(Modifier)
+                            if (actions) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { hostActions() }
+                        } else
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                peer(Modifier.weight(1f))
+                                if (actions) hostActions()
+                            }
                     }
                 }
                 if (s.host) {
@@ -319,6 +327,7 @@ fun WatchTogetherScreen() {
                         KeyboardType.Ascii,
                         ImeAction.Go,
                         ::join,
+                        if (touch) Modifier.weight(1f) else Modifier,
                     )
                     ActionButton("Join", ::join)
                 }

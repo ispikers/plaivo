@@ -75,6 +75,14 @@ impl Account {
 
 pub const DISK_CACHE_BYTES: u64 = 768 << 20;
 
+pub fn grid_columns(width: f32, card: f32, gap: f32) -> i32 {
+    let pitch = card + gap;
+    if ![width, card, gap].iter().all(|v| v.is_finite()) || pitch <= 0. {
+        return 1;
+    }
+    ((width + gap) / pitch).ceil().max(1.) as i32
+}
+
 pub fn sign_out(account: &mut Account, settings: &mut Settings) {
     account.token = None;
     account.servers.clear();
@@ -157,6 +165,22 @@ pub fn join(parts: &[String]) -> String {
 mod tests {
     use super::*;
     use plex::Backend;
+
+    #[test]
+    fn grid_columns_round_up_like_desktop() {
+        assert_eq!(grid_columns(320., 100., 10.), 3);
+        assert_eq!(grid_columns(319., 100., 10.), 3);
+        assert_eq!(grid_columns(320.5, 100., 10.), 4);
+        assert_eq!(grid_columns(300., 100., 0.), 3);
+        assert_eq!(grid_columns(200., 100., 50.), 2);
+        assert_eq!(grid_columns(100., 100., 50.), 1);
+        assert_eq!(grid_columns(10., 100., 10.), 1);
+        assert_eq!(grid_columns(0., 100., 10.), 1);
+        assert_eq!(grid_columns(300., 0., 0.), 1);
+        assert_eq!(grid_columns(f32::INFINITY, 100., 10.), 1);
+        assert_eq!(grid_columns(300., f32::NAN, 10.), 1);
+        assert_eq!(grid_columns(300., 100., f32::NEG_INFINITY), 1);
+    }
 
     #[test]
     fn old_config_loads_and_jellyfin_servers_round_trip() {

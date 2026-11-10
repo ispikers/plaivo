@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,6 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Surface as TouchSurface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -218,8 +220,10 @@ fun SettingsScreen(
     onSignOut: () -> Unit,
     onPlexSignIn: () -> Unit,
     onServersChanged: () -> Unit,
+    connections: Boolean = false,
 ) {
     val context = LocalContext.current
+    val touch = LocalTouch.current
     val scope = rememberCoroutineScope()
     val version = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: ""
@@ -228,7 +232,8 @@ fun SettingsScreen(
     val quality = settings.quality.toInt()
     val qualityLabel =
         qualities.firstOrNull { it.kbps.toInt() == quality }?.let { "${it.label} · ${it.bitrate}" } ?: "Original"
-    var category by rememberSaveable { mutableStateOf<Category?>(null) }
+    var category by rememberSaveable { mutableStateOf(if (connections) Category.Connections else null) }
+    LaunchedEffect(connections) { if (connections) category = Category.Connections }
     var draft by remember { mutableStateOf<Pair<Int?, LanguageRule>?>(null) }
     var last by rememberSaveable { mutableStateOf(Category.General) }
     var navigated by remember { mutableStateOf(false) }
@@ -277,8 +282,8 @@ fun SettingsScreen(
         }
         return
     }
-    BackHandler(enabled = category != null && focused) { open(category?.parent) }
-    LaunchedEffect(category) { if (navigated) runCatching { first.requestFocus() } }
+    BackHandler(enabled = category != null && (focused || touch)) { open(category?.parent) }
+    LaunchedEffect(category) { if (navigated && !touch) runCatching { first.requestFocus() } }
     fun Modifier.takeFocus(take: Boolean) = if (take) focusRequester(first) else this
     fun syncLanguages() =
         scope.launch {
@@ -307,7 +312,10 @@ fun SettingsScreen(
             Modifier.fillMaxSize()
                 .onFocusChanged { focused = it.hasFocus }
                 .verticalScroll(rememberScrollState())
-                .padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
+                .padding(
+                    if (touch) PaddingValues(horizontal = Dims.gutter, vertical = 16.dp)
+                    else PaddingValues(horizontal = Dims.edge, vertical = 28.dp)
+                ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Heading(category?.title ?: "Settings")
@@ -1109,6 +1117,19 @@ fun Switch(on: Boolean) {
 
 @Composable
 fun MoveButton(glyph: Glyph, enabled: Boolean, onClick: () -> Unit) {
+    if (LocalTouch.current) {
+        TouchSurface(
+            onClick = onClick,
+            modifier = Modifier.size(44.dp).alpha(if (enabled) 1f else 0.35f),
+            enabled = enabled,
+            shape = CircleShape,
+            color = Palette.surface,
+            contentColor = Palette.text,
+        ) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { GlyphIcon(glyph, 24.dp, Palette.text) }
+        }
+        return
+    }
     Surface(
         onClick = onClick,
         enabled = enabled,
@@ -1159,7 +1180,36 @@ fun SettingsRow(
     leading: (@Composable () -> Unit)? = null,
     trailing: @Composable () -> Unit = {},
 ) {
+    val touch = LocalTouch.current
     val shape = RoundedCornerShape(12.dp)
+    val content: @Composable () -> Unit = {
+        Row(
+            if (touch) Modifier.fillMaxWidth().heightIn(min = 58.dp).padding(horizontal = 16.dp, vertical = 8.dp)
+            else Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            leading?.invoke()
+            if (glyph != null) GlyphIcon(glyph, 22.dp, Palette.muted)
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, maxLines = 1)
+                if (detail.isNotEmpty())
+                    Text(detail, fontSize = 12.sp, color = Palette.muted, maxLines = if (touch) 2 else 1)
+            }
+            trailing()
+        }
+    }
+    if (touch) {
+        TouchSurface(
+            onClick = onClick,
+            modifier = modifier.fillMaxWidth(),
+            shape = shape,
+            color = if (selected) Palette.tint(0.10f) else Palette.surface,
+            contentColor = Palette.text,
+            content = content,
+        )
+        return
+    }
     Surface(
         onClick = onClick,
         modifier = modifier.fillMaxWidth(),
@@ -1175,18 +1225,6 @@ fun SettingsRow(
         border =
             ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = shape)),
     ) {
-        Row(
-            Modifier.fillMaxWidth().height(58.dp).padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            leading?.invoke()
-            if (glyph != null) GlyphIcon(glyph, 22.dp, Palette.muted)
-            Column(Modifier.weight(1f)) {
-                Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text, maxLines = 1)
-                if (detail.isNotEmpty()) Text(detail, fontSize = 12.sp, color = Palette.muted, maxLines = 1)
-            }
-            trailing()
-        }
+        content()
     }
 }

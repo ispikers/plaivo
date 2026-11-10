@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -21,6 +22,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -73,6 +76,8 @@ fun AddServerScreen(onBack: (() -> Unit)?, onAdded: (String) -> Unit) {
     var attempt by remember { mutableIntStateOf(0) }
     val addressFocus = remember { FocusRequester() }
     val userFocus = remember { FocusRequester() }
+    val passwordFocus = remember { FocusRequester() }
+    val touch = LocalTouch.current
     if (onBack != null) BackHandler(onBack = onBack)
     LaunchedEffect(Unit) { runCatching { addressFocus.requestFocus() } }
     LaunchedEffect(found) { if (found != null) runCatching { userFocus.requestFocus() } }
@@ -126,8 +131,9 @@ fun AddServerScreen(onBack: (() -> Unit)?, onAdded: (String) -> Unit) {
     }
     Column(
         Modifier.fillMaxSize()
+            .then(if (touch) Modifier.imePadding() else Modifier)
             .verticalScroll(rememberScrollState())
-            .padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
+            .padding(PaddingValues(horizontal = if (touch) Dims.gutter else Dims.edge, vertical = 28.dp)),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Heading("Add Library")
@@ -146,7 +152,7 @@ fun AddServerScreen(onBack: (() -> Unit)?, onAdded: (String) -> Unit) {
                 KeyboardType.Uri,
                 ImeAction.Go,
                 ::probe,
-                Modifier.focusRequester(addressFocus),
+                Modifier.focusRequester(addressFocus).then(if (touch) Modifier.weight(1f) else Modifier),
             )
             ActionButton("Connect", ::probe)
         }
@@ -167,7 +173,7 @@ fun AddServerScreen(onBack: (() -> Unit)?, onAdded: (String) -> Unit) {
                 "Username",
                 KeyboardType.Text,
                 ImeAction.Next,
-                {},
+                { if (touch) passwordFocus.requestFocus() },
                 Modifier.focusRequester(userFocus),
             )
             Field(
@@ -177,6 +183,7 @@ fun AddServerScreen(onBack: (() -> Unit)?, onAdded: (String) -> Unit) {
                 KeyboardType.Password,
                 ImeAction.Done,
                 ::signIn,
+                Modifier.focusRequester(passwordFocus),
                 password = true,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -240,6 +247,24 @@ fun Field(
 
 @Composable
 fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    if (LocalTouch.current)
+        return Button(
+            onClick = onClick,
+            modifier = modifier.height(44.dp).alpha(if (enabled) 1f else 0.4f),
+            enabled = enabled,
+            shape = CircleShape,
+            colors =
+                ButtonDefaults.buttonColors(
+                    containerColor = Palette.surface,
+                    contentColor = Palette.text,
+                    disabledContainerColor = Palette.surface,
+                    disabledContentColor = Palette.text,
+                ),
+            border = BorderStroke(1.dp, Palette.outline),
+            contentPadding = PaddingValues(horizontal = 20.dp),
+        ) {
+            Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text)
+        }
     Surface(
         onClick = { if (enabled) onClick() },
         modifier = modifier.height(44.dp).alpha(if (enabled) 1f else 0.4f),

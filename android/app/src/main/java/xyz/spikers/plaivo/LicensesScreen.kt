@@ -82,14 +82,15 @@ fun LicensesScreen(onBack: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val target = remember { FocusRequester() }
     val list = rememberLazyListState()
-    BackHandler(enabled = focused) { if (open != null) open = null else onBack() }
+    val touch = LocalTouch.current
+    BackHandler(enabled = focused || touch) { if (open != null) open = null else onBack() }
     LaunchedEffect(open, notices) { if (notices != null) runCatching { target.requestFocus() } }
     val items = notices ?: return
     val shown = open?.let { items.getOrNull(it) }
     Column(
         Modifier.fillMaxSize()
             .onFocusChanged { focused = it.hasFocus }
-            .padding(PaddingValues(horizontal = Dims.edge, vertical = 28.dp)),
+            .padding(PaddingValues(horizontal = if (touch) Dims.gutter else Dims.edge, vertical = 28.dp)),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (shown == null) {

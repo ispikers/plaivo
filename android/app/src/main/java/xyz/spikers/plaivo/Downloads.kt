@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -99,6 +100,8 @@ private fun Download.detail(available: Boolean): String {
 @Composable
 fun DownloadsScreen(play: (MediaCard) -> Unit) {
     val entries by DownloadQueue.entries.collectAsState()
+    val touch = LocalTouch.current
+    val inset = if (touch) 0.dp else 7.dp
     val queue = entries.filter { it.state != DownloadState.DONE }
     val done = entries.filter { it.state == DownloadState.DONE }.map { "${it.server}/${it.key}/${it.watched}" }
     val library by produceState(emptyList<MediaCard>(), done) { value = io { core.offlineLibrary() } }
@@ -120,57 +123,76 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
         focusRequester(requesters.getOrPut(key) { FocusRequester() }).onFocusChanged {
             if (it.hasFocus) focused = key to index else if (focused?.first == key && key in latestKeys) focused = null
         }
-    LazyVerticalGrid(
-        columns = GridCells.FixedSize(Dims.poster * LocalCardScale.current + LocalAppearance.current.gap),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = Dims.edge - 7.dp, end = Dims.edge - 7.dp, top = 28.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
-    ) {
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            Column(Modifier.padding(start = 7.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Heading("Downloads")
-                    val status =
-                        if (entries.isEmpty()) "Nothing downloaded yet. Hold OK on a poster to download it."
-                        else "${library.size} downloaded · ${queue.size} in queue"
-                    Text("$status · ${fmtSize(free)} free", fontSize = 13.sp, color = Palette.muted)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    val running =
-                        queue.any { it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING }
-                    val stopped = queue.any { it.state == DownloadState.PAUSED || it.state == DownloadState.FAILED }
-                    ActionButton(
-                        "Pause all",
-                        { background.launch { core.pauseAllDownloads() } },
-                        Modifier.focusRequester(header),
-                        running,
-                    )
-                    ActionButton("Resume all", { background.launch { core.resumeAllDownloads() } }, enabled = stopped)
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val gap = LocalAppearance.current.gap
+        val scale = LocalCardScale.current
+        val columns = if (touch) touchColumns(maxWidth) else 0
+        LazyVerticalGrid(
+            columns = if (touch) GridCells.Fixed(columns) else GridCells.FixedSize(Dims.poster * scale + gap),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding =
+                if (touch) PaddingValues(Dims.gutter)
+                else PaddingValues(start = Dims.edge - 7.dp, end = Dims.edge - 7.dp, top = 28.dp, bottom = 28.dp),
+            horizontalArrangement = if (touch) Arrangement.spacedBy(gap) else Arrangement.Start,
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Column(Modifier.padding(start = inset), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Heading("Downloads")
+                        val status =
+                            if (entries.isEmpty())
+                                "Nothing downloaded yet. ${if (touch) "Long-press" else "Hold OK on"} a poster to download it."
+                            else "${library.size} downloaded · ${queue.size} in queue"
+                        Text("$status · ${fmtSize(free)} free", fontSize = 13.sp, color = Palette.muted)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        val running =
+                            queue.any { it.state == DownloadState.QUEUED || it.state == DownloadState.DOWNLOADING }
+                        val stopped = queue.any { it.state == DownloadState.PAUSED || it.state == DownloadState.FAILED }
+                        ActionButton(
+                            "Pause all",
+                            { background.launch { core.pauseAllDownloads() } },
+                            Modifier.focusRequester(header),
+                            running,
+                        )
+                        ActionButton(
+                            "Resume all",
+                            { background.launch { core.resumeAllDownloads() } },
+                            enabled = stopped,
+                        )
+                    }
                 }
             }
-        }
-        itemsIndexed(queue, key = { _, d -> "q/${d.server}/${d.key}" }, span = { _, _ -> GridItemSpan(maxLineSpan) }) {
-            i,
-            d ->
-            QueueRow(d, d.server in servers, Modifier.tracked("q/${d.server}/${d.key}", i))
-        }
-        if (library.isNotEmpty()) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Text(
-                    "Downloaded",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Palette.muted,
-                    modifier = Modifier.padding(start = 7.dp, top = 8.dp),
+            itemsIndexed(
+                queue,
+                key = { _, d -> "q/${d.server}/${d.key}" },
+                span = { _, _ -> GridItemSpan(maxLineSpan) },
+            ) { i, d ->
+                QueueRow(
+                    d,
+                    d.server in servers,
+                    Modifier.tracked("q/${d.server}/${d.key}", i).padding(horizontal = inset),
                 )
             }
-        }
-        itemsIndexed(library, key = { _, card -> "${card.server}/${card.key}" }) { i, card ->
-            Box(
-                Modifier.fillMaxWidth().tracked("${card.server}/${card.key}", queue.size + i),
-                contentAlignment = Alignment.TopCenter,
-            ) {
-                MediaTile(card, wide = false) { play(card) }
+            if (library.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        "Downloaded",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Palette.muted,
+                        modifier = Modifier.padding(start = inset, top = 8.dp),
+                    )
+                }
+            }
+            itemsIndexed(library, key = { _, card -> "${card.server}/${card.key}" }) { i, card ->
+                Box(
+                    Modifier.fillMaxWidth().tracked("${card.server}/${card.key}", queue.size + i),
+                    contentAlignment = Alignment.TopCenter,
+                ) {
+                    MediaTile(card, wide = false, if (touch) Modifier.fillMaxWidth() else Modifier) { play(card) }
+                }
             }
         }
     }
@@ -179,11 +201,7 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
 @Composable
 private fun QueueRow(d: Download, available: Boolean, modifier: Modifier) {
     val running = d.state == DownloadState.QUEUED || d.state == DownloadState.DOWNLOADING
-    Row(
-        modifier.padding(horizontal = 7.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         SettingsRow(
             Glyph.Download,
             d.title,
@@ -195,7 +213,7 @@ private fun QueueRow(d: Download, available: Boolean, modifier: Modifier) {
                 }
             },
         ) {
-            if (d.total > 0uL) {
+            if (d.total > 0uL && !LocalTouch.current) {
                 Box(Modifier.width(120.dp).height(4.dp).background(Palette.tint(0.2f), CircleShape)) {
                     Box(
                         Modifier.fillMaxWidth((d.bytes.toDouble() / d.total.toDouble()).toFloat().coerceIn(0f, 1f))

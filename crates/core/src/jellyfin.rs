@@ -913,6 +913,7 @@ pub fn transcode_url(
     source_id: &str,
     q: &Quality,
     session: &str,
+    audio_codecs: &str,
 ) -> String {
     let (bps, height) = ((q.kbps as u64 * 1000).to_string(), q.height.to_string());
     let width = q.resolution.split('x').next().unwrap_or_default();
@@ -921,7 +922,7 @@ pub fn transcode_url(
         ("DeviceId", &c.client_id),
         ("PlaySessionId", session),
         ("VideoCodec", "h264"),
-        ("AudioCodec", "aac,ac3,eac3,mp3"),
+        ("AudioCodec", audio_codecs),
         ("MaxStreamingBitrate", &bps),
         ("VideoBitrate", &bps),
         ("MaxWidth", width),
@@ -1501,10 +1502,18 @@ mod tests {
             image_url(&srv, "/Items/i/Images/Primary?tag=t", 300, 450),
             "http://nas:8096/Items/i/Images/Primary?tag=t&fillWidth=300&fillHeight=450&quality=90"
         );
-        let url = transcode_url(&srv, &c, "i", "v2", Quality::find(4000).unwrap(), "s1");
+        let url = transcode_url(
+            &srv,
+            &c,
+            "i",
+            "v2",
+            Quality::find(4000).unwrap(),
+            "s1",
+            "aac,ac3,eac3,mp3",
+        );
         assert!(url.starts_with("http://nas:8096/Videos/i/master.m3u8?MediaSourceId=v2&DeviceId=dev%201&PlaySessionId=s1&"), "{url}");
         assert!(
-            transcode_url(&srv, &c, "i", "", Quality::find(4000).unwrap(), "s1")
+            transcode_url(&srv, &c, "i", "", Quality::find(4000).unwrap(), "s1", "aac")
                 .contains("MediaSourceId=i&")
         );
         for p in [

@@ -33,6 +33,8 @@ android {
 
     buildFeatures { compose = true }
 
+    lint { disable += "ChromeOsAbiSupport" }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -48,6 +50,7 @@ val workspace: File = rootProject.projectDir.parentFile
 val ndkDir = androidComponents.sdkComponents.ndkDirectory
 
 val buildRust = tasks.register<Exec>("buildRust") {
+    description = "Builds the plaivo-ffi Rust library for Android ABIs."
     workingDir = workspace
     val out = layout.buildDirectory.dir("rust/jniLibs").get().asFile.absolutePath
     commandLine("cargo", "ndk", "-t", "arm64-v8a", "-t", "armeabi-v7a", "-P", "24", "-o", out, "build", "-p", "plaivo-ffi", "--release", "--config", "profile.release.strip=false", "--config", "profile.release.panic='unwind'")
@@ -55,6 +58,7 @@ val buildRust = tasks.register<Exec>("buildRust") {
 }
 
 val generateBindings = tasks.register<Exec>("generateBindings") {
+    description = "Generates Kotlin UniFFI bindings from the Rust library."
     dependsOn(buildRust)
     workingDir = workspace
     val lib = File(workspace, "target/aarch64-linux-android/release/libplaivo_ffi.so").absolutePath
@@ -67,6 +71,7 @@ tasks.named("preBuild") { dependsOn(generateBindings) }
 val licenseConfig = layout.buildDirectory.dir("generated/aboutLibrariesConfig")
 val licenseTexts = mapOf("Apache-2.0" to "Apache-2.0.txt", "LGPL-2.1-or-later" to "LGPL-2.1.txt")
 val writeLicenseConfig = tasks.register("writeLicenseConfig") {
+    description = "Writes AboutLibraries license texts for non-Maven dependencies."
     val sources = licenseTexts.mapValues { File(workspace, "licenses/${it.value}") }
     inputs.files(sources.values)
     outputs.dir(licenseConfig)
@@ -90,6 +95,7 @@ androidComponents.onVariants { variant ->
     val json = layout.buildDirectory.file("generated/aboutLibraries/${variant.name}/res/raw/aboutlibraries.json")
     val graph = configurations.named("${variant.name}RuntimeClasspath").flatMap { it.incoming.resolutionResult.rootComponent }
     val check = tasks.register("check${name}Licenses") {
+        description = "Fails if any runtime dependency lacks license text."
         dependsOn("prepareLibraryDefinitions$name")
         inputs.file(json)
         doLast {
@@ -120,6 +126,7 @@ androidComponents.onVariants { variant ->
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.material3:material3")
     implementation("androidx.tv:tv-material:1.1.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.media3:media3-exoplayer:1.11.1")

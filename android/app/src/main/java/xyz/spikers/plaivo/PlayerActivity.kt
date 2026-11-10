@@ -2,17 +2,26 @@
 
 package xyz.spikers.plaivo
 
+import android.app.UiModeManager
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
@@ -24,11 +33,15 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.ui.AspectRatioFrameLayout
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
@@ -107,6 +120,14 @@ class PlayerActivity : ComponentActivity() {
     val autoSkipped = mutableSetOf<Int>()
     private var queueShow: String? = null
     private var fellBack = false
+    private var loading: Job? = null
+    private val audioCodecs by lazy {
+        val dolby =
+            listOf("ac3" to MimeTypes.AUDIO_AC3, "eac3" to MimeTypes.AUDIO_E_AC3).filter { (_, mime) ->
+                runCatching { MediaCodecUtil.getDecoderInfos(mime, false, false).isNotEmpty() }.getOrDefault(false)
+            }
+        (listOf("aac", "mp3") + dolby.map { it.first }).joinToString(",")
+    }
     private var version = 0
     private var manualTracks = false
     private var autoTracks = false
@@ -117,12 +138,31 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val touch = getSystemService(UiModeManager::class.java).currentModeType != Configuration.UI_MODE_TYPE_TELEVISION
+        if (touch) {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+                window.attributes =
+                    window.attributes.apply {
+                        layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    }
+            WindowCompat.getInsetsController(window, window.decorView).run {
+                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                hide(WindowInsetsCompat.Type.systemBars())
+            }
+        }
         val server = intent.getStringExtra("server") ?: return finish()
         val key = intent.getStringExtra("key") ?: return finish()
         version = intent.getIntExtra("version", 0)
         quality = prefs.quality.toInt()
         scale = Scale.entries[prefs.scale.ordinal]
-        exo = ExoPlayer.Builder(this).build()
+        val renderers =
+            DefaultRenderersFactory(this).setMediaCodecSelector { mime, secure, tunneling ->
+                // the emulator's host-backed decoders fail mid-stream; its software ones work
+                MediaCodecUtil.getDecoderInfos(mime, secure, tunneling).filterNot { it.name.startsWith("c2.goldfish.") }
+            }
+        exo = ExoPlayer.Builder(this, renderers).build()
         Watch.player = this
         exo.addListener(
             object : Player.Listener {
@@ -158,6 +198,12 @@ class PlayerActivity : ComponentActivity() {
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    (error.cause as? HttpDataSource.InvalidResponseCodeException)?.let {
+                        android.util.Log.w(
+                            "Plaivo",
+                            "HTTP ${it.responseCode} ${it.dataSpec.uri.buildUpon().clearQuery()}: ${String(it.responseBody).take(300)}",
+                        )
+                    }
                     if (fellBack && playback?.transcodeSession == null) return
                     if (error.errorCode in 3000..5999 && fallBack(error.errorCodeName)) return
                     Toast.makeText(this@PlayerActivity, "Playback error: ${error.errorCodeName}", Toast.LENGTH_LONG)
@@ -186,7 +232,7 @@ class PlayerActivity : ComponentActivity() {
                 }
             }
         )
-        setContent { PlaivoTheme { PlayerScreen(this) } }
+        setContent { CompositionLocalProvider(LocalTouch provides touch) { PlaivoTheme { PlayerScreen(this) } } }
         play(server, key, if (intent.getBooleanExtra("fromStart", false)) 0L else null)
         lifecycleScope.launch {
             while (true) {
@@ -210,54 +256,69 @@ class PlayerActivity : ComponentActivity() {
 
     fun play(server: String, key: String, startAt: Long? = null, forceTranscode: Boolean = false) {
         if (playback != null && playback?.key != key) version = 0
-        lifecycleScope.launch {
-            val p =
-                try {
-                    io { core.playback(server, key, quality.toUInt(), forceTranscode, version.toUInt()) }
-                } catch (e: PlaivoException) {
-                    Watch.failed(server, key)
-                    if (advancing) upNextCancelled = true
-                    advancing = false
-                    Toast.makeText(this@PlayerActivity, e.message, Toast.LENGTH_LONG).show()
-                    if (playback == null || forceTranscode) finish()
-                    return@launch
+        loading?.cancel()
+        loading =
+            lifecycleScope.launch {
+                val p =
+                    try {
+                        io {
+                            core.playback(server, key, quality.toUInt(), forceTranscode, version.toUInt(), audioCodecs)
+                        }
+                    } catch (e: PlaivoException) {
+                        Watch.failed(server, key)
+                        if (advancing) upNextCancelled = true
+                        advancing = false
+                        Toast.makeText(this@PlayerActivity, e.message, Toast.LENGTH_LONG).show()
+                        if (playback == null || forceTranscode) finish()
+                        return@launch
+                    }
+                val previous = playback
+                if (previous?.key != p.key) fellBack = false
+                val session = previous?.transcodeSession
+                if (previous != null && previous.key != p.key && session == null) report("stopped")
+                if (previous != null && session != null) {
+                    val time = exo.currentPosition.coerceAtLeast(0).toULong()
+                    exo.stop()
+                    // Plex answers 400 to a new transcode while the old playback is still reported as active
+                    io {
+                        core.report(previous.server, previous.key, "stopped", time, previous.durationMs, session)
+                        core.stopTranscode(previous.server, session)
+                    }
                 }
-            val previous = playback
-            if (previous?.key != p.key) fellBack = false
-            if (previous != null && previous.key != p.key) report("stopped")
-            previous?.let { stopTranscode(it) }
-            playback = p
-            if (previous?.key != p.key) manualTracks = false
-            if (!manualTracks) {
-                autoTracks = true
-                val l = p.languages
-                exo.trackSelectionParameters =
-                    exo.trackSelectionParameters
-                        .buildUpon()
-                        .clearOverrides()
-                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                        .setPreferredAudioLanguage(l.audio.ifEmpty { null })
-                        .setPreferredTextLanguage(l.subtitles.ifEmpty { null }.takeIf { l.mode != SubtitleMode.OFF })
-                        .build()
+                playback = p
+                if (previous?.key != p.key) manualTracks = false
+                if (!manualTracks) {
+                    autoTracks = true
+                    val l = p.languages
+                    exo.trackSelectionParameters =
+                        exo.trackSelectionParameters
+                            .buildUpon()
+                            .clearOverrides()
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setPreferredAudioLanguage(l.audio.ifEmpty { null })
+                            .setPreferredTextLanguage(
+                                l.subtitles.ifEmpty { null }.takeIf { l.mode != SubtitleMode.OFF }
+                            )
+                            .build()
+                }
+                advancing = false
+                upNextCancelled = false
+                upNextAnchor = null
+                autoSkipped.clear()
+                firstFrame = false
+                exo.setMediaItem(mediaItem(p), startAt ?: p.startMs.toLong())
+                exo.prepare()
+                exo.playWhenReady = true
+                Watch.loaded(p.server, p.key, p.durationMs.toLong())
+                val show = p.showKey
+                if (show == null) {
+                    queueShow = null
+                    queue = emptyList()
+                } else if (show != queueShow) {
+                    queueShow = show
+                    queue = io { runCatching { core.queue(p.server, show) } }.getOrDefault(emptyList())
+                }
             }
-            advancing = false
-            upNextCancelled = false
-            upNextAnchor = null
-            autoSkipped.clear()
-            firstFrame = false
-            exo.setMediaItem(mediaItem(p), startAt ?: p.startMs.toLong())
-            exo.prepare()
-            exo.playWhenReady = true
-            Watch.loaded(p.server, p.key, p.durationMs.toLong())
-            val show = p.showKey
-            if (show == null) {
-                queueShow = null
-                queue = emptyList()
-            } else if (show != queueShow) {
-                queueShow = show
-                queue = io { runCatching { core.queue(p.server, show) } }.getOrDefault(emptyList())
-            }
-        }
     }
 
     fun changeQuality(kbps: Int) {
@@ -499,6 +560,11 @@ class PlayerActivity : ComponentActivity() {
                         channelLayout(a?.channelCount ?: 0),
                         a?.sampleRate?.takeIf { it > 0 }?.let { "${it / 1000.0} kHz" } ?: "",
                     ),
+                "Subtitles" to
+                    tracks(C.TRACK_TYPE_TEXT).let { subs ->
+                        subs.firstOrNull { it.selected }?.let { join(it.label, it.detail) }
+                            ?: if (subs.isEmpty()) "" else "Off"
+                    },
             )
         return rows.filter { it.second.isNotEmpty() }
     }

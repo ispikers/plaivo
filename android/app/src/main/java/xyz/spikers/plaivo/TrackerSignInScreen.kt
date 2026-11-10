@@ -1,5 +1,6 @@
 package xyz.spikers.plaivo
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -8,9 +9,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -26,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
 import androidx.tv.material3.Text
 import kotlinx.coroutines.delay
 import uniffi.plaivo_ffi.PlaivoException
@@ -83,48 +89,62 @@ fun TrackerSignInScreen(service: Service, onClose: () -> Unit) {
         }
         status = failure("expired")
     }
+    val touch = LocalTouch.current
     Column(
-        Modifier.fillMaxSize(),
+        Modifier.fillMaxSize()
+            .then(if (touch) Modifier.verticalScroll(rememberScrollState()).padding(Dims.gutter) else Modifier),
         verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Heading("Connect ${service.title}")
-        Row(horizontalArrangement = Arrangement.spacedBy(56.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(
-                Modifier.width(420.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                val s = sign
-                val code = s?.userCode
-                Text(
-                    if (code != null) "On your phone or computer, go to" else "Scan the code with your phone, or open",
-                    fontSize = 16.sp,
-                    color = Palette.muted,
+        val s = sign
+        if (touch) {
+            SignInCode(s, Modifier.fillMaxWidth())
+            if (s != null)
+                ActionButton(
+                    "Open in browser",
+                    { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, s.url.toUri())) } },
                 )
-                Text(
-                    s?.url?.removePrefix("https://") ?: "…",
-                    fontSize = if (code != null) 24.sp else 14.sp,
-                    color = Palette.text,
-                    textAlign = TextAlign.Center,
-                    maxLines = 3,
-                )
-                if (code != null) {
-                    Text("and enter this code", fontSize = 16.sp, color = Palette.muted)
-                    Text(
-                        code,
-                        fontSize = 44.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Palette.text,
-                        letterSpacing = 8.sp,
-                    )
-                }
+            SignInQr(s)
+        } else
+            Row(horizontalArrangement = Arrangement.spacedBy(56.dp), verticalAlignment = Alignment.CenterVertically) {
+                SignInCode(s, Modifier.width(420.dp))
+                SignInQr(s)
             }
-            val s = sign
-            if (s != null) QrCode(s.qrSize.toInt(), s.qr, Modifier.size(220.dp))
-            else Box(Modifier.size(220.dp).background(Palette.surface, RoundedCornerShape(12.dp)))
-        }
         Text(status, fontSize = 14.sp, color = Palette.muted)
         Box(Modifier.focusRequester(cancel)) { ActionButton("Cancel", onClick = onClose) }
     }
+}
+
+@Composable
+private fun SignInCode(s: TrackerSignIn?, modifier: Modifier) {
+    Column(
+        modifier,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        val code = s?.userCode
+        Text(
+            if (code != null) "On your phone or computer, go to" else "Scan the code with your phone, or open",
+            fontSize = 16.sp,
+            color = Palette.muted,
+        )
+        Text(
+            s?.url?.removePrefix("https://") ?: "…",
+            fontSize = if (code != null) 24.sp else 14.sp,
+            color = Palette.text,
+            textAlign = TextAlign.Center,
+            maxLines = 3,
+        )
+        if (code != null) {
+            Text("and enter this code", fontSize = 16.sp, color = Palette.muted)
+            Text(code, fontSize = 44.sp, fontWeight = FontWeight.Bold, color = Palette.text, letterSpacing = 8.sp)
+        }
+    }
+}
+
+@Composable
+private fun SignInQr(s: TrackerSignIn?) {
+    if (s != null) QrCode(s.qrSize.toInt(), s.qr, Modifier.size(220.dp))
+    else Box(Modifier.size(220.dp).background(Palette.surface, RoundedCornerShape(12.dp)))
 }

@@ -1,7 +1,8 @@
 use plaivo_core::downloads::{Downloads, State};
 use plaivo_core::menu::{self, Action};
 use plaivo_core::plex::{
-    self, Client, Ctx, Hub, Item, QUALITIES, SORTS, Server, Source, fmt_bitrate, resolve_playable,
+    self, Client, Ctx, DISCOVER_ID, Hub, Item, PlexUser, QUALITIES, SORTS, Server, Source,
+    fmt_bitrate, resolve_playable,
 };
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{
@@ -278,10 +279,17 @@ pub enum EpisodePoster {
     Thumbnail,
 }
 
+#[uniffi::remote(Record)]
+pub struct PlexUser {
+    pub name: String,
+    pub thumb: Option<String>,
+}
+
 #[derive(uniffi::Record)]
 pub struct SignIn {
     pub id: u64,
     pub code: String,
+    pub url: String,
     pub qr_size: u32,
     pub qr: Vec<bool>,
     pub expires_in_s: u64,
@@ -393,6 +401,8 @@ pub struct Card {
     pub progress: f32,
     pub watched: bool,
     pub unwatched: u64,
+    #[uniffi(default)]
+    pub left: Option<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -420,11 +430,18 @@ pub struct Row {
     pub cards: Vec<Card>,
 }
 
+#[derive(uniffi::Record)]
+pub struct Home {
+    pub rows: Vec<Row>,
+    pub hero: Vec<Card>,
+}
+
 #[derive(uniffi::Enum)]
 pub enum Listing {
     Items { sort: String },
     Collections,
     CollectionItems,
+    Watchlist { sort: String, shows: bool },
 }
 
 #[derive(uniffi::Record)]
@@ -545,6 +562,7 @@ pub struct Download {
 pub struct Plaivo {
     client: Client,
     account: Mutex<Account>,
+    plex_user: Mutex<Option<(String, PlexUser)>>,
     settings: Mutex<Settings>,
     downloads: OnceLock<Downloads>,
     trackers: Trackers,
@@ -564,7 +582,7 @@ fn file_url(path: &Path) -> String {
 }
 
 fn card(srv: &Server, it: &Item, wide: bool, prefs: &CardPrefs) -> Card {
-    let blur = prefs.blur(it, prefs.art(it, wide));
+    let blur = srv.id != DISCOVER_ID && prefs.blur(it, prefs.art(it, wide));
     card_with(&srv.id, it, wide, prefs, |path, w, h| {
         Some(srv.image_url(path, w, h) + if blur && w < 1920 { BLUR_PARAM } else { "" })
     })
@@ -618,6 +636,7 @@ fn card_with(
         progress: it.progress(),
         watched: it.watched(),
         unwatched: it.unwatched(),
+        left: it.time_left(),
     }
 }
 
@@ -637,6 +656,7 @@ impl Plaivo {
         Arc::new(Self {
             client: Client::new(account.client_id.clone()),
             account: Mutex::new(account),
+            plex_user: Mutex::new(None),
             settings: Mutex::new(settings),
             downloads: OnceLock::new(),
             trackers,
@@ -652,10 +672,12 @@ impl Plaivo {
 
     pub fn start_sign_in(&self) -> R<SignIn> {
         let pin = self.client.create_pin(false)?;
-        let (qr_size, qr) = qr(&self.client.link_url(&pin.code))?;
+        let url = self.client.link_url(&pin.code);
+        let (qr_size, qr) = qr(&url)?;
         Ok(SignIn {
             id: pin.id,
             code: pin.code,
+            url,
             qr_size,
             qr,
             expires_in_s: pin.expires_in.unwrap_or(900),
@@ -670,6 +692,22 @@ impl Plaivo {
         account.token = Some(token);
         account.save();
         Ok(true)
+    }
+
+    pub fn plex_user(&self) -> Option<PlexUser> {
+        let token = self.account.lock().unwrap().token.clone()?;
+        if let Some((cached, user)) = &*self.plex_user.lock().unwrap()
+            && *cached == token
+        {
+            return Some(user.clone());
+        }
+        let user = self
+            .client
+            .user(&token)
+            .inspect_err(|e| log::warn!("plex user: {e}"))
+            .ok()?;
+        *self.plex_user.lock().unwrap() = Some((token, user.clone()));
+        Some(user)
     }
 
     pub fn sign_out(&self) {
@@ -861,7 +899,7 @@ impl Plaivo {
         Ok(self.servers())
     }
 
-    pub fn home(&self, server_id: String, cached: bool) -> R<Vec<Row>> {
+    pub fn home(&self, server_id: String, cached: bool) -> R<Home> {
         let srv = self.server(&server_id)?;
         let ctx = Ctx::new(
             self.client.clone(),
@@ -871,7 +909,15 @@ impl Plaivo {
                 Source::Network
             },
         );
-        Ok(rows(&srv, &srv.hubs(&ctx)?, &self.card_prefs()))
+        let hubs = srv.hubs(&ctx)?;
+        let prefs = self.card_prefs();
+        Ok(Home {
+            hero: plex::pick_hero(&hubs)
+                .into_iter()
+                .map(|it| card(&srv, it, false, &prefs))
+                .collect(),
+            rows: rows(&srv, &hubs, &prefs),
+        })
     }
 
     pub fn library_hubs(
@@ -969,6 +1015,9 @@ impl Plaivo {
             Listing::Items { sort } => srv.section_items(&ctx, &key, start, size, &sort, list)?,
             Listing::Collections => srv.collections(&ctx, &key, start, size)?,
             Listing::CollectionItems => srv.collection_items(&ctx, &key, start, size, list)?,
+            Listing::Watchlist { sort, shows } => {
+                srv.watchlist(&ctx, if shows { "2" } else { "1" }, start, size, &sort)?
+            }
         };
         Ok(LibraryPage {
             cards: items
@@ -1000,7 +1049,7 @@ impl Plaivo {
         } else {
             Vec::new()
         };
-        let summary = detail::summary(&it, true);
+        let summary = detail::summary(&it, server_id != DISCOVER_ID);
         let prefs = self.card_prefs();
         let image =
             |path: &str, w: u32, h: u32| (!path.is_empty()).then(|| srv.image_url(path, w, h));
@@ -1097,6 +1146,9 @@ impl Plaivo {
     }
 
     pub fn related(&self, server_id: String, key: String) -> R<Vec<Row>> {
+        if server_id == DISCOVER_ID {
+            return Ok(Vec::new());
+        }
         let srv = self.server(&server_id)?;
         let hubs = srv.related(&Ctx::new(self.client.clone(), Source::Network), &key)?;
         Ok(rows(&srv, &hubs[..hubs.len().min(3)], &self.card_prefs()))
@@ -1113,7 +1165,7 @@ impl Plaivo {
             _ => None,
         };
         let ctx = menu::Context {
-            local: true,
+            local: server_id != DISCOVER_ID,
             details: false,
             can_rate: srv.can_rate(),
             can_download: self.downloads.get().is_some(),
@@ -1237,6 +1289,7 @@ impl Plaivo {
         quality_kbps: u32,
         force_transcode: bool,
         version: u32,
+        audio_codecs: String,
     ) -> R<Playback> {
         if !force_transcode
             && version == 0
@@ -1261,6 +1314,7 @@ impl Plaivo {
             media,
             quality_kbps,
             force_transcode,
+            &audio_codecs,
         );
         let subtitles = part
             .stream
@@ -1503,6 +1557,31 @@ impl Plaivo {
         self.with_downloads(Downloads::resume_all);
     }
 
+    pub fn find_owned(&self, server_id: String, key: String) -> R<Option<Card>> {
+        if server_id != DISCOVER_ID {
+            return Ok(None);
+        }
+        let discover = self.server(DISCOVER_ID)?;
+        let it = discover
+            .metadata(&Ctx::new(self.client.clone(), Source::Cache), &key)
+            .or_else(|_| {
+                discover.metadata(&Ctx::new(self.client.clone(), Source::Network), &key)
+            })?;
+        let home = self.settings.lock().unwrap().home_server.clone();
+        let mut servers = self.account.lock().unwrap().all_servers();
+        servers.retain(|s| !plex::is_down(&s.id));
+        servers.sort_by_key(|s| s.id != home);
+        let prefs = self.card_prefs();
+        Ok(
+            plaivo_core::watch_together::find_owned(&it, &servers, &self.client).and_then(
+                |(id, local)| {
+                    let srv = servers.iter().find(|s| s.id == id)?;
+                    Some(card(srv, &local, false, &prefs))
+                },
+            ),
+        )
+    }
+
     pub fn offline_library(&self) -> Vec<Card> {
         let Some(d) = self.downloads.get() else {
             return Vec::new();
@@ -1528,6 +1607,16 @@ pub fn library_sorts() -> Vec<SortOption> {
             label: (*label).into(),
         })
         .collect()
+}
+
+#[uniffi::export]
+pub fn grid_columns(width: f32, card: f32, gap: f32) -> i32 {
+    plaivo_core::grid_columns(width, card, gap)
+}
+
+#[uniffi::export]
+pub fn discover_id() -> String {
+    DISCOVER_ID.into()
 }
 
 #[uniffi::export]
@@ -1848,9 +1937,16 @@ impl Plaivo {
     }
 
     fn server(&self, id: &str) -> R<Server> {
-        self.account
-            .lock()
-            .unwrap()
+        let account = self.account.lock().unwrap();
+        if id == DISCOVER_ID {
+            return Ok(self.client.discover(
+                account
+                    .token
+                    .as_deref()
+                    .ok_or("Sign in to Plex to use the watchlist")?,
+            ));
+        }
+        account
             .server(id)
             .cloned()
             .ok_or_else(|| "Unknown server".into())
@@ -1988,11 +2084,42 @@ mod tests {
             .insert(id.clone(), (episode, None));
         core.account.lock().unwrap().token = Some("t".into());
         core.settings.lock().unwrap().home_server = "p1".into();
+        let sam = super::PlexUser {
+            name: "Sam".into(),
+            thumb: None,
+        };
+        *core.plex_user.lock().unwrap() = Some(("t".into(), sam.clone()));
+        assert_eq!(core.plex_user(), Some(sam));
         core.sign_out();
+        assert!(core.plex_user().is_none());
         assert!(
             !core.signed_in()
                 && core.settings().home_server.is_empty()
                 && core.tracked.lock().unwrap().is_empty()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn discover_needs_a_plex_sign_in() {
+        use super::{DISCOVER_ID, Plaivo};
+        let dir = std::env::temp_dir().join(format!("plaivo-ffi-discover-{}", std::process::id()));
+        let core = Plaivo::new(
+            dir.join("config").display().to_string(),
+            dir.join("cache").display().to_string(),
+        );
+        assert!(core.server(DISCOVER_ID).is_err());
+        core.account.lock().unwrap().token = Some("t".into());
+        let discover = core.server(DISCOVER_ID).unwrap();
+        assert_eq!(
+            (discover.id.as_str(), discover.token.as_str()),
+            (DISCOVER_ID, "t")
+        );
+        assert!(core.find_owned("p1".into(), "1".into()).unwrap().is_none());
+        assert!(
+            core.related(DISCOVER_ID.into(), "1".into())
+                .unwrap()
+                .is_empty()
         );
         let _ = std::fs::remove_dir_all(dir);
     }

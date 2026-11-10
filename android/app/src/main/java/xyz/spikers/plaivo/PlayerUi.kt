@@ -11,12 +11,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,8 +33,12 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Slider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -51,6 +60,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -58,11 +68,20 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -77,7 +96,9 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import java.util.Date
+import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.sign
 import kotlinx.coroutines.delay
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.Settings
@@ -124,6 +145,9 @@ fun PlayerScreen(player: PlayerActivity) {
     var swallow by remember { mutableStateOf<Key?>(null) }
     var hint by remember { mutableStateOf<Pair<Glyph, String>?>(null) }
     var upNext by remember { mutableStateOf<Double?>(null) }
+    var scrub by remember { mutableStateOf<Float?>(null) }
+    var cue by remember { mutableLongStateOf(0L) }
+    val touch = LocalTouch.current
     val small = player.prefs.seekSmall.toLong() * 1000
     val large = player.prefs.seekLarge.toLong() * 1000
     val root = remember { FocusRequester() }
@@ -171,7 +195,8 @@ fun PlayerScreen(player: PlayerActivity) {
         }
     }
     val skip = skipState.value
-    val hideable = !paused && panel == null
+    val scrubbing by remember { derivedStateOf { scrub != null } }
+    val hideable = !paused && panel == null && !scrubbing
     LaunchedEffect(controls, lastInput, hideable) {
         if (controls && hideable) {
             delay(CONTROLS_FOR_MS)
@@ -181,7 +206,7 @@ fun PlayerScreen(player: PlayerActivity) {
     }
     LaunchedEffect(controls, target, skip != null) {
         val t = target ?: return@LaunchedEffect
-        if (!controls) return@LaunchedEffect
+        if (!controls || touch) return@LaunchedEffect
         delay(16)
         runCatching {
             when (t) {
@@ -196,6 +221,13 @@ fun PlayerScreen(player: PlayerActivity) {
         if (hint != null) {
             delay(HINT_MS)
             hint = null
+        }
+    }
+    LaunchedEffect(controls, p?.key) { scrub = null }
+    LaunchedEffect(cue) {
+        if (cue != 0L) {
+            delay(HINT_MS)
+            cue = 0L
         }
     }
     fun show(focus: Target) {
@@ -218,9 +250,25 @@ fun PlayerScreen(player: PlayerActivity) {
         }
     }
 
+    val density = LocalDensity.current
+    val direction = LocalLayoutDirection.current
+    val notch = WindowInsets.displayCutout
+    val cutout = with(density) { maxOf(notch.getLeft(density, direction), notch.getRight(density, direction)).toDp() }
     Box(
         Modifier.fillMaxSize()
             .background(Color.Black)
+            .then(
+                if (touch)
+                    Modifier.pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val e = awaitPointerEvent(PointerEventPass.Initial)
+                                if (e.type == PointerEventType.Release) lastInput = System.nanoTime()
+                            }
+                        }
+                    }
+                else Modifier
+            )
             .onPreviewKeyEvent { e ->
                 lastInput = System.nanoTime()
                 if (e.type == KeyEventType.KeyUp) {
@@ -304,8 +352,34 @@ fun PlayerScreen(player: PlayerActivity) {
             modifier = Modifier.fillMaxSize(),
         )
 
+        if (touch)
+            Box(
+                Modifier.fillMaxSize().pointerInput(small) {
+                    fun toggle() {
+                        if (panel != null) panel = null else controls = !controls
+                    }
+                    detectTapGestures(
+                        onTap = { toggle() },
+                        onDoubleTap = { o ->
+                            val side =
+                                when {
+                                    o.x < size.width / 3f -> -1
+                                    o.x > size.width * 2 / 3f -> 1
+                                    else -> 0
+                                }
+                            if (side == 0 || panel != null) return@detectTapGestures toggle()
+                            val step = side * small
+                            player.seekBy(step)
+                            if (duration > 0) position = (position + step).coerceIn(0, duration)
+                            cue = if (cue.sign == side) cue + step else step
+                        },
+                    )
+                }
+            )
+
         AnimatedVisibility(controls, enter = fadeIn(), exit = fadeOut()) {
             Box(Modifier.fillMaxSize()) {
+                if (touch) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.3f)))
                 Box(
                     Modifier.fillMaxWidth()
                         .height(140.dp)
@@ -318,7 +392,7 @@ fun PlayerScreen(player: PlayerActivity) {
                         .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f))))
                 )
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 24.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = cutout).padding(horizontal = 40.dp, vertical = 24.dp),
                     verticalAlignment = Alignment.Top,
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -350,37 +424,81 @@ fun PlayerScreen(player: PlayerActivity) {
                         color = white,
                     )
                 }
+                val episodic = player.queue.isNotEmpty() && player.neighbor(0) != null
+                val prev = player.neighbor(-1)
+                val next = player.neighbor(1)
+                val playPrev: () -> Unit = { prev?.let { player.play(it.server, it.key) } }
+                val playNext: () -> Unit = { next?.let { player.play(it.server, it.key) } }
+                if (touch)
+                    Row(
+                        Modifier.align(Alignment.Center),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(40.dp),
+                    ) {
+                        if (episodic)
+                            Control(
+                                Glyph.SkipPrevious,
+                                size = 60.dp,
+                                icon = 34.dp,
+                                enabled = prev != null,
+                                onClick = playPrev,
+                            )
+                        Control(if (paused) Glyph.Play else Glyph.Pause, size = 76.dp, icon = 46.dp) {
+                            player.togglePause()
+                        }
+                        if (episodic)
+                            Control(
+                                Glyph.SkipNext,
+                                size = 60.dp,
+                                icon = 34.dp,
+                                enabled = next != null,
+                                onClick = playNext,
+                            )
+                    }
                 Column(
                     Modifier.align(Alignment.BottomCenter)
                         .fillMaxWidth()
+                        .padding(horizontal = cutout)
                         .padding(start = 40.dp, end = 40.dp, bottom = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    val shown = scrub?.let { (it * duration).toLong() } ?: position
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
+                        Text(fmtTime(shown), fontSize = 13.sp, color = white, modifier = Modifier.widthIn(min = 48.dp))
+                        if (touch)
+                            Scrubber(
+                                scrub ?: frac(position, duration),
+                                frac(buffered, duration),
+                                enabled = duration > 0,
+                                modifier = Modifier.weight(1f),
+                                onScrub = { if (controls) scrub = it },
+                                onDone = {
+                                    scrub?.let {
+                                        position = (it * duration).toLong()
+                                        player.seekTo(position)
+                                    }
+                                    scrub = null
+                                },
+                            )
+                        else
+                            Timeline(
+                                position,
+                                buffered,
+                                duration,
+                                small,
+                                large,
+                                Modifier.weight(1f).focusRequester(timeline),
+                                onSeek = {
+                                    player.seekBy(it)
+                                    position = (position + it).coerceIn(0, duration)
+                                },
+                                onToggle = player::togglePause,
+                            )
                         Text(
-                            fmtTime(position),
-                            fontSize = 13.sp,
-                            color = white,
-                            modifier = Modifier.widthIn(min = 48.dp),
-                        )
-                        Timeline(
-                            position,
-                            buffered,
-                            duration,
-                            small,
-                            large,
-                            Modifier.weight(1f).focusRequester(timeline),
-                            onSeek = {
-                                player.seekBy(it)
-                                position = (position + it).coerceIn(0, duration)
-                            },
-                            onToggle = player::togglePause,
-                        )
-                        Text(
-                            "-${fmtTime((duration - position).coerceAtLeast(0))}",
+                            "-${fmtTime((duration - shown).coerceAtLeast(0))}",
                             fontSize = 13.sp,
                             color = white,
                             modifier = Modifier.widthIn(min = 52.dp),
@@ -390,27 +508,20 @@ fun PlayerScreen(player: PlayerActivity) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        val episodic = player.queue.isNotEmpty() && player.neighbor(0) != null
-                        val prev = player.neighbor(-1)
-                        val next = player.neighbor(1)
-                        if (episodic)
-                            Control(Glyph.SkipPrevious, enabled = prev != null) {
-                                prev?.let { player.play(it.server, it.key) }
+                        if (!touch) {
+                            if (episodic) Control(Glyph.SkipPrevious, enabled = prev != null, onClick = playPrev)
+                            Control(Glyph.Replay, badge = "${small / 1000}") { player.seekBy(-small) }
+                            Control(
+                                if (paused) Glyph.Play else Glyph.Pause,
+                                size = 52.dp,
+                                icon = 30.dp,
+                                modifier = Modifier.focusRequester(playButton),
+                            ) {
+                                player.togglePause()
                             }
-                        Control(Glyph.Replay, badge = "${small / 1000}") { player.seekBy(-small) }
-                        Control(
-                            if (paused) Glyph.Play else Glyph.Pause,
-                            size = 52.dp,
-                            icon = 30.dp,
-                            modifier = Modifier.focusRequester(playButton),
-                        ) {
-                            player.togglePause()
+                            Control(Glyph.Forward, badge = "${small / 1000}") { player.seekBy(small) }
+                            if (episodic) Control(Glyph.SkipNext, enabled = next != null, onClick = playNext)
                         }
-                        Control(Glyph.Forward, badge = "${small / 1000}") { player.seekBy(small) }
-                        if (episodic)
-                            Control(Glyph.SkipNext, enabled = next != null) {
-                                next?.let { player.play(it.server, it.key) }
-                            }
                         Control(Glyph.Stop) { player.finish() }
                         if (duration > 0) {
                             val ends = System.currentTimeMillis() + ((duration - position) / player.speed).toLong()
@@ -442,7 +553,11 @@ fun PlayerScreen(player: PlayerActivity) {
                     }
                 }
                 panel?.let { open ->
-                    Box(Modifier.align(Alignment.BottomEnd).padding(end = 40.dp, bottom = 128.dp)) {
+                    Box(
+                        Modifier.align(Alignment.BottomEnd)
+                            .padding(horizontal = cutout)
+                            .padding(end = 40.dp, bottom = 128.dp, top = if (touch) 24.dp else 0.dp)
+                    ) {
                         key(open) {
                             PanelView(
                                 open,
@@ -460,16 +575,26 @@ fun PlayerScreen(player: PlayerActivity) {
         }
 
         if (!controls && room != null && (room.status.isNotEmpty() || room.connection != WatchConnection.CONNECTED)) {
-            WatchPill(room, Modifier.align(Alignment.TopEnd).padding(top = 24.dp, end = 40.dp))
+            WatchPill(
+                room,
+                Modifier.align(Alignment.TopEnd).padding(horizontal = cutout).padding(top = 24.dp, end = 40.dp),
+            )
         }
 
+        val corner =
+            if (touch && controls)
+                Modifier.align(Alignment.TopEnd).padding(horizontal = cutout).padding(top = 72.dp, end = 40.dp)
+            else
+                Modifier.align(Alignment.BottomEnd)
+                    .padding(horizontal = cutout)
+                    .padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp)
         if (skip != null && panel == null) {
+            val source = remember { MutableInteractionSource() }
+            val skipNow: () -> Unit = { player.seekTo(skip.endMs.toLong()) }
             Surface(
-                onClick = { player.seekTo(skip.endMs.toLong()) },
-                modifier =
-                    Modifier.align(Alignment.BottomEnd)
-                        .padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp)
-                        .focusRequester(skipButton),
+                onClick = skipNow,
+                modifier = corner.focusRequester(skipButton).tap(touch, source, onClick = skipNow),
+                interactionSource = source,
                 shape = ClickableSurfaceDefaults.shape(CircleShape),
                 colors =
                     ClickableSurfaceDefaults.colors(
@@ -485,7 +610,7 @@ fun PlayerScreen(player: PlayerActivity) {
                     ),
             ) {
                 Row(
-                    Modifier.height(44.dp).padding(horizontal = 18.dp),
+                    Modifier.height(if (touch) 48.dp else 44.dp).padding(horizontal = 18.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -498,15 +623,22 @@ fun PlayerScreen(player: PlayerActivity) {
         val next = player.neighbor(1)
         val left = upNext
         if (left != null && next != null && panel == null) {
-            UpNext(
-                next,
-                left,
-                controls,
-                player::playNext,
-                player::cancelUpNext,
-                Modifier.align(Alignment.BottomEnd).padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp),
-            )
+            UpNext(next, left, controls, player::playNext, player::cancelUpNext, corner)
         }
+
+        if (cue != 0L)
+            Row(
+                Modifier.align(if (cue < 0) Alignment.CenterStart else Alignment.CenterEnd)
+                    .padding(horizontal = cutout)
+                    .padding(horizontal = 64.dp)
+                    .background(Color.Black.copy(alpha = 0.7f), CircleShape)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                GlyphIcon(if (cue < 0) Glyph.Replay else Glyph.Forward, 22.dp, white)
+                Text("${abs(cue) / 1000}s", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = white)
+            }
 
         hint?.let { (glyph, label) ->
             Row(
@@ -535,10 +667,17 @@ private fun Control(
     selected: Boolean = false,
     onClick: () -> Unit,
 ) {
+    val touch = LocalTouch.current
+    val source = remember { MutableInteractionSource() }
     Surface(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.size(size).alpha(if (enabled) 1f else 0.4f),
+        modifier =
+            modifier
+                .size(if (touch) size.coerceAtLeast(48.dp) else size)
+                .alpha(if (enabled) 1f else 0.4f)
+                .tap(touch, source, enabled, onClick),
+        interactionSource = source,
         shape = ClickableSurfaceDefaults.shape(CircleShape),
         colors =
             ClickableSurfaceDefaults.colors(
@@ -580,6 +719,30 @@ private fun UpNext(
     onCancel: () -> Unit,
     modifier: Modifier,
 ) {
+    if (LocalTouch.current) {
+        Row(
+            modifier
+                .widthIn(max = 360.dp)
+                .background(Palette.surface.copy(alpha = 0.97f), RoundedCornerShape(12.dp))
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f, fill = false).padding(horizontal = 8.dp)) {
+                Text("Up next in ${ceil(left).toInt().coerceAtLeast(0)}s", fontSize = 12.sp, color = Palette.muted)
+                Text(
+                    next.subtitle,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Palette.text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            TapIcon(Glyph.Play, "Play now", onPlay)
+            TapIcon(Glyph.Close, "Cancel", onCancel)
+        }
+        return
+    }
     Column(
         modifier
             .width(440.dp)
@@ -657,29 +820,76 @@ private fun Timeline(
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxWidth().height(24.dp)) {
-            val bar = if (focused) 6.dp.toPx() else 4.dp.toPx()
-            val y = (size.height - bar) / 2
-            val r = CornerRadius(bar / 2)
-            fun frac(v: Long) = if (duration > 0) (v.toFloat() / duration).coerceIn(0f, 1f) else 0f
-            drawRoundRect(white.copy(alpha = 0.2f), Offset(0f, y), Size(size.width, bar), r)
-            drawRoundRect(white.copy(alpha = 0.4f), Offset(0f, y), Size(size.width * frac(buffered), bar), r)
-            drawRoundRect(white, Offset(0f, y), Size(size.width * frac(position), bar), r)
+            val played = frac(position, duration)
+            drawBar(if (focused) 6.dp.toPx() else 4.dp.toPx(), played, frac(buffered, duration))
             drawCircle(
                 white,
                 radius = if (focused) 9.dp.toPx() else 6.dp.toPx(),
-                center = Offset(size.width * frac(position), size.height / 2),
+                center = Offset(size.width * played, size.height / 2),
             )
         }
     }
 }
 
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun Scrubber(
+    played: Float,
+    buffered: Float,
+    enabled: Boolean,
+    modifier: Modifier,
+    onScrub: (Float) -> Unit,
+    onDone: () -> Unit,
+) {
+    Slider(
+        value = played,
+        onValueChange = onScrub,
+        modifier = modifier.height(48.dp),
+        enabled = enabled,
+        onValueChangeFinished = onDone,
+        thumb = { Box(Modifier.size(16.dp).background(white, CircleShape)) },
+        track = { Canvas(Modifier.fillMaxWidth().height(24.dp)) { drawBar(4.dp.toPx(), played, buffered) } },
+    )
+}
+
+private fun frac(v: Long, duration: Long) = if (duration > 0) (v.toFloat() / duration).coerceIn(0f, 1f) else 0f
+
+private fun DrawScope.drawBar(bar: Float, played: Float, buffered: Float) {
+    val y = (size.height - bar) / 2
+    val r = CornerRadius(bar / 2)
+    drawRoundRect(white.copy(alpha = 0.2f), Offset(0f, y), Size(size.width, bar), r)
+    drawRoundRect(white.copy(alpha = 0.4f), Offset(0f, y), Size(size.width * buffered, bar), r)
+    drawRoundRect(white, Offset(0f, y), Size(size.width * played, bar), r)
+}
+
+@Composable
+private fun TapIcon(glyph: Glyph, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClick).semantics {
+            contentDescription = label
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        GlyphIcon(glyph, 22.dp, Palette.text)
+    }
+}
+
+private fun Modifier.tap(
+    touch: Boolean,
+    source: MutableInteractionSource?,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) = if (touch) clickable(source, null, enabled, onClick = onClick) else this
+
 @Composable
 private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> Unit, onClose: () -> Unit) {
+    val touch = LocalTouch.current
     val first = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        delay(16)
-        runCatching { first.requestFocus() }
-    }
+    if (!touch)
+        LaunchedEffect(Unit) {
+            delay(16)
+            runCatching { first.requestFocus() }
+        }
     val width =
         when (panel) {
             Panel.Tracks -> 600.dp
@@ -689,10 +899,18 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
     Column(
         Modifier.width(width)
             .background(Palette.surface.copy(alpha = 0.97f), RoundedCornerShape(16.dp))
+            // keeps taps on the panel's padding from reaching the video's tap-to-close layer
+            .then(if (touch) Modifier.pointerInput(Unit) { detectTapGestures() } else Modifier)
             .padding(vertical = 10.dp)
     ) {
+        val parent = panel.parent
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp),
+            Modifier.fillMaxWidth()
+                .then(
+                    if (touch && parent != null) Modifier.heightIn(min = 48.dp).tap(true, null) { onOpen(parent) }
+                    else Modifier
+                )
+                .padding(horizontal = 18.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -749,22 +967,27 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
                 }
             }
             Panel.Speed ->
-                SPEEDS.forEach { s ->
-                    PanelRow(
-                        null,
-                        fmtSpeed(s),
-                        "",
-                        selected = s == player.speed,
-                        modifier = if (s == player.speed) Modifier.focusRequester(first) else Modifier,
-                    ) {
-                        player.changeSpeed(s)
-                        onOpen(Panel.Settings)
+                Column(if (touch) Modifier.verticalScroll(rememberScrollState()) else Modifier) {
+                    SPEEDS.forEach { s ->
+                        PanelRow(
+                            null,
+                            fmtSpeed(s),
+                            "",
+                            selected = s == player.speed,
+                            modifier = if (s == player.speed) Modifier.focusRequester(first) else Modifier,
+                        ) {
+                            player.changeSpeed(s)
+                            onOpen(Panel.Settings)
+                        }
                     }
                 }
             Panel.Info -> {
                 val rows = remember(player.tracksVersion, player.videoDecoder) { player.fileInfo() }
                 Column(
-                    Modifier.padding(horizontal = 18.dp, vertical = 8.dp).focusRequester(first).focusable(),
+                    Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
+                        .focusRequester(first)
+                        .focusable()
+                        .then(if (touch) Modifier.verticalScroll(rememberScrollState()) else Modifier),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     rows.forEach { (k, v) ->
@@ -860,9 +1083,12 @@ private fun PanelRow(
     chevron: Boolean = false,
     onClick: () -> Unit,
 ) {
+    val touch = LocalTouch.current
+    val source = remember { MutableInteractionSource() }
     Surface(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp).tap(touch, source, onClick = onClick),
+        interactionSource = source,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
         colors =
             ClickableSurfaceDefaults.colors(
@@ -874,7 +1100,9 @@ private fun PanelRow(
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
     ) {
         Row(
-            Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 10.dp, vertical = 6.dp),
+            Modifier.fillMaxWidth()
+                .heightIn(min = if (touch) 48.dp else 44.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -899,9 +1127,12 @@ private fun PanelRow(
 
 @Composable
 private fun QueueRow(card: MediaCard, playing: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val source = remember { MutableInteractionSource() }
     Surface(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp),
+        modifier =
+            modifier.fillMaxWidth().padding(horizontal = 8.dp).tap(LocalTouch.current, source, onClick = onClick),
+        interactionSource = source,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
         colors =
             ClickableSurfaceDefaults.colors(

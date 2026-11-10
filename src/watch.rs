@@ -291,7 +291,7 @@ impl Plaivo {
                     &setting,
                     || {
                         if account.is_none() {
-                            account = token.and_then(|t| client.account_name(&t).ok());
+                            account = token.and_then(|t| client.user(&t).ok().map(|u| u.name));
                         }
                         account.clone()
                     },

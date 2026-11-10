@@ -3,6 +3,9 @@ package xyz.spikers.plaivo
 import androidx.compose.animation.core.Easing
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme as TouchMaterialTheme
+import androidx.compose.material3.darkColorScheme as touchDarkScheme
+import androidx.compose.material3.lightColorScheme as touchLightScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -12,6 +15,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.Dp
@@ -81,8 +85,32 @@ fun plaivoColors() =
 fun PlaivoTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     SideEffect { Palette.systemDark = dark }
-    MaterialTheme(colorScheme = plaivoColors(), content = content)
+    MaterialTheme(colorScheme = plaivoColors()) {
+        if (LocalTouch.current) TouchMaterialTheme(colorScheme = touchColors(), content = content) else content()
+    }
 }
+
+private fun touchColors() =
+    (if (Palette.bg.luminance() < 0.5f) touchDarkScheme() else touchLightScheme()).copy(
+        primary = Palette.text,
+        onPrimary = Palette.bg,
+        secondaryContainer = Palette.tint(0.12f),
+        onSecondaryContainer = Palette.text,
+        background = Palette.bg,
+        onBackground = Palette.text,
+        surface = Palette.bg,
+        onSurface = Palette.text,
+        surfaceVariant = Palette.surface,
+        onSurfaceVariant = Palette.muted,
+        surfaceContainerLow = Palette.surface,
+        surfaceContainer = Palette.surface,
+        surfaceContainerHigh = Palette.surface,
+        surfaceContainerHighest = Palette.surface,
+        outline = Palette.outline,
+        outlineVariant = Palette.outline,
+    )
+
+val LocalTouch = staticCompositionLocalOf { false }
 
 data class Appearance(
     val gap: Dp = 14.dp,
@@ -114,6 +142,7 @@ object Dims {
     val edge = 32.dp
     val poster = 112.dp
     val wide = 200.dp
+    val gutter = 16.dp
 }
 
 val LocalCardScale = staticCompositionLocalOf { 1f }

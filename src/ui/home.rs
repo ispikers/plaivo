@@ -35,7 +35,7 @@ pub fn card_width(content_w: f32, wide: bool, scale: f32) -> f32 {
     let cw = content_w - 16.;
     let extent = (if content_w >= 1100. { 210. } else { 160. }) * scale;
     let extent = if wide { extent * 1.8 } else { extent };
-    cw / (cw / extent).ceil().max(1.)
+    cw / plaivo_core::grid_columns(cw, extent, 0.) as f32
 }
 
 impl Plaivo {

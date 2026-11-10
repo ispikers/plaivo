@@ -54,6 +54,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.DownloadState
+import uniffi.plaivo_ffi.Home
 import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.ServerInfo
 
@@ -84,28 +85,49 @@ fun HomeScreen(
     openRow: (MediaRow) -> Unit,
     openDownloads: () -> Unit,
 ) {
-    var rows by remember(server?.id) { mutableStateOf<List<MediaRow>>(emptyList()) }
-    var error by remember(server?.id) { mutableStateOf<String?>(null) }
-    LaunchedEffect(server?.id, refresh) {
-        val id = server?.id ?: return@LaunchedEffect
-        if (rows.isEmpty()) io { runCatching { core.home(id, true) } }.onSuccess { if (it.isNotEmpty()) rows = it }
-        io { runCatching { core.home(id, false) } }
-            .onSuccess {
-                rows = it
-                error = null
-            }
-            .onFailure {
-                val offline = core.serverOffline(id)
-                if (offline) rows = emptyList()
-                if (rows.isEmpty()) error = if (offline) "Can't reach ${server.name} right now." else it.message
-            }
-    }
+    val home = rememberHomeRows(server, refresh)
     when {
         server == null ->
             Message(if (serversLoaded) "No reachable server" else "Loading…", openDownloads.takeIf { serversLoaded })
-        rows.isEmpty() -> Message(error ?: "Loading…", openDownloads.takeIf { error != null })
-        else -> Spotlight(rows, takeFocus, onFocusTaken, play, openRow)
+        home.rows.isEmpty() -> Message(home.error ?: "Loading…", openDownloads.takeIf { home.error != null })
+        else -> Spotlight(home.rows, takeFocus, onFocusTaken, play, openRow)
     }
+}
+
+class HomeRows {
+    var rows by mutableStateOf<List<MediaRow>>(emptyList())
+    var hero by mutableStateOf<List<MediaCard>>(emptyList())
+    var error by mutableStateOf<String?>(null)
+
+    fun show(home: Home) {
+        rows = home.rows
+        hero = home.hero
+    }
+}
+
+@Composable
+fun rememberHomeRows(server: ServerInfo?, refresh: Int, onLoaded: () -> Unit = {}): HomeRows {
+    val home = remember(server?.id) { HomeRows() }
+    LaunchedEffect(server?.id, refresh) {
+        if (server != null) {
+            val id = server.id
+            if (home.rows.isEmpty())
+                io { runCatching { core.home(id, true) } }.onSuccess { if (it.rows.isNotEmpty()) home.show(it) }
+            io { runCatching { core.home(id, false) } }
+                .onSuccess {
+                    home.show(it)
+                    home.error = null
+                }
+                .onFailure {
+                    val offline = core.serverOffline(id)
+                    if (offline) home.show(Home(emptyList(), emptyList()))
+                    if (home.rows.isEmpty())
+                        home.error = if (offline) "Can't reach ${server.name} right now." else it.message
+                }
+        }
+        onLoaded()
+    }
+    return home
 }
 
 @Composable

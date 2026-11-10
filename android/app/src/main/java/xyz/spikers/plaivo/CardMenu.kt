@@ -2,6 +2,7 @@ package xyz.spikers.plaivo
 
 import android.content.Intent
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,8 +14,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -135,24 +141,27 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit) {
             onDismiss()
         }
     val shape = RoundedCornerShape(16.dp)
-    Dialog(onDismissRequest = { if (page == MenuPage.Main) onDismiss() else page = MenuPage.Main }) {
+    val touch = LocalTouch.current
+    MenuFrame(page != MenuPage.Main, { page = MenuPage.Main }, onDismiss) {
         Column(
-            Modifier.width(460.dp)
-                .background(Palette.bg, shape)
-                .border(1.dp, Palette.outline, shape)
-                .padding(20.dp)
-                .onPreviewKeyEvent { e ->
-                    if (e.key !in CONFIRM_KEYS) return@onPreviewKeyEvent false
-                    when (e.type) {
-                        KeyEventType.KeyDown ->
-                            if (e.nativeKeyEvent.repeatCount == 0) {
-                                pressed = true
-                                false
-                            } else !pressed
-                        KeyEventType.KeyUp -> !pressed
-                        else -> false
-                    }
-                },
+            if (touch) Modifier.verticalScroll(rememberScrollState()).padding(Dims.gutter, 0.dp, Dims.gutter, 16.dp)
+            else
+                Modifier.width(460.dp)
+                    .background(Palette.bg, shape)
+                    .border(1.dp, Palette.outline, shape)
+                    .padding(20.dp)
+                    .onPreviewKeyEvent { e ->
+                        if (e.key !in CONFIRM_KEYS) return@onPreviewKeyEvent false
+                        when (e.type) {
+                            KeyEventType.KeyDown ->
+                                if (e.nativeKeyEvent.repeatCount == 0) {
+                                    pressed = true
+                                    false
+                                } else !pressed
+                            KeyEventType.KeyUp -> !pressed
+                            else -> false
+                        }
+                    },
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(card.title, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Palette.text, maxLines = 1)
@@ -277,12 +286,31 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit) {
                 }
             }
         }
-        LaunchedEffect(page, menu) { runCatching { first.requestFocus() } }
+        if (!touch) LaunchedEffect(page, menu) { runCatching { first.requestFocus() } }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MenuFrame(subpage: Boolean, onBack: () -> Unit, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    if (!LocalTouch.current) Dialog(onDismissRequest = { if (subpage) onBack() else onDismiss() }, content = content)
+    else
+        ModalBottomSheet(
+            onDismissRequest = onDismiss,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = Palette.bg,
+        ) {
+            BackHandler(subpage, onBack)
+            content()
+        }
 }
 
 @Composable
 private fun StarButton(filled: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    if (LocalTouch.current)
+        return Tap(onClick, modifier.size(52.dp), CircleShape, Palette.surface, Palette.text) {
+            GlyphIcon(if (filled) Glyph.Star else Glyph.StarBorder, 28.dp, Palette.text)
+        }
     Surface(
         onClick = onClick,
         modifier = modifier.size(52.dp),

@@ -9,6 +9,7 @@ use crate::video_host::{self, Region};
 use crate::{mpv, shaders, store};
 use futures::StreamExt;
 use gpui::{Context, ScrollStrategy, SharedString, Task, UniformListScrollHandle};
+use plaivo_core::prefs::language_label;
 use plaivo_core::trackers::{self, PlayState};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -105,6 +106,7 @@ pub struct Player {
     pub paused: bool,
     last_report: Option<Instant>,
     stop_sent: bool,
+    reloads: u64,
     pub tracker: Option<trackers::Media>,
     external_subs: Vec<([String; 3], bool)>,
     pub title: SharedString,
@@ -762,8 +764,14 @@ impl Plaivo {
     }
 
     fn stream_url(&self, srv: &Server, key: &str, media: &Media) -> (String, Option<String>) {
-        let (url, transcode) =
-            srv.stream_url(&self.client, key, media, self.settings.quality, false);
+        let (url, transcode) = srv.stream_url(
+            &self.client,
+            key,
+            media,
+            self.settings.quality,
+            false,
+            "aac,ac3,eac3,mp3",
+        );
         (url, transcode.map(|(_, session)| session))
     }
 
@@ -791,16 +799,47 @@ impl Plaivo {
         };
         let (url, session) =
             self.stream_url(&srv, &self.player.key.clone(), &self.player.media.clone());
-        self.end_transcode(cx);
+        let report = self
+            .player
+            .transcode
+            .is_some()
+            .then(|| self.report_job("stopped", true))
+            .flatten();
+        let old = self.player.transcode.take();
         let p = &mut self.player;
+        p.stop_sent = false;
         p.transcode = session;
         p.buffering = true;
         p.cached = 0.0;
-        let at = p.time.to_string();
-        self.mpv(|m| {
-            m.set("start", &at);
-            m.command(&["loadfile", &url, "replace"]);
-        });
+        p.reloads += 1;
+        let (at, reload) = (p.time.to_string(), p.reloads);
+        let load = move |this: &mut Self, _, _: &mut Context<Self>| {
+            if this.player.reloads != reload {
+                return;
+            }
+            this.mpv(|m| {
+                m.set("start", &at);
+                m.command(&["loadfile", &url, "replace"]);
+            });
+        };
+        let Some(old) = old else {
+            load(self, (), cx);
+            return cx.notify();
+        };
+        self.player.video_ready = false;
+        self.mpv(|m| m.command(&["stop"]));
+        let c = self.client.clone();
+        // Plex answers 400 to a new transcode while the old playback is still reported as active
+        Self::bg(
+            cx,
+            move || {
+                if let Some(job) = report {
+                    job();
+                }
+                srv.stop_transcode(&c, &old);
+            },
+            load,
+        );
         cx.notify();
     }
 
@@ -952,6 +991,27 @@ impl Plaivo {
             .parse::<f64>()
             .map(|r| format!("{} kHz", r / 1000.0))
             .unwrap_or_default();
+        let subtitles = if get("sid") == "no" {
+            let any = media
+                .part
+                .first()
+                .is_some_and(|p| p.stream.iter().any(|s| s.stream_type == 3));
+            if any { "Off".into() } else { String::new() }
+        } else {
+            let title = get("current-tracks/sub/title");
+            let lang = get("current-tracks/sub/lang");
+            let lang = language_label(&lang).map_or(lang, str::to_owned);
+            join(&[
+                title.clone(),
+                if lang == title { String::new() } else { lang },
+                get("current-tracks/sub/codec").to_uppercase(),
+                if get("current-tracks/sub/forced") == "yes" {
+                    "Forced".into()
+                } else {
+                    String::new()
+                },
+            ])
+        };
         let rows = [
             ("Playback", mode),
             ("File", file),
@@ -997,6 +1057,7 @@ impl Plaivo {
                 ]),
             ),
             ("Output", get("current-ao")),
+            ("Subtitles", subtitles),
         ];
         rows.into_iter()
             .filter(|(_, v)| !v.is_empty())

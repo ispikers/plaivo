@@ -6,11 +6,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,6 +51,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,6 +74,7 @@ import uniffi.plaivo_ffi.CastMember
 import uniffi.plaivo_ffi.Detail
 import uniffi.plaivo_ffi.RatingSource
 import uniffi.plaivo_ffi.Row as MediaRow
+import uniffi.plaivo_ffi.discoverId
 
 private val rowShape = RoundedCornerShape(10.dp)
 
@@ -88,7 +94,6 @@ private fun Detail.card(key: String = this.key) =
         unwatched = 0uL,
     )
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DetailScreen(
     server: String,
@@ -101,7 +106,6 @@ fun DetailScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val play = LocalPlay.current
-    val menu = LocalCardMenu.current
     var detail by remember { mutableStateOf<Detail?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var season by remember { mutableStateOf<String?>(null) }
@@ -128,8 +132,10 @@ fun DetailScreen(
         io { runCatching { core.episodes(server, chosen, true) } }.onSuccess { episodes = it }
         io { runCatching { core.episodes(server, chosen, false) } }.onSuccess { episodes = it }
     }
-    LaunchedEffect(d != null) { if (d != null) runCatching { focus.requestFocus() } }
+    val touch = LocalTouch.current
+    LaunchedEffect(d != null) { if (d != null && !touch) runCatching { focus.requestFocus() } }
     if (d == null) return Message(error ?: "Loading…")
+    val library = remember(d.server) { d.server != discoverId() }
     fun setWatched(on: Boolean) =
         scope.launch {
             val result = io {
@@ -138,124 +144,123 @@ fun DetailScreen(
             Toast.makeText(context, result.getOrElse { "Could not update: ${it.message}" }, Toast.LENGTH_SHORT).show()
             if (result.isSuccess) onChanged()
         }
+    val portrait = touch && LocalWindowInfo.current.containerSize.let { it.width < it.height }
+    val edge = if (portrait) Dims.gutter else Dims.edge
     val screenH = LocalConfiguration.current.screenHeightDp.dp
     var hint by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 48.dp)) {
-        item(key = "hero") {
-            Box(Modifier.fillMaxWidth().heightIn(min = screenH * 0.62f)) {
-                AsyncImage(
-                    model = d.backdrop,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxWidth().height(screenH * 0.86f),
-                )
-                Box(
-                    Modifier.fillMaxWidth()
-                        .height(screenH * 0.86f)
-                        .background(Brush.verticalGradient(0f to Palette.bg.copy(alpha = 0.25f), 0.94f to Palette.bg))
-                )
-                Box(
-                    Modifier.fillMaxWidth()
-                        .height(screenH * 0.86f)
-                        .background(
-                            Brush.horizontalGradient(0f to Palette.bg.copy(alpha = 0.6f), 0.55f to Color.Transparent)
+        if (portrait)
+            item(key = "hero") {
+                Column(Modifier.padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+                        AsyncImage(
+                            model = d.backdrop,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
                         )
-                )
-                if (d.info.isNotEmpty()) {
-                    Column(
-                        Modifier.align(Alignment.TopEnd)
-                            .padding(top = 40.dp, end = Dims.edge)
-                            .width(260.dp)
-                            .background(Palette.bg.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        d.info.forEach {
-                            Column {
-                                Text(
-                                    it.label,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Palette.tint(0.6f),
-                                )
-                                Text(it.value, fontSize = 14.sp, color = Palette.text)
-                            }
-                        }
+                        Box(
+                            Modifier.fillMaxSize()
+                                .background(Brush.verticalGradient(0.4f to Color.Transparent, 1f to Palette.bg))
+                        )
                     }
-                }
-                Column(
-                    Modifier.align(Alignment.BottomStart)
-                        .padding(start = Dims.edge, end = Dims.edge, top = 48.dp, bottom = 16.dp)
-                        .fillMaxWidth(if (d.info.isEmpty()) 1f else 0.68f),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    if (d.eyebrow.isNotEmpty())
-                        Text(d.eyebrow, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted)
-                    Title(d)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        d.chips.forEach { Badge { Text(it) } }
-                        if (d.ratings.isNotEmpty())
-                            Badge {
-                                d.ratings.forEach {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                                    ) {
-                                        SourceTag(it.source)
-                                        Text(it.value)
-                                    }
-                                }
-                            }
-                    }
-                    if (d.genres.isNotEmpty())
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            d.genres.forEach { Badge { Text(it) } }
-                        }
-                    Row(
-                        Modifier.padding(top = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
+                    Column(Modifier.padding(horizontal = edge), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (d.eyebrow.isNotEmpty())
+                            Text(d.eyebrow, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted)
+                        Title(d)
+                        Badges(d)
                         if (d.playKey.isNotEmpty())
-                            PlayButton(d.playLabel, d.progress, Modifier.focusRequester(focus)) {
+                            PlayButton(d.playLabel, d.progress, Modifier.padding(top = 6.dp).fillMaxWidth()) {
                                 play(d.card(d.playKey))
                             }
-                        d.trailerKey?.let { t ->
-                            RoundAction(Glyph.Movie, "Play trailer", { hint = it }) { play(d.card(t)) }
-                        }
-                        RoundAction(
-                            if (d.watched) Glyph.Remove else Glyph.Check,
-                            if (d.watched) "Mark as unwatched" else "Mark as watched",
-                            { hint = it },
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            setWatched(!d.watched)
+                            RoundActions(d, library, {}, Modifier, { setWatched(!d.watched) })
+                            Spacer(Modifier.weight(1f))
+                            MediaLine(d)
                         }
-                        RoundAction(
-                            Glyph.MoreVert,
-                            "More",
-                            { hint = it },
-                            if (d.playKey.isEmpty()) Modifier.focusRequester(focus) else Modifier,
-                        ) {
-                            menu?.invoke(d.card())
-                        }
-                        Text(hint, fontSize = 13.sp, color = Palette.muted, modifier = Modifier.weight(1f))
-                        if (d.mediaLine.isNotEmpty())
-                            Text(
-                                d.mediaLine,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Palette.tint(0.8f),
-                            )
+                        if (d.info.isNotEmpty())
+                            Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                InfoRows(d)
+                            }
                     }
                 }
             }
-        }
+        else
+            item(key = "hero") {
+                Box(Modifier.fillMaxWidth().heightIn(min = screenH * 0.62f)) {
+                    AsyncImage(
+                        model = d.backdrop,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxWidth().height(screenH * 0.86f),
+                    )
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .height(screenH * 0.86f)
+                            .background(
+                                Brush.verticalGradient(0f to Palette.bg.copy(alpha = 0.25f), 0.94f to Palette.bg)
+                            )
+                    )
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .height(screenH * 0.86f)
+                            .background(
+                                Brush.horizontalGradient(
+                                    0f to Palette.bg.copy(alpha = 0.6f),
+                                    0.55f to Color.Transparent,
+                                )
+                            )
+                    )
+                    if (d.info.isNotEmpty()) {
+                        Column(
+                            Modifier.align(Alignment.TopEnd)
+                                .padding(top = 40.dp, end = Dims.edge)
+                                .width(260.dp)
+                                .background(Palette.bg.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            InfoRows(d)
+                        }
+                    }
+                    Column(
+                        Modifier.align(Alignment.BottomStart)
+                            .padding(start = Dims.edge, end = Dims.edge, top = 48.dp, bottom = 16.dp)
+                            .fillMaxWidth(if (d.info.isEmpty()) 1f else 0.68f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (d.eyebrow.isNotEmpty())
+                            Text(d.eyebrow, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted)
+                        Title(d)
+                        Badges(d)
+                        Row(
+                            Modifier.padding(top = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            if (d.playKey.isNotEmpty())
+                                PlayButton(d.playLabel, d.progress, Modifier.focusRequester(focus)) {
+                                    play(d.card(d.playKey))
+                                }
+                            RoundActions(
+                                d,
+                                library,
+                                { hint = it },
+                                if (d.playKey.isEmpty()) Modifier.focusRequester(focus) else Modifier,
+                                { setWatched(!d.watched) },
+                            )
+                            Text(hint, fontSize = 13.sp, color = Palette.muted, modifier = Modifier.weight(1f))
+                            MediaLine(d)
+                        }
+                    }
+                }
+            }
         if (d.summary.isNotEmpty())
             item(key = "overview") {
-                Column(Modifier.padding(horizontal = Dims.edge)) {
+                Column(Modifier.padding(horizontal = edge)) {
                     SectionTitle("Overview", top = 0.dp)
                     Text(
                         d.summary,
@@ -268,26 +273,26 @@ fun DetailScreen(
             }
         if (d.kind == "show" && d.seasons.isNotEmpty()) {
             item(key = "seasons") {
-                Column(Modifier.padding(horizontal = Dims.edge)) {
+                Column(Modifier.padding(horizontal = edge)) {
                     SectionTitle("Episodes")
-                    Box(Modifier.horizontalScroll(rememberScrollState())) {
-                        Chips(d.seasons.map { it.title }, d.seasons.indexOfFirst { it.key == chosen }) {
-                            season = d.seasons[it].key
-                        }
-                    }
+                    val labels = d.seasons.map { it.title }
+                    val selected = d.seasons.indexOfFirst { it.key == chosen }
+                    val pick = { i: Int -> season = d.seasons[i].key }
+                    if (touch) Chips(labels, selected, pick)
+                    else Box(Modifier.horizontalScroll(rememberScrollState())) { Chips(labels, selected, pick) }
                 }
             }
-            items(episodes, key = { "ep/${it.key}" }) { EpisodeRow(it) { play(it) } }
+            items(episodes, key = { "ep/${it.key}" }) { EpisodeRow(it, edge) { play(it) } }
         }
-        if (d.cast.isNotEmpty()) item(key = "cast") { Shelf("Cast") { items(d.cast) { CastCard(it) } } }
+        if (d.cast.isNotEmpty()) item(key = "cast") { Shelf("Cast", edge) { items(d.cast) { CastCard(it) } } }
         if (d.extras.isNotEmpty())
             item(key = "extras") {
-                Shelf("Trailers & Extras") {
+                Shelf("Trailers & Extras", edge) {
                     items(d.extras, key = { it.key }) { MediaTile(it, wide = true) { play(it) } }
                 }
             }
         itemsIndexed(related, key = { i, _ -> "related/$i" }) { _, row ->
-            Shelf(row.title) {
+            Shelf(row.title, edge) {
                 items(row.cards, key = { "${it.server}/${it.key}" }) { MediaTile(it, wide = false) { open(it) } }
                 if (row.key.isNotEmpty()) item(key = "see-all") { SeeAll(wide = false, dim = false) { openRow(row) } }
             }
@@ -318,6 +323,65 @@ private fun Title(d: Detail) {
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun Badges(d: Detail) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        d.chips.forEach { Badge { Text(it) } }
+        if (d.ratings.isNotEmpty())
+            Badge {
+                d.ratings.forEach {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        SourceTag(it.source)
+                        Text(it.value)
+                    }
+                }
+            }
+    }
+    if (d.genres.isNotEmpty())
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { d.genres.forEach { Badge { Text(it) } } }
+}
+
+@Composable
+private fun InfoRows(d: Detail) {
+    d.info.forEach {
+        Column {
+            Text(it.label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Palette.tint(0.6f))
+            Text(it.value, fontSize = 14.sp, color = Palette.text)
+        }
+    }
+}
+
+@Composable
+private fun MediaLine(d: Detail) {
+    if (d.mediaLine.isNotEmpty())
+        Text(d.mediaLine, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Palette.tint(0.8f))
+}
+
+@Composable
+private fun RoundActions(
+    d: Detail,
+    library: Boolean,
+    onHint: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    toggleWatched: () -> Unit,
+) {
+    val play = LocalPlay.current
+    val menu = LocalCardMenu.current
+    d.trailerKey?.let { t -> RoundAction(Glyph.Movie, "Play trailer", onHint) { play(d.card(t)) } }
+    if (library)
+        RoundAction(
+            if (d.watched) Glyph.Remove else Glyph.Check,
+            if (d.watched) "Mark as unwatched" else "Mark as watched",
+            onHint,
+            onClick = toggleWatched,
+        )
+    RoundAction(Glyph.MoreVert, "More", onHint, modifier) { menu?.invoke(d.card()) }
 }
 
 @Composable
@@ -368,6 +432,23 @@ private fun SourceTag(source: RatingSource) {
 
 @Composable
 private fun PlayButton(label: String, progress: Float, modifier: Modifier, onClick: () -> Unit) {
+    val content: @Composable BoxScope.() -> Unit = {
+        Row(
+            Modifier.fillMaxHeight().padding(horizontal = 22.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            GlyphIcon(Glyph.Play, 22.dp, Palette.bg)
+            if (progress > 0f) {
+                Box(Modifier.width(40.dp).height(4.dp).background(Palette.bg.copy(alpha = 0.25f), CircleShape)) {
+                    Box(Modifier.fillMaxWidth(progress).height(4.dp).background(Palette.bg, CircleShape))
+                }
+            }
+            Text(label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+    if (LocalTouch.current)
+        return Tap(onClick, modifier.height(48.dp), CircleShape, Palette.text, Palette.bg, content = content)
     Surface(
         onClick = onClick,
         modifier = modifier.height(48.dp),
@@ -384,21 +465,8 @@ private fun PlayButton(label: String, progress: Float, modifier: Modifier, onCli
             ClickableSurfaceDefaults.border(
                 focusedBorder = Border(BorderStroke(2.dp, Palette.text), inset = (-4).dp, shape = CircleShape)
             ),
-    ) {
-        Row(
-            Modifier.fillMaxHeight().padding(horizontal = 22.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            GlyphIcon(Glyph.Play, 22.dp, Palette.bg)
-            if (progress > 0f) {
-                Box(Modifier.width(40.dp).height(4.dp).background(Palette.bg.copy(alpha = 0.25f), CircleShape)) {
-                    Box(Modifier.fillMaxWidth(progress).height(4.dp).background(Palette.bg, CircleShape))
-                }
-            }
-            Text(label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-        }
-    }
+        content = content,
+    )
 }
 
 @Composable
@@ -409,6 +477,16 @@ private fun RoundAction(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    if (LocalTouch.current)
+        return Tap(
+            onClick,
+            modifier.size(48.dp).semantics { contentDescription = label },
+            CircleShape,
+            Palette.tint(0.08f),
+            Palette.text,
+        ) {
+            GlyphIcon(glyph, 24.dp, Palette.text)
+        }
     Surface(
         onClick = onClick,
         modifier =
@@ -432,25 +510,12 @@ private fun RoundAction(
 }
 
 @Composable
-private fun EpisodeRow(card: MediaCard, onClick: () -> Unit) {
+private fun EpisodeRow(card: MediaCard, edge: Dp, onClick: () -> Unit) {
     val menu = LocalCardMenu.current
     val look = LocalAppearance.current
-    Surface(
-        onClick = onClick,
-        onLongClick = menu?.let { { it(card) } },
-        modifier = Modifier.padding(horizontal = Dims.edge - 6.dp, vertical = 2.dp).fillMaxWidth(),
-        shape = ClickableSurfaceDefaults.shape(rowShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Palette.bg,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.08f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = rowShape)),
-    ) {
+    val onLongClick = menu?.let { { it(card) } }
+    val modifier = Modifier.padding(horizontal = edge - 6.dp, vertical = 2.dp).fillMaxWidth()
+    val content: @Composable BoxScope.() -> Unit = {
         Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(
                 Modifier.width(160.dp).aspectRatio(16f / 9f).clip(RoundedCornerShape(6.dp)).background(Palette.surface)
@@ -505,14 +570,32 @@ private fun EpisodeRow(card: MediaCard, onClick: () -> Unit) {
             }
         }
     }
+    if (LocalTouch.current) return Tap(onClick, modifier, rowShape, Palette.bg, Palette.text, onLongClick, content)
+    Surface(
+        onClick = onClick,
+        onLongClick = onLongClick,
+        modifier = modifier,
+        shape = ClickableSurfaceDefaults.shape(rowShape),
+        colors =
+            ClickableSurfaceDefaults.colors(
+                containerColor = Palette.bg,
+                contentColor = Palette.text,
+                focusedContainerColor = Palette.tint(0.08f),
+                focusedContentColor = Palette.text,
+            ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        border =
+            ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = rowShape)),
+        content = content,
+    )
 }
 
 @Composable
-private fun Shelf(title: String, content: LazyListScope.() -> Unit) {
+private fun Shelf(title: String, edge: Dp, content: LazyListScope.() -> Unit) {
     Column {
-        Box(Modifier.padding(horizontal = Dims.edge)) { SectionTitle(title) }
+        Box(Modifier.padding(horizontal = edge)) { SectionTitle(title) }
         LazyRow(
-            contentPadding = PaddingValues(horizontal = Dims.edge, vertical = 4.dp),
+            contentPadding = PaddingValues(horizontal = edge, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(LocalAppearance.current.gap),
             content = content,
         )
@@ -523,21 +606,7 @@ private fun Shelf(title: String, content: LazyListScope.() -> Unit) {
 private fun CastCard(p: CastMember) {
     val shape = RoundedCornerShape(8.dp)
     Column(Modifier.width(120.dp)) {
-        Surface(
-            onClick = {},
-            modifier = Modifier.size(120.dp),
-            shape = ClickableSurfaceDefaults.shape(shape),
-            colors =
-                ClickableSurfaceDefaults.colors(
-                    containerColor = Palette.surface,
-                    focusedContainerColor = Palette.surface,
-                ),
-            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-            border =
-                ClickableSurfaceDefaults.border(
-                    focusedBorder = Border(BorderStroke(2.5.dp, Palette.text), shape = shape)
-                ),
-        ) {
+        val photo: @Composable BoxScope.() -> Unit = {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 if (p.image != null)
                     AsyncImage(
@@ -549,6 +618,24 @@ private fun CastCard(p: CastMember) {
                 else GlyphIcon(Glyph.Person, 48.dp, Palette.muted)
             }
         }
+        if (LocalTouch.current) Box(Modifier.size(120.dp).clip(shape).background(Palette.surface), content = photo)
+        else
+            Surface(
+                onClick = {},
+                modifier = Modifier.size(120.dp),
+                shape = ClickableSurfaceDefaults.shape(shape),
+                colors =
+                    ClickableSurfaceDefaults.colors(
+                        containerColor = Palette.surface,
+                        focusedContainerColor = Palette.surface,
+                    ),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+                border =
+                    ClickableSurfaceDefaults.border(
+                        focusedBorder = Border(BorderStroke(2.5.dp, Palette.text), shape = shape)
+                    ),
+                content = photo,
+            )
         Text(
             p.name,
             fontSize = 13.sp,

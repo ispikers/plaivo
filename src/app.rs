@@ -765,8 +765,13 @@ impl Plaivo {
             mpv_build_task: None,
         };
         // Quit before Windows destroys the HWND; tearing down GPUI's composition target afterwards logs spurious errors.
-        window.on_window_should_close(cx, |_, cx| {
+        window.on_window_should_close(cx, |_window, cx| {
             log::info!("window closed, shutting down");
+            // Shutdown (stop report, mpv teardown) takes a moment; with mpv gone the window would show through.
+            #[cfg(windows)]
+            if let Ok(h) = _window.window_handle() {
+                crate::video_host::hide_window(h.as_raw());
+            }
             cx.quit();
             false
         });
@@ -1005,7 +1010,7 @@ impl Plaivo {
                 });
             return Some(match proxy {
                 Some(srv) => srv.image_url(path, w, h),
-                None => path.replace("/t/p/original/", "/t/p/w780/"),
+                None => plex::direct_image_url(path, 780),
             });
         }
         self.server(server).map(|s| s.image_url(path, w, h))
@@ -1765,18 +1770,8 @@ impl Plaivo {
     }
 
     fn build_home(&mut self, server: &str, hubs: Vec<plex::Hub>, cx: &mut Context<Self>) {
-        let mut seen = HashSet::new();
-        self.hero = hubs
-            .iter()
-            .filter(|h| h.id.contains("recentlyAdded") || h.id.contains("featured"))
-            .chain(hubs.iter())
-            .flat_map(|h| h.metadata.iter())
-            .filter(|it| {
-                !first(&[&it.art, &it.grandparent_art]).is_empty()
-                    && matches!(it.kind.as_str(), "movie" | "show")
-            })
-            .filter(|it| seen.insert(it.rating_key.clone()))
-            .take(6)
+        self.hero = plex::pick_hero(&hubs)
+            .into_iter()
             .map(|it| hero_card(it, server))
             .collect();
         self.hero_index = self.hero_index.min(self.hero.len().saturating_sub(1));

@@ -1,6 +1,6 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -442,6 +442,12 @@ impl Item {
         }
     }
 
+    pub fn time_left(&self) -> Option<String> {
+        let (offset, duration) = (self.view_offset?, self.duration?);
+        let left = duration.saturating_sub(offset);
+        (self.progress() > 0. && left >= 60_000).then(|| format!("{} left", fmt_duration(left)))
+    }
+
     pub fn unwatched(&self) -> u64 {
         self.leaf_count
             .unwrap_or(0)
@@ -621,6 +627,66 @@ pub const SORTS: &[(&str, &str)] = &[
     ("originallyAvailableAt:desc", "Release date"),
     ("audienceRating:desc", "Rating"),
 ];
+
+fn watchlist_path(kind: &str, sort: &str) -> String {
+    let sort = if sort == "addedAt:desc" {
+        "watchlistedAt:desc"
+    } else {
+        sort
+    };
+    format!("/library/sections/watchlist/all?type={kind}&sort={sort}&includeGuids=1")
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct User {
+    friendly_name: String,
+    title: String,
+    username: String,
+    thumb: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlexUser {
+    pub name: String,
+    pub thumb: Option<String>,
+}
+
+impl From<User> for PlexUser {
+    fn from(u: User) -> Self {
+        Self {
+            name: first(&[&u.friendly_name, &u.title, &u.username]).to_owned(),
+            thumb: (!u.thumb.is_empty()).then_some(u.thumb),
+        }
+    }
+}
+
+const HERO_MAX: usize = 6;
+
+pub fn pick_hero(hubs: &[Hub]) -> Vec<&Item> {
+    let mut seen = HashSet::new();
+    hubs.iter()
+        .filter(|h| h.id.contains("recentlyAdded") || h.id.contains("featured"))
+        .chain(hubs)
+        .flat_map(|h| &h.metadata)
+        .filter(|it| {
+            !first(&[&it.art, &it.grandparent_art]).is_empty()
+                && matches!(it.kind.as_str(), "movie" | "show")
+        })
+        .filter(|it| seen.insert(it.rating_key.as_str()))
+        .take(HERO_MAX)
+        .collect()
+}
+
+const TMDB_WIDTHS: [u32; 7] = [92, 154, 185, 342, 500, 780, 1280];
+
+pub fn direct_image_url(path: &str, w: u32) -> String {
+    let size = TMDB_WIDTHS
+        .into_iter()
+        .find(|&s| s >= w)
+        .unwrap_or(TMDB_WIDTHS[TMDB_WIDTHS.len() - 1]);
+    path.replace("/t/p/original/", &format!("/t/p/w{size}/"))
+}
 
 pub fn initial_sort(key: &str) -> String {
     let param = key.split(['?', '&']).find_map(|p| p.strip_prefix("sort="));
@@ -904,14 +970,7 @@ impl Client {
         Ok(pin.auth_token.filter(|t| !t.is_empty()))
     }
 
-    pub fn account_name(&self, token: &str) -> R<String> {
-        #[derive(Deserialize, Default)]
-        #[serde(default, rename_all = "camelCase")]
-        struct User {
-            friendly_name: String,
-            title: String,
-            username: String,
-        }
+    pub fn user(&self, token: &str) -> R<PlexUser> {
         let u: User = self
             .get(&format!("{PLEX_TV}/user"), Some(token))
             .call()
@@ -919,7 +978,7 @@ impl Client {
             .body_mut()
             .read_json()
             .map_err(err)?;
-        Ok(first(&[&u.friendly_name, &u.title, &u.username]).to_owned())
+        Ok(u.into())
     }
 
     pub fn servers(&self, token: &str) -> R<Vec<Resource>> {
@@ -1198,13 +1257,7 @@ impl Server {
         size: usize,
         sort: &str,
     ) -> R<(Vec<Item>, usize)> {
-        let sort = if sort == "addedAt:desc" {
-            "watchlistedAt:desc"
-        } else {
-            sort
-        };
-        let path =
-            format!("/library/sections/watchlist/all?type={kind}&sort={sort}&includeGuids=1");
+        let path = watchlist_path(kind, sort);
         let (mut items, mut total) = (Vec::new(), 0);
         while items.len() < size {
             // Discover rejects large container sizes, so page it in small chunks like plezy does.
@@ -1454,6 +1507,9 @@ impl Server {
     }
 
     pub fn image_url(&self, path: &str, w: u32, h: u32) -> String {
+        if self.id == DISCOVER_ID && path.starts_with("http") {
+            return direct_image_url(path, w);
+        }
         if self.is_jellyfin() {
             return jellyfin::image_url(self, path, w, h);
         }
@@ -1489,6 +1545,7 @@ impl Server {
         media: &Media,
         kbps: u32,
         force_transcode: bool,
+        audio_codecs: &str,
     ) -> (String, Option<(&'static Quality, String)>) {
         let transcode = if force_transcode {
             Some(Quality::find(kbps).unwrap_or(&QUALITIES[0]))
@@ -1511,7 +1568,7 @@ impl Server {
         let session = format!("plaivo-{nanos:x}");
         log::info!("transcoding {key} at {} kbps", q.kbps);
         (
-            self.transcode_url(c, key, media, q, &session),
+            self.transcode_url(c, key, media, q, &session, audio_codecs),
             Some((q, session)),
         )
     }
@@ -1523,13 +1580,23 @@ impl Server {
         media: &Media,
         q: &Quality,
         session: &str,
+        audio_codecs: &str,
     ) -> String {
         if self.is_jellyfin() {
-            return jellyfin::transcode_url(self, c, key, &media.source_id, q, session);
+            return jellyfin::transcode_url(
+                self,
+                c,
+                key,
+                &media.source_id,
+                q,
+                session,
+                audio_codecs,
+            );
         }
         let extra = format!(
-            "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value={}&replace=true)+add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac%2Cac3%2Ceac3%2Cmp3)",
-            q.kbps
+            "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value={}&replace=true)+add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec={})",
+            q.kbps,
+            audio_codecs.replace(',', "%2C")
         );
         let (kbps, quality, path) = (
             q.kbps.to_string(),
@@ -1867,11 +1934,12 @@ mod tests {
             &Media::default(),
             &QUALITIES[0],
             "s1",
+            "aac,mp3",
         );
         assert!(url.starts_with(
             "http://h/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F7&"
         ));
-        assert!(url.contains("scopeName%3D%2A") && url.contains("aac%252Cac3"));
+        assert!(url.contains("scopeName%3D%2A") && url.contains("audioCodec%3Daac%252Cmp3%29"));
     }
 
     #[test]
@@ -2000,6 +2068,126 @@ mod tests {
         assert_eq!(
             srv.media_url("/services/iva/assets/9/video.mp4?fmt=4&bitrate=5000"),
             "http://h/services/iva/assets/9/video.mp4?fmt=4&bitrate=5000&X-Plex-Token=t"
+        );
+    }
+
+    #[test]
+    fn watchlist_sorts_recently_added_by_watchlisted_date() {
+        assert_eq!(
+            watchlist_path("1", "addedAt:desc"),
+            "/library/sections/watchlist/all?type=1&sort=watchlistedAt:desc&includeGuids=1"
+        );
+        assert_eq!(
+            watchlist_path("2", "titleSort"),
+            "/library/sections/watchlist/all?type=2&sort=titleSort&includeGuids=1"
+        );
+    }
+
+    #[test]
+    fn plex_user_prefers_the_friendly_name() {
+        let user = |json: &str| PlexUser::from(serde_json::from_str::<User>(json).unwrap());
+        assert_eq!(
+            user(
+                r#"{"title":"t","username":"u","friendlyName":"Sam","thumb":"https://plex.tv/users/1/avatar?c=2"}"#
+            ),
+            PlexUser {
+                name: "Sam".into(),
+                thumb: Some("https://plex.tv/users/1/avatar?c=2".into()),
+            }
+        );
+        assert_eq!(
+            user(r#"{"friendlyName":"","username":"u","thumb":""}"#),
+            PlexUser {
+                name: "u".into(),
+                thumb: None,
+            }
+        );
+    }
+
+    #[test]
+    fn hero_prefers_recently_added_and_skips_unfit_items() {
+        let it = |key: &str, kind: &str, art: &str| Item {
+            rating_key: key.into(),
+            kind: kind.into(),
+            art: art.into(),
+            ..Default::default()
+        };
+        let continuing = [it("ep", "episode", "/a"), it("m1", "movie", "/a")];
+        let recent = [
+            it("m2", "movie", "/a"),
+            it("bare", "movie", ""),
+            it("m1", "movie", "/a"),
+        ];
+        let shows: Vec<Item> = (0..8).map(|i| it(&format!("s{i}"), "show", "/a")).collect();
+        let hub = |id: &str, items: Vec<Item>| Hub {
+            id: id.into(),
+            metadata: items,
+            ..Default::default()
+        };
+        let hubs = [
+            hub("home.continue", continuing.to_vec()),
+            hub("home.movies.recentlyAdded", recent.to_vec()),
+            hub("home.ondeck", shows),
+        ];
+        let keys: Vec<&str> = pick_hero(&hubs)
+            .iter()
+            .map(|i| i.rating_key.as_str())
+            .collect();
+        assert_eq!(keys, ["m2", "m1", "s0", "s1", "s2", "s3"]);
+        assert!(pick_hero(&[]).is_empty());
+    }
+
+    #[test]
+    fn time_left_only_when_partly_watched() {
+        let at = |offset: Option<u64>| Item {
+            view_offset: offset,
+            duration: Some(2 * 3_600_000),
+            ..Default::default()
+        };
+        assert_eq!(
+            at(Some(48 * 60_000)).time_left().as_deref(),
+            Some("1h 12m left")
+        );
+        assert_eq!(
+            at(Some(2 * 3_600_000 - 5 * 60_000)).time_left().as_deref(),
+            Some("5m left")
+        );
+        assert_eq!(at(None).time_left(), None);
+        assert_eq!(at(Some(0)).time_left(), None);
+        assert_eq!(at(Some(2 * 3_600_000 - 59_000)).time_left(), None);
+        assert_eq!(
+            at(Some(2 * 3_600_000 - 60_000)).time_left().as_deref(),
+            Some("1m left")
+        );
+    }
+
+    #[test]
+    fn discover_images_load_directly() {
+        let discover = Client::new("c".into()).discover("t");
+        assert_eq!(
+            discover.image_url("https://image.tmdb.org/t/p/original/a.jpg", 300, 450),
+            "https://image.tmdb.org/t/p/w342/a.jpg"
+        );
+        assert_eq!(
+            discover.image_url("https://image.tmdb.org/t/p/original/b.jpg", 480, 270),
+            "https://image.tmdb.org/t/p/w500/b.jpg"
+        );
+        assert_eq!(
+            discover.image_url("https://image.tmdb.org/t/p/original/c.jpg", 1920, 1080),
+            "https://image.tmdb.org/t/p/w1280/c.jpg"
+        );
+        assert_eq!(
+            direct_image_url("https://image.tmdb.org/t/p/original/d.jpg", 780),
+            "https://image.tmdb.org/t/p/w780/d.jpg"
+        );
+        assert_eq!(
+            discover.image_url("https://metadata-static.plex.tv/p.jpg", 300, 450),
+            "https://metadata-static.plex.tv/p.jpg"
+        );
+        assert!(
+            discover
+                .image_url("/library/metadata/1/thumb", 300, 450)
+                .contains("/photo/:/transcode?")
         );
     }
 
