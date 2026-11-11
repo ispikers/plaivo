@@ -143,6 +143,28 @@ const OBSERVED: &[(&str, c_int)] = &[
     ("audio-device-list", FORMAT_STRING),
 ];
 
+/// Read only by the file info panel; observed as strings so `get` serves them from the cache without blocking the UI.
+const INFO: &[&str] = &[
+    "hwdec-current",
+    "file-format",
+    "video-format",
+    "video-params/w",
+    "video-params/h",
+    "video-params/pixelformat",
+    "container-fps",
+    "video-bitrate",
+    "audio-codec-name",
+    "audio-params/hr-channels",
+    "audio-params/samplerate",
+    "audio-bitrate",
+    "current-ao",
+    "sid",
+    "current-tracks/sub/title",
+    "current-tracks/sub/lang",
+    "current-tracks/sub/codec",
+    "current-tracks/sub/forced",
+];
+
 struct Ctx {
     api: &'static Api,
     h: *mut Handle,
@@ -211,7 +233,8 @@ impl Mpv {
             unsafe { (api.terminate_destroy)(h) };
             return Err(format!("mpv_initialize: {}", error_string(api, rc)));
         }
-        for (i, (name, fmt)) in OBSERVED.iter().enumerate() {
+        let info = INFO.iter().map(|name| (name, &FORMAT_STRING));
+        for (i, (name, fmt)) in OBSERVED.iter().map(|(n, f)| (n, f)).chain(info).enumerate() {
             unsafe { (api.observe_property)(h, i as u64, cstr(name).as_ptr(), *fmt) };
         }
         let ev = ctx.clone();
@@ -351,7 +374,12 @@ fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
                         ctx.store("audio-device-list", string());
                         None
                     }
-                    _ => None,
+                    _ => {
+                        if let Some(&key) = INFO.iter().find(|k| k.as_bytes() == name) {
+                            ctx.store(key, string());
+                        }
+                        None
+                    }
                 };
                 if let Some(ev) = ev {
                     on_event(ev);
