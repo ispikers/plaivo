@@ -6,16 +6,14 @@ mod images;
 mod logging;
 mod menu;
 mod mpv;
+mod placement;
 mod player;
 mod shaders;
 mod ui;
 mod video_host;
 mod watch;
 
-use gpui::{
-    App, AppContext, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
-    WindowOptions, px, size,
-};
+use gpui::{App, AppContext, TitlebarOptions, WindowBackgroundAppearance, WindowOptions, px, size};
 use plaivo_core::{downloads, plex, prefs, settings, store};
 use std::sync::Arc;
 
@@ -38,12 +36,10 @@ fn main() {
             if cfg!(target_os = "macos") {
                 menu::install(cx);
             }
+            let (bounds, display_id) = placement::restore(placement::load().as_ref(), cx);
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(1440.), px(900.)),
-                    cx,
-                ))),
+                window_bounds: Some(bounds),
+                display_id,
                 titlebar: Some(TitlebarOptions {
                     title: Some("Plaivo".into()),
                     ..Default::default()

@@ -18,8 +18,10 @@ use gpui::{
 };
 pub use plaivo_core::{Account, first, join};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -775,10 +777,24 @@ impl Plaivo {
             cx.quit();
             false
         });
-        cx.on_app_quit(|this, _| {
+        // Saved once at quit, not on every resize step.
+        let placement = Rc::new(RefCell::new(crate::placement::current(window, cx)));
+        cx.observe_window_bounds(window, {
+            let placement = placement.clone();
+            move |_, window, cx| {
+                if let Some(p) = crate::placement::current(window, cx) {
+                    *placement.borrow_mut() = Some(p);
+                }
+            }
+        })
+        .detach();
+        cx.on_app_quit(move |this, _| {
             this.report_stopped_blocking();
             if this.watch.shutdown() {
                 this.settings.save();
+            }
+            if let Some(p) = &*placement.borrow() {
+                crate::placement::save(p);
             }
             async {}
         })
