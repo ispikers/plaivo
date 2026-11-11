@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy policy · Plaivo</title>
+<meta name="description" content="What Plaivo stores, which services it talks to, and what the MyAnimeList sign-in relay keeps.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0E0F12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F7F7F8" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-in">
+    <a class="wordmark" href="/">Plaivo</a>
+    <nav aria-label="Main">
+      <a href="/#features">Features</a>
+      <a href="/#devices">Devices</a>
+      <a href="/#faq">FAQ</a>
+      <a class="btn btn-small btn-primary" href="https://github.com/ispikers/plaivo">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="legal">
+  <div class="wrap legal-in">
+    <h1>Privacy policy</h1>
+    <p class="updated">Last updated 10 November 2026</p>
+
+    <p>Plaivo is a player for your own Plex and Jellyfin servers. It has no accounts of its own, no analytics, no ads and no crash reporting. This page lists everything it keeps and everywhere your data goes.</p>
+
+    <h2>On your device</h2>
+    <p>Plaivo keeps these on the device you use it on:</p>
+    <ul>
+      <li>Your Plex sign-in token, and the address, username and access token of each Jellyfin server you add.</li>
+      <li>Your Trakt and MyAnimeList tokens, if you connect them.</li>
+      <li>Your settings, recent searches and recent Watch Together rooms.</li>
+      <li>Cached information and artwork from your libraries.</li>
+      <li>Anything you download, with its subtitles and artwork.</li>
+      <li>A log file. Plex tokens are removed from it, and it stays on your device unless you send it to someone.</li>
+    </ul>
+    <p>Signing out of Plex removes your Plex token, your Plex servers and the cache. On Android, uninstalling Plaivo removes everything. On Windows and macOS, delete Plaivo's settings and cache folders.</p>
+
+    <h2>Services Plaivo talks to</h2>
+    <p>Plaivo connects from your device straight to these services. Each has its own privacy policy.</p>
+    <ul>
+      <li><b>Your Plex servers and plex.tv</b>, to sign in, find your servers, browse and play, report how far you've watched, and read and save your preferred audio and subtitle languages. Search and the Watchlist also use Plex's Discover service.</li>
+      <li><b>Your Jellyfin servers</b>, for the same things.</li>
+      <li><b>Trakt</b>, only if you connect it: what you watch and how far you get.</li>
+      <li><b>MyAnimeList</b>, only if you connect it: the anime episodes you finish.</li>
+      <li><b>TMDB</b> (image.tmdb.org), for artwork of titles that aren't in your libraries, such as Discover search results and your Watchlist.</li>
+      <li><b>GitHub</b>, to download a public list that matches anime between catalogues, so MyAnimeList updates reach the right entry.</li>
+      <li><b>Watch Together relays</b>, when you create or join a room. Your display name, the room code, whether you're playing or paused and where you are in the video go through the relay to the others in the room. So do the title you're watching and identifiers that help them find it in their own libraries. By default Plaivo uses the public relays listed at openwatch.party, which are run by their operators, not by Plaivo. You can set your own relay in Settings → Watch Together.</li>
+    </ul>
+
+    <h2>The sign-in relay</h2>
+    <p>MyAnimeList sign-in goes through relay.plaivo.app, a small server Plaivo runs on Cloudflare, because an app can't keep MyAnimeList's client secret safe. The relay:</p>
+    <ul>
+      <li>Sees your IP address, and uses it only to limit each address to 50 requests a minute.</li>
+      <li>Swaps the code MyAnimeList sends it for your tokens, hands them to your copy of Plaivo once, then deletes them.</li>
+      <li>Deletes every sign-in within 10 minutes.</li>
+      <li>Never logs tokens or IP addresses. When MyAnimeList refuses a sign-in, the error it returned is logged.</li>
+    </ul>
+    <p>Trakt sign-in doesn't use the relay. Cloudflare handles the relay's traffic as its host.</p>
+
+    <h2>This website</h2>
+    <p>plaivo.app is a set of static pages served by Cloudflare. It sets no cookies and runs no analytics or tracking scripts. Cloudflare processes each request, including your IP address, to deliver the pages.</p>
+
+    <h2>What Plaivo doesn't do</h2>
+    <p>It doesn't create an account for you, collect analytics or usage data, send crash reports, show ads, or sell or share your data with anyone beyond the services above.</p>
+
+    <h2>Changes</h2>
+    <p>If this policy changes, the new version is published on this page and the date at the top is updated.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about privacy: open an issue on <a href="https://github.com/ispikers/plaivo/issues">GitHub</a>.</p>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span class="wordmark">Plaivo</span>
+    <p class="foot-note">Not affiliated with Plex, Inc. or the Jellyfin project.</p>
+    <a href="/">Home</a>
+  </div>
+</footer>
+</body>
+</html>
