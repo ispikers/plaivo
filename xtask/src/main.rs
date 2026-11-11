@@ -10,35 +10,160 @@ use anyhow::{Context, bail, ensure};
 use sha2::{Digest, Sha256};
 
 const REPO: &str = "ispikers/plaivo";
+const WIX_UI: &str = "WixToolset.UI.wixext/7.0.1";
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |f: &str| args.iter().any(|a| a == f);
     match args.first().map(String::as_str) {
         Some("libmpv") => libmpv(),
-        Some("bundle") => bundle(flag("--release"), flag("--open")),
-        _ => bail!("usage: cargo run -p xtask -- libmpv | bundle [--release] [--open]"),
+        Some("bundle") => bundle(flag("--release"), flag("--open")).map(drop),
+        Some("installer") if cfg!(windows) => msi(),
+        Some("installer") => dmg(),
+        _ => bail!("usage: cargo run -p xtask -- libmpv | bundle [--release] [--open] | installer"),
     }
 }
 
-fn bundle(release: bool, open: bool) -> anyhow::Result<()> {
+fn root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
+}
+
+fn version() -> anyhow::Result<String> {
+    let manifest = std::fs::read_to_string(root().join("Cargo.toml"))?;
+    manifest
+        .lines()
+        .find_map(|l| l.strip_prefix("version = \"")?.strip_suffix('"'))
+        .map(str::to_owned)
+        .context("no version in Cargo.toml")
+}
+
+fn run(cmd: &mut Command) -> anyhow::Result<()> {
+    let name = cmd.get_program().to_string_lossy().into_owned();
+    let status = cmd.status().with_context(|| format!("running {name}"))?;
+    ensure!(status.success(), "{name} failed");
+    Ok(())
+}
+
+fn build(release: bool) -> anyhow::Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    run(Command::new(cargo)
+        .args(["build", "-p", "plaivo"])
+        .args(release.then_some("--release"))
+        .current_dir(root()))?;
+    Ok(std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root().join("target"))
+        .join(if release { "release" } else { "debug" }))
+}
+
+fn ensure_libmpv(os: &str) -> anyhow::Result<PathBuf> {
+    let deps = root().join("deps");
+    let dir = deps.join(os);
+    let pin = pin::read(&deps, os).context("cannot read deps/libmpv.env")?;
+    ensure!(
+        pin::installed(&dir, &pin),
+        "deps/{os} is not {}; run `cargo run -p xtask -- libmpv` first",
+        pin.tag
+    );
+    Ok(dir)
+}
+
+fn msi() -> anyhow::Result<()> {
+    let deps = ensure_libmpv("windows")?;
+    let target = build(true)?;
+    let version = version()?;
+    let msi = target.join(format!("Plaivo-{version}-x64.msi"));
+    let cert = std::env::var("PLAIVO_SIGN_CERT").ok();
+    if let Some(cert) = &cert {
+        signtool(cert, &target.join("plaivo.exe"))?;
+    }
+    run(Command::new("wix").args(["eula", "accept", "wix7"]))?;
+    run(Command::new("wix").args(["extension", "add", "-g", WIX_UI]))?;
+    run(Command::new("wix")
+        .arg("build")
+        .arg(root().join("xtask/plaivo.wxs"))
+        .args(["-arch", "x64", "-ext", WIX_UI])
+        .arg("-d")
+        .arg(format!("Version={version}"))
+        .arg("-d")
+        .arg(format!("BinDir={}", target.display()))
+        .arg("-d")
+        .arg(format!("DepsDir={}", deps.display()))
+        .arg("-d")
+        .arg(format!("ShadersDir={}", root().join("shaders").display()))
+        .arg("-o")
+        .arg(&msi))?;
+    run(Command::new("wix").args(["msi", "validate"]).arg(&msi))?;
+    if let Some(cert) = &cert {
+        signtool(cert, &msi)?;
+    }
+    println!("{}", msi.display());
+    Ok(())
+}
+
+fn signtool(cert_sha1: &str, file: &Path) -> anyhow::Result<()> {
+    run(Command::new("signtool")
+        .args(["sign", "/sha1", cert_sha1, "/fd", "sha256", "/td", "sha256"])
+        .args(["/tr", "http://timestamp.digicert.com"])
+        .arg(file))
+}
+
+fn dmg() -> anyhow::Result<()> {
+    ensure_libmpv("macos")?;
+    let app = bundle(true, false)?;
+    let target = app.parent().unwrap();
+    let stage = target.join("dmg");
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage)?;
+    }
+    std::fs::create_dir_all(&stage)?;
+    run(Command::new("ditto")
+        .arg(&app)
+        .arg(stage.join("Plaivo.app")))?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/Applications", stage.join("Applications"))?;
+    let dmg = target.join(format!("Plaivo-{}-arm64.dmg", version()?));
+    run(Command::new("hdiutil")
+        .args([
+            "create",
+            "-volname",
+            "Plaivo",
+            "-format",
+            "UDZO",
+            "-ov",
+            "-srcfolder",
+        ])
+        .arg(&stage)
+        .arg(&dmg))?;
+    std::fs::remove_dir_all(&stage)?;
+    if let Ok(identity) = std::env::var("PLAIVO_SIGN_IDENTITY") {
+        run(Command::new("codesign")
+            .args(["--timestamp", "--sign", &identity])
+            .arg(&dmg))?;
+    }
+    if let Ok(profile) = std::env::var("PLAIVO_NOTARY_PROFILE") {
+        run(Command::new("xcrun")
+            .args([
+                "notarytool",
+                "submit",
+                "--wait",
+                "--keychain-profile",
+                &profile,
+            ])
+            .arg(&dmg))?;
+        run(Command::new("xcrun").args(["stapler", "staple"]).arg(&dmg))?;
+    }
+    println!("{}", dmg.display());
+    Ok(())
+}
+
+fn bundle(release: bool, open: bool) -> anyhow::Result<PathBuf> {
     ensure!(
         cfg!(target_os = "macos"),
         "bundle builds the macOS Plaivo.app"
     );
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
-        .args(["build", "-p", "plaivo"])
-        .args(release.then_some("--release"))
-        .current_dir(root)
-        .status()?;
-    ensure!(status.success(), "cargo build failed");
-
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("target"))
-        .join(if release { "release" } else { "debug" });
+    let root = root();
+    let target = build(release)?;
     let app = target.join("Plaivo.app");
     let contents = app.join("Contents");
     let exe_dir = contents.join("MacOS");
@@ -50,24 +175,39 @@ fn bundle(release: bool, open: bool) -> anyhow::Result<()> {
     copy_files(&root.join("deps/macos"), &exe_dir)?;
     copy_files(&root.join("shaders"), &exe_dir.join("shaders"))?;
 
-    let manifest = std::fs::read_to_string(root.join("Cargo.toml"))?;
-    let version = manifest
-        .lines()
-        .find_map(|l| l.strip_prefix("version = \""))
-        .and_then(|v| v.strip_suffix('"'))
-        .context("no version in Cargo.toml")?;
-    std::fs::write(contents.join("Info.plist"), info_plist(version))?;
+    std::fs::write(contents.join("Info.plist"), info_plist(&version()?))?;
 
-    let status = Command::new("codesign")
-        .args(["--force", "--deep", "--sign", "-"])
-        .arg(&app)
-        .status()?;
-    ensure!(status.success(), "codesign failed");
+    match std::env::var("PLAIVO_SIGN_IDENTITY") {
+        Ok(identity) => {
+            let sign = |path: &Path| {
+                run(Command::new("codesign")
+                    .args([
+                        "--force",
+                        "--timestamp",
+                        "--options",
+                        "runtime",
+                        "--sign",
+                        &identity,
+                    ])
+                    .arg(path))
+            };
+            for entry in std::fs::read_dir(&exe_dir)? {
+                let path = entry?.path();
+                if path.extension() == Some(OsStr::new("dylib")) {
+                    sign(&path)?;
+                }
+            }
+            sign(&app)?;
+        }
+        Err(_) => run(Command::new("codesign")
+            .args(["--force", "--deep", "--sign", "-"])
+            .arg(&app))?,
+    }
     println!("{}", app.display());
     if open {
         Command::new("open").arg(&app).status()?;
     }
-    Ok(())
+    Ok(app)
 }
 
 fn copy_files(src: &Path, dst: &Path) -> anyhow::Result<()> {
