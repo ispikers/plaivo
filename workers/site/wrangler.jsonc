@@ -1,0 +1,7 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "plaivo-site",
+	"compatibility_date": "2026-11-01",
+	"assets": { "directory": "./public" },
+	"routes": [{ "pattern": "plaivo.app", "custom_domain": true }]
+}

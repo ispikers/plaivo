@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plaivo · Native player for Plex and Jellyfin</title>
+<meta name="description" content="Plaivo is a native Plex and Jellyfin player for Windows, macOS, Android and Android TV. Every format mpv decodes, HDR passthrough, downloads and Watch Together, with no browser engine inside.">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0E0F12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F7F7F8" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="style.css">
+<script src="main.js" defer></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></symbol>
+  <symbol id="i-replay" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></symbol>
+  <symbol id="i-forward" viewBox="0 0 24 24"><path d="M18 13c0 3.31-2.69 6-6 6s-6-2.69-6-6 2.69-6 6-6v4l5-5-5-5v4c-4.42 0-8 3.58-8 8s3.58 8 8 8 8-3.58 8-8h-2z"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></symbol>
+  <symbol id="i-subtitles" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM4 12h4v2H4v-2zm10 6H4v-2h10v2zm6 0h-4v-2h4v2zm0-4H10v-2h10v2z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></symbol>
+  <symbol id="i-tune" viewBox="0 0 24 24"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></symbol>
+  <symbol id="i-scale" viewBox="0 0 24 24"><path d="M17 4h3c1.1 0 2 .9 2 2v2h-2V6h-3V4zM4 8V6h3V4H4c-1.1 0-2 .9-2 2v2h2zm16 8v2h-3v2h3c1.1 0 2-.9 2-2v-2h-2zM7 18H4v-2H2v2c0 1.1.9 2 2 2h3v-2zM18 8H6v8h12V8z"/></symbol>
+  <symbol id="i-fullscreen" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></symbol>
+  <symbol id="i-done" viewBox="0 0 24 24"><path d="M5 18h14v2H5v-2zm4.6-2.7L5 10.7l2-1.9 2.6 2.6L17 4l2 2-9.4 9.3z"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><path d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></symbol>
+  <symbol id="i-group" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></symbol>
+</svg>
+
+<header class="top">
+  <div class="wrap top-in">
+    <a class="wordmark" href="/">Plaivo</a>
+    <nav aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#devices">Devices</a>
+      <a href="#faq">FAQ</a>
+      <a class="btn btn-small btn-primary" href="https://github.com/ispikers/plaivo">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="backdrop" aria-hidden="true"><img draggable="false" src="shots/player.webp" alt="" onerror="this.remove()"></div>
+    <div class="wrap hero-in">
+      <div class="hero-copy">
+        <h1>The native player for Plex and Jellyfin</h1>
+        <p class="lede">Plaivo plays your library at full quality: every format mpv can decode, HDR passthrough and hardware decoding. There's no browser engine inside, so it opens fast and stays light while you watch.</p>
+        <ul class="platforms" aria-label="Supported platforms"><li>Windows</li><li>macOS</li><li>Android</li><li>Android TV</li></ul>
+        <p class="fine">macOS 15 or later.</p>
+      </div>
+
+      <figure class="player" aria-label="Plaivo's player">
+        <div class="shot"><img draggable="false" src="shots/player.webp" alt="A film playing in Plaivo" onerror="this.remove()"><span class="placeholder">shots/player.webp</span></div>
+        <div class="controls" aria-hidden="true">
+          <div class="ctl-top">
+            <svg aria-hidden="true" class="ctl-min"><use href="#i-expand"/></svg>
+            <span class="ctl-title">Big Buck Bunny<small>2008 · 10m</small></span>
+            <span class="ctl-clock" data-clock></span>
+          </div>
+          <div class="ctl-bottom">
+            <div class="timeline"><span>4:12</span><div class="bar"><i class="buffered"></i><i class="played"></i></div><span>-6:22</span></div>
+            <div class="ctl-row">
+              <span class="seek"><svg aria-hidden="true"><use href="#i-replay"/></svg><b>10</b></span>
+              <svg aria-hidden="true" class="ctl-play"><use href="#i-pause"/></svg>
+              <span class="seek"><svg aria-hidden="true"><use href="#i-forward"/></svg><b>10</b></span>
+              <svg aria-hidden="true"><use href="#i-stop"/></svg>
+              <span class="ends" data-ends="382"></span>
+              <span class="ctl-spacer"></span>
+              <svg aria-hidden="true"><use href="#i-volume"/></svg>
+              <span class="volume"><i></i></span>
+              <svg aria-hidden="true" class="ctl-gap"><use href="#i-tune"/></svg>
+              <svg aria-hidden="true"><use href="#i-subtitles"/></svg>
+              <svg aria-hidden="true" class="ctl-scale"><use href="#i-scale"/></svg>
+              <svg aria-hidden="true" class="ctl-full"><use href="#i-fullscreen"/></svg>
+            </div>
+          </div>
+        </div>
+        <figcaption><cite>Big Buck Bunny</cite> © Blender Foundation, <a href="https://creativecommons.org/licenses/by/3.0/">CC BY 3.0</a>.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <div class="wrap">
+      <h2>Built around playback</h2>
+      <p class="sub">The picture comes first. Everything else stays out of its way.</p>
+
+      <div class="bento">
+        <article class="card c-codecs">
+          <h3>Plays the original file</h3>
+          <p>Plaivo direct-plays by default: mpv and FFmpeg decode the file on your device, so your server doesn't have to transcode. On a slow connection, pick a quality preset and the server transcodes for you.</p>
+          <div class="formats">
+            <div><span>Video</span><ul class="chips"><li>HEVC</li><li>AV1</li><li>VP9</li><li>H.264</li><li>MPEG-2</li><li>VC-1</li></ul></div>
+            <div><span>Audio</span><ul class="chips"><li>TrueHD</li><li>DTS-HD MA</li><li>E-AC-3</li><li>FLAC</li><li>Opus</li></ul></div>
+            <div><span>Subtitles</span><ul class="chips"><li>PGS</li><li>ASS</li><li>SRT</li></ul></div>
+          </div>
+        </article>
+
+        <article class="card c-hdr">
+          <h3>HDR passthrough</h3>
+          <p>HDR video goes to an HDR display as it is, with hardware decoding on every platform.</p>
+          <ul class="rows">
+            <li><span>Windows<small>Direct3D 11, d3d11va decoding</small></span></li>
+            <li><span>macOS<small>Metal</small></span></li>
+            <li><span>Android<small>ExoPlayer, on HDR-capable devices</small></span></li>
+          </ul>
+        </article>
+
+        <article class="card c-servers">
+          <h3>Plex and Jellyfin</h3>
+          <p>Sign in to Plex, add Jellyfin servers, and browse every library in one sidebar.</p>
+          <ul class="rows">
+            <li><svg aria-hidden="true"><use href="#i-server"/></svg><span>Plex<small>Sign in with a PIN</small></span></li>
+            <li><svg aria-hidden="true"><use href="#i-server"/></svg><span>Jellyfin<small>Password or Quick Connect</small></span></li>
+          </ul>
+        </article>
+
+        <article class="card c-downloads">
+          <h3>Downloads</h3>
+          <p>Take movies and whole seasons offline. Your progress syncs back once you're online again.</p>
+          <div class="dl-row">
+            <svg aria-hidden="true"><use href="#i-download"/></svg>
+            <div class="dl-meta"><span>Season 2 · Episode 5</span><div class="bar"><i style="width:64%"></i></div></div>
+            <span class="dl-pct">64%</span>
+          </div>
+          <div class="dl-row is-done">
+            <svg aria-hidden="true"><use href="#i-done"/></svg>
+            <div class="dl-meta"><span>Season 2 · Episode 4</span><small>Downloaded</small></div>
+          </div>
+        </article>
+
+        <article class="card c-watch">
+          <h3>Watch Together</h3>
+          <p>Watch in sync with friends from a room code. Rooms also work with Plezy, over the open openwatchparty protocol.</p>
+          <span class="pill"><svg aria-hidden="true"><use href="#i-group"/></svg>K7QF · 3 watching · In sync</span>
+        </article>
+
+        <article class="card c-shaders">
+          <h3>Upscaling shaders</h3>
+          <p>Anime4K, NVScaler and ArtCNN on desktop, set once as a default or per video from the player.</p>
+          <ul class="rows">
+            <li><span>Anime4K<small>Fast and HQ, modes A, B and C</small></span></li>
+            <li><span>ArtCNN<small>C4F16 and C4F32, with denoise options</small></span></li>
+            <li><span>NVScaler<small>Skipped automatically on HDR video</small></span></li>
+          </ul>
+        </article>
+
+        <article class="card c-trackers">
+          <h3>Trakt and MyAnimeList</h3>
+          <p>Scrobbles what you watch, including downloads watched offline. Anime is matched to the right MyAnimeList entry.</p>
+          <ul class="rows">
+            <li><span>Trakt<small>Live scrobbling, or a watched mark at 90%</small></span></li>
+            <li><span>MyAnimeList<small>Episode progress once you've watched 90%</small></span></li>
+          </ul>
+        </article>
+
+        <article class="card c-more">
+          <h3>And the small things</h3>
+          <ul class="ticks">
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg>Skip intro and credits</li>
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg>Up next countdown</li>
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg>Miniplayer while you browse</li>
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg>Subtitle size, colour and position</li>
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg>Language preferences synced to your account</li>
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg>Watchlist and search across servers</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="devices">
+    <div class="wrap">
+      <h2>One Plaivo on every screen</h2>
+      <p class="sub">The same sidebar, cards and player on the desktop, the TV and your phone.</p>
+      <div class="gallery">
+        <figure class="frame f-desktop">
+          <div class="shot"><img draggable="false" src="shots/desktop-home.webp" alt="Plaivo's home screen on Windows" loading="lazy" onerror="this.remove()"><span class="placeholder">shots/desktop-home.webp</span></div>
+          <figcaption><b>Windows and macOS</b>Mouse, keyboard shortcuts, and a miniplayer so you can keep browsing.</figcaption>
+        </figure>
+        <figure class="frame f-tv">
+          <div class="shot"><img draggable="false" src="shots/tv-home.webp" alt="Plaivo on Android TV" loading="lazy" onerror="this.remove()"><span class="placeholder">shots/tv-home.webp</span></div>
+          <figcaption><b>Android TV</b>Made for the remote, with the focused title's backdrop filling the screen.</figcaption>
+        </figure>
+        <figure class="frame f-phone">
+          <div class="shot"><img draggable="false" src="shots/phone-home.webp" alt="Plaivo on an Android phone" loading="lazy" onerror="this.remove()"><span class="placeholder">shots/phone-home.webp</span></div>
+          <figcaption><b>Android</b>Touch layout for phones and tablets.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="faq">
+    <div class="wrap faq-in">
+      <h2>Questions</h2>
+      <div class="faq">
+        <details>
+          <summary>Does Plaivo work with Jellyfin?<svg aria-hidden="true"><use href="#i-expand"/></svg></summary>
+          <p>Yes. Add a Jellyfin server with its address, then sign in with your username and password or with Quick Connect. Plex and Jellyfin libraries show up side by side.</p>
+        </details>
+        <details>
+          <summary>Which devices does it run on?<svg aria-hidden="true"><use href="#i-expand"/></svg></summary>
+          <p>Windows, macOS 15 or later, Android phones and tablets, and Android TV.</p>
+        </details>
+        <details>
+          <summary>What video player does Plaivo use?<svg aria-hidden="true"><use href="#i-expand"/></svg></summary>
+          <p>mpv on Windows and macOS, and ExoPlayer on Android. Neither runs inside a browser.</p>
+        </details>
+        <details>
+          <summary>Will my server have to transcode?<svg aria-hidden="true"><use href="#i-expand"/></svg></summary>
+          <p>Not by default. Plaivo plays the original file and decodes it on your device. If your connection can't keep up, choose a lower quality and the server transcodes to it.</p>
+        </details>
+        <details>
+          <summary>Can I watch without an internet connection?<svg aria-hidden="true"><use href="#i-expand"/></svg></summary>
+          <p>Yes. Downloaded movies and episodes play offline, and the progress you make is sent to your server, and to Trakt or MyAnimeList, once you're back online.</p>
+        </details>
+        <details>
+          <summary>Does Watch Together work with Plezy?<svg aria-hidden="true"><use href="#i-expand"/></svg></summary>
+          <p>Yes. Both apps use the openwatchparty protocol, so Plaivo and Plezy users can share a room. Each person plays the title from a library they have access to.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="section closing">
+    <div class="wrap closing-in">
+      <h2>Your library, played properly</h2>
+      <ul class="platforms" aria-label="Supported platforms"><li>Windows</li><li>macOS</li><li>Android</li><li>Android TV</li></ul>
+      <a class="btn btn-primary closing-cta" href="https://github.com/ispikers/plaivo">View on GitHub</a>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span class="wordmark">Plaivo</span>
+    <p class="foot-note">Not affiliated with Plex, Inc. or the Jellyfin project.</p>
+    <a href="#top">Back to top</a>
+  </div>
+</footer>
+</body>
+</html>
