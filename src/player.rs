@@ -183,6 +183,8 @@ impl Plaivo {
             ("wid", wid.as_str()),
             ("vo", "gpu-next"),
             ("hwdec", "auto-safe"),
+            // Default lanczos upscaling was ~30% GPU for 1080p on an M4 Air; hermite ~16%, softer but no ringing.
+            ("scale", "hermite"),
             ("target-colorspace-hint", "yes"),
             ("idle", "yes"),
             ("keep-open", "no"),
