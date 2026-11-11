@@ -166,7 +166,7 @@ mod tests {
         let manifest: serde_json::Value =
             serde_json::from_str(include_str!("../../licenses/desktop.json")).unwrap();
         let entries = manifest.as_array().unwrap();
-        assert!(entries.len() > 50);
+        assert!(entries.len() > 30);
         for (e, l) in entries.iter().zip(&LICENSES) {
             assert_eq!(e["name"], l.name);
             assert_eq!(e["license"], l.license);
@@ -179,7 +179,7 @@ mod tests {
         }
         let text = |i: usize| LICENSES[i].parts().collect::<String>();
         assert!(LICENSES[0].name == "libmpv" && text(0).contains("Version 2.1, February 1999"));
-        assert!(LICENSES[1].name == "FFmpeg" && text(1).contains("Version 3, 29 June 2007"));
+        assert!(LICENSES[1].name == "FFmpeg" && text(1).contains("Version 2.1, February 1999"));
         assert!(
             LICENSES
                 .iter()

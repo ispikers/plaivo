@@ -1,6 +1,0 @@
-ZeroMQ (libzmq), https://github.com/zeromq/libzmq
-
-Copyright (c) the libzmq contributors, as listed in the AUTHORS file of the
-libzmq repository.
-
-Licensed under the Mozilla Public License, version 2.0.

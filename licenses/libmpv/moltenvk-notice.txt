@@ -1,0 +1,5 @@
+MoltenVK, https://github.com/KhronosGroup/MoltenVK
+
+Copyright (c) 2015-2026 The Brenwill Workshop Ltd.
+
+Licensed under the Apache License, Version 2.0.

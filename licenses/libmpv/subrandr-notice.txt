@@ -1,5 +1,0 @@
-subrandr, https://github.com/afishhh/subrandr
-
-Copyright (c) the subrandr contributors.
-
-subrandr is available under the Mozilla Public License 2.0.
