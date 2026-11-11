@@ -295,8 +295,6 @@ pub struct ViewState {
     pub volume_drag: bool,
     pub hub_hover: Option<usize>,
     pub cursor_hidden: bool,
-    pub player_bare: bool,
-    pub ui_hidden: bool,
 }
 
 pub struct Plaivo {

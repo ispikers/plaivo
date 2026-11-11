@@ -59,14 +59,6 @@ impl Render for Plaivo {
             _ if mini => None,
             _ => Some(theme::bg().into()),
         };
-        // Nothing drawn over the video: hiding GPUI's layer lets macOS scan the video out without blending the UI.
-        let bare = self.page == Page::Player && self.view.player_bare && self.toast.is_none();
-        if bare != self.view.ui_hidden
-            && let Some(host) = &self.player.host
-        {
-            self.view.ui_hidden = bare;
-            host.set_ui_hidden(bare);
-        }
         div()
             .id("root")
             .size_full()
