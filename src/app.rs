@@ -151,6 +151,14 @@ pub struct Choice {
     pub selected: bool,
 }
 
+pub type Slide = Option<(f32, f32, Instant)>;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShelfKey {
+    Hub(bool, usize),
+    Detail(usize),
+}
+
 pub struct Hub {
     pub title: SharedString,
     pub key: SharedString,
@@ -159,7 +167,7 @@ pub struct Hub {
     pub wide: bool,
     pub items: Vec<Card>,
     pub scroll: ScrollHandle,
-    pub slide: Option<(f32, f32, Instant)>,
+    pub slide: Slide,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -295,7 +303,8 @@ pub struct ViewState {
     pub seek_preview: Option<Instant>,
     pub volume: Bounds<Pixels>,
     pub volume_drag: bool,
-    pub hub_hover: Option<usize>,
+    pub shelf_hover: Option<ShelfKey>,
+    pub shelf_arrow_hover: Option<ShelfKey>,
     pub cursor_hidden: bool,
     pub boost: Option<f64>,
     pub space_down: bool,
@@ -375,6 +384,7 @@ pub struct Plaivo {
     pub offline: Vec<(String, Item)>,
     pub offline_view: Option<(String, String)>,
     pub detail_scroll: ScrollHandle,
+    pub detail_shelves: Vec<(ScrollHandle, Slide)>,
     pub arrivals: HashMap<String, Instant>,
     pub settings_scroll: ScrollHandle,
     pub license_scroll: ScrollHandle,
@@ -768,6 +778,7 @@ impl Plaivo {
             offline: Vec::new(),
             offline_view: None,
             detail_scroll: ScrollHandle::new(),
+            detail_shelves: Vec::new(),
             arrivals: HashMap::new(),
             settings_scroll: ScrollHandle::new(),
             license_scroll: ScrollHandle::new(),
@@ -2297,6 +2308,7 @@ impl Plaivo {
             self.episode_items.clear();
             self.season = None;
             self.detail_scroll = ScrollHandle::new();
+            self.detail_shelves.clear();
             self.owned_check = (server == DISCOVER_ID).then(|| key.clone());
         }
         if season.is_some() {

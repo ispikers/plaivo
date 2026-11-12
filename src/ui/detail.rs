@@ -1,6 +1,6 @@
-use crate::app::{Card, CastMember, Plaivo, Shape};
+use crate::app::{Card, CastMember, Plaivo, Shape, ShelfKey};
 use crate::plex::{DISCOVER_ID, RatingSource};
-use crate::ui::home::{card_width, content_width};
+use crate::ui::home::{arrow_y, card_width, content_width};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
     chip, icon, overlay_button, pill, progress_bar, round_button, scrollbar, skeleton, tip,
@@ -63,16 +63,6 @@ fn heading(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-fn shelf(id: impl Into<ElementId>, children: Vec<AnyElement>) -> impl IntoElement {
-    div()
-        .id(id.into())
-        .overflow_x_scroll()
-        .restrict_scroll_to_axis()
-        .mx(px(-3.))
-        .flex()
-        .children(children)
-}
-
 fn action(id: &'static str, i: Icon, label: &'static str) -> gpui::Stateful<Div> {
     round_button(
         id,
@@ -87,6 +77,21 @@ fn action(id: &'static str, i: Icon, label: &'static str) -> gpui::Stateful<Div>
 }
 
 impl Plaivo {
+    fn detail_shelf(
+        &mut self,
+        n: usize,
+        id: impl Into<ElementId>,
+        arrow_y: f32,
+        children: Vec<AnyElement>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = ShelfKey::Detail(n);
+        self.shelf_offset(key, window);
+        self.shelf(key, id, arrow_y, div().mx(px(-3.)).flex().children(children), cx)
+            .into_any_element()
+    }
+
     pub fn render_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let cw = content_width(self, window);
         let vh = f32::from(window.viewport_size().height);
@@ -476,6 +481,15 @@ impl Plaivo {
             .enumerate()
             .map(|(i, c)| self.media_card(("extra", i), c, EXTRA_W, true, cx))
             .collect();
+        let pad = self.settings.card_pad();
+        let cast_shelf = (!cast_cards.is_empty()).then(|| {
+            let y = 3. + (CAST_W - 6.) / 2. - 24.;
+            self.detail_shelf(0, "cast-shelf", y, cast_cards, window, cx)
+        });
+        let extras_shelf = (!extra_cards.is_empty()).then(|| {
+            let y = arrow_y(EXTRA_W, true, pad);
+            self.detail_shelf(1, "extras-shelf", y, extra_cards, window, cx)
+        });
         let poster_w = card_width(cw - 32., false, self.settings.card_scale());
         let related: Vec<AnyElement> = related_rows
             .iter()
@@ -488,11 +502,12 @@ impl Plaivo {
                         self.media_card(("related", h * 1000 + i), c, poster_w, false, cx)
                     })
                     .collect();
+                let y = arrow_y(poster_w, false, pad);
                 div()
                     .flex()
                     .flex_col()
                     .child(heading(title.clone()))
-                    .child(shelf(("related-shelf", h), cards))
+                    .child(self.detail_shelf(2 + h, ("related-shelf", h), y, cards, window, cx))
                     .into_any_element()
             })
             .collect();
@@ -590,13 +605,9 @@ impl Plaivo {
                     )
                     .children(episodes)
             })
-            .when(!cast_cards.is_empty(), |d| {
-                d.child(heading("Cast"))
-                    .child(shelf("cast-shelf", cast_cards))
-            })
-            .when(!extra_cards.is_empty(), |d| {
-                d.child(heading("Trailers & Extras"))
-                    .child(shelf("extras-shelf", extra_cards))
+            .when_some(cast_shelf, |d, s| d.child(heading("Cast")).child(s))
+            .when_some(extras_shelf, |d, s| {
+                d.child(heading("Trailers & Extras")).child(s)
             })
             .children(related);
         div()

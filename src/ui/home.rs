@@ -1,10 +1,10 @@
-use crate::app::{Hub, Plaivo, Shape};
+use crate::app::{Hub, Plaivo, Shape, ShelfKey, Slide};
 use crate::ui::shell::{ease_out, progress};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, overlay_button, pill, scrollbar, skeleton};
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
-    ScrollEvent, SharedString, Window, div, img, linear_color_stop, linear_gradient, point,
+    AnyElement, Context, Div, ElementId, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
+    ScrollEvent, ScrollHandle, SharedString, Stateful, Window, div, img, linear_color_stop, linear_gradient, point,
     prelude::*, px, rgb,
 };
 use std::ops::Range;
@@ -25,6 +25,18 @@ pub fn content_width(this: &Plaivo, window: &Window) -> f32 {
         theme::SIDEBAR
     };
     f32::from(window.viewport_size().width) - sidebar
+}
+
+pub fn arrow_y(w: f32, wide: bool, pad: f32) -> f32 {
+    (w - 2. * pad) * if wide { 9. / 32. } else { 0.75 } - 24. + pad
+}
+
+fn set_hover(slot: &mut Option<ShelfKey>, key: ShelfKey, on: bool) {
+    if on {
+        *slot = Some(key);
+    } else if *slot == Some(key) {
+        *slot = None;
+    }
 }
 
 pub fn card_height(w: f32, wide: bool, pad: f32) -> f32 {
@@ -364,6 +376,110 @@ impl Plaivo {
         }
     }
 
+    fn shelf_state(&mut self, key: ShelfKey) -> Option<(ScrollHandle, &mut Slide)> {
+        match key {
+            ShelfKey::Hub(lib, i) => self
+                .hub_vec(lib)
+                .get_mut(i)
+                .map(|h| (h.scroll.clone(), &mut h.slide)),
+            ShelfKey::Detail(i) => {
+                if self.detail_shelves.len() <= i {
+                    self.detail_shelves.resize_with(i + 1, Default::default);
+                }
+                let (scroll, slide) = &mut self.detail_shelves[i];
+                Some((scroll.clone(), slide))
+            }
+        }
+    }
+
+    pub fn shelf_offset(&mut self, key: ShelfKey, window: &mut Window) -> f32 {
+        let Some((scroll, slide)) = self.shelf_state(key) else {
+            return 0.;
+        };
+        if let Some((from, to, t0)) = *slide {
+            let p = ease_out(progress(Some(t0), SLIDE_ANIM, window));
+            scroll.set_offset(point(px(from + (to - from) * p), px(0.)));
+            if p >= 1. {
+                *slide = None;
+            }
+        }
+        f32::from(scroll.offset().x)
+    }
+
+    pub fn shelf(
+        &mut self,
+        key: ShelfKey,
+        id: impl Into<ElementId>,
+        arrow_y: f32,
+        row: Div,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let Some((scroll, slide)) = self.shelf_state(key) else {
+            return div().id(id);
+        };
+        let target = slide.map(|(_, to, _)| to);
+        let offset = f32::from(scroll.offset().x);
+        let base = target.unwrap_or(offset);
+        let max = f32::from(scroll.max_offset().x);
+        let page = f32::from(scroll.bounds().size.width) * 0.8;
+        let hovered = self.view.shelf_hover == Some(key) || self.view.shelf_arrow_hover == Some(key);
+        let arrows: Vec<AnyElement> = [(true, offset < -1.), (false, -offset < max - 1.)]
+            .into_iter()
+            .filter(|&(_, show)| hovered && show)
+            .map(|(left, _)| {
+                let to = if left {
+                    (base + page).min(0.)
+                } else {
+                    (base - page).max(-max)
+                };
+                div()
+                    .absolute()
+                    .top(px(arrow_y))
+                    .map(|d| if left { d.left(px(8.)) } else { d.right(px(8.)) })
+                    .child(
+                        overlay_button(
+                            if left { "shelf-left" } else { "shelf-right" },
+                            if left { Icon::ChevronLeft } else { Icon::ChevronRight },
+                            48.,
+                            32.,
+                            theme::black(0.7),
+                            theme::black(0.9),
+                            rgb(0xFFFFFF),
+                        )
+                        // The arrow occludes the row's hitbox, so it tracks its own hover.
+                        .on_hover(cx.listener(move |this, on: &bool, _, cx| {
+                            set_hover(&mut this.view.shelf_arrow_hover, key, *on);
+                            cx.notify();
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some((_, slide)) = this.shelf_state(key) {
+                                *slide = Some((offset, to, Instant::now()));
+                                cx.notify();
+                            }
+                        })),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .id(id)
+            .relative()
+            .on_hover(cx.listener(move |this, on: &bool, _, cx| {
+                if *on {
+                    set_hover(&mut this.view.shelf_arrow_hover, key, false);
+                }
+                set_hover(&mut this.view.shelf_hover, key, *on);
+                cx.notify();
+            }))
+            .child(
+                row.id("row")
+                    .overflow_x_scroll()
+                    .restrict_scroll_to_axis()
+                    .track_scroll(&scroll),
+            )
+            .children(arrows)
+    }
+
     pub fn render_hubs(
         &mut self,
         lib: bool,
@@ -451,28 +567,20 @@ impl Plaivo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (AnyElement, [Range<usize>; 2]) {
-        let (title, resume, wide, scroll, key, server) = {
+        let (title, resume, wide, key, server) = {
             let h = &self.hub_vec(lib)[i];
             (
                 h.title.clone(),
                 h.resume,
                 h.wide,
-                h.scroll.clone(),
                 h.key.clone(),
                 h.server.clone(),
             )
         };
         let w = card_width(cw, wide, self.settings.card_scale());
         let pad = self.settings.card_pad();
-        let hovered = self.view.hub_hover == Some(i);
-        if let Some((from, to, t0)) = self.hub_vec(lib)[i].slide {
-            let p = ease_out(progress(Some(t0), SLIDE_ANIM, window));
-            scroll.set_offset(point(px(from + (to - from) * p), px(0.)));
-            if p >= 1. {
-                self.hub_vec(lib)[i].slide = None;
-            }
-        }
-        let offset = f32::from(scroll.offset().x);
+        let shelf = ShelfKey::Hub(lib, i);
+        let offset = self.shelf_offset(shelf, window);
         let items = std::mem::take(&mut self.hub_vec(lib)[i].items);
         let cards_in = |show: bool, before: f32, after: f32| {
             let last = if show {
@@ -501,32 +609,18 @@ impl Plaivo {
             near.start..shown.start.clamp(near.start, near.end),
             shown.end.clamp(near.start, near.end)..near.end,
         ];
-        let base = self.hub_vec(lib)[i].slide.map_or(offset, |(_, to, _)| to);
-        let max = f32::from(scroll.max_offset().x);
-        let page = (cw - 16.) * 0.8;
-        let arrow_y = if wide {
-            (w - 2. * pad) * 9. / 32.
-        } else {
-            (w - 2. * pad) * 0.75
-        } - 24.
-            + pad;
-        let left = hovered && offset < -1.;
-        let right = hovered && -offset < max - 1.;
+        let row = self.shelf(
+            shelf,
+            "shelf",
+            arrow_y(w, wide, pad),
+            div().px(px(8.)).flex().children(cards),
+            cx,
+        );
         let hub = div()
             .id(("hub", i))
             .flex()
             .flex_col()
             .gap(px(4.))
-            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.view.hub_hover = if *hovered {
-                    Some(i)
-                } else if this.view.hub_hover == Some(i) {
-                    None
-                } else {
-                    this.view.hub_hover
-                };
-                cx.notify();
-            }))
             .child(
                 div().h(px(34.)).pl(px(12.)).flex().items_center().child(
                     div()
@@ -562,64 +656,7 @@ impl Plaivo {
                         }),
                 ),
             )
-            .child(
-                div()
-                    .relative()
-                    .child(
-                        div()
-                            .id(("hub-scroll", i))
-                            .overflow_x_scroll()
-                            .restrict_scroll_to_axis()
-                            .track_scroll(&scroll)
-                            .px(px(8.))
-                            .flex()
-                            .children(cards),
-                    )
-                    .when(left, |d| {
-                        d.child(
-                            div().absolute().left(px(8.)).top(px(arrow_y)).child(
-                                overlay_button(
-                                    ("hub-left", i),
-                                    Icon::ChevronLeft,
-                                    48.,
-                                    32.,
-                                    theme::black(0.7),
-                                    theme::black(0.9),
-                                    rgb(0xFFFFFF),
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.hub_vec(lib)[i].slide =
-                                            Some((offset, (base + page).min(0.), Instant::now()));
-                                        cx.notify();
-                                    },
-                                )),
-                            ),
-                        )
-                    })
-                    .when(right, |d| {
-                        d.child(
-                            div().absolute().right(px(8.)).top(px(arrow_y)).child(
-                                overlay_button(
-                                    ("hub-right", i),
-                                    Icon::ChevronRight,
-                                    48.,
-                                    32.,
-                                    theme::black(0.7),
-                                    theme::black(0.9),
-                                    rgb(0xFFFFFF),
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.hub_vec(lib)[i].slide =
-                                            Some((offset, (base - page).max(-max), Instant::now()));
-                                        cx.notify();
-                                    },
-                                )),
-                            ),
-                        )
-                    }),
-            )
+            .child(row)
             .into_any_element();
         (hub, rest)
     }
