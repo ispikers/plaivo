@@ -317,6 +317,14 @@ fn flex_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Erro
     })
 }
 
+fn flex_u64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    })
+}
+
 fn flex_f64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
     Ok(match serde_json::Value::deserialize(d)? {
         serde_json::Value::Number(n) => n.as_f64(),
@@ -375,6 +383,7 @@ pub struct Media {
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct Part {
+    #[serde(deserialize_with = "flex_u64")]
     pub id: Option<u64>,
     pub key: String,
     pub file: String,
@@ -385,6 +394,7 @@ pub struct Part {
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Stream {
+    #[serde(deserialize_with = "flex_u64")]
     pub id: Option<u64>,
     pub stream_type: u8,
     pub index: Option<u32>,
@@ -2074,6 +2084,19 @@ pub fn fmt_bitrate(kbps: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discover_part_and_stream_ids_are_not_numbers() {
+        let part: Part = serde_json::from_str(
+            r#"{"id":"65a6ee7de93b86d9513a9940","Stream":[{"id":"65a6ee7de93b86d9513a9941"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(part.id, None);
+        assert_eq!(part.stream[0].id, None);
+        let part: Part = serde_json::from_str(r#"{"id":42,"Stream":[{"id":"7"}]}"#).unwrap();
+        assert_eq!(part.id, Some(42));
+        assert_eq!(part.stream[0].id, Some(7));
+    }
 
     #[test]
     fn play_skips_specials_unless_nothing_else_exists() {
