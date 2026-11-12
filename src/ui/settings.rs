@@ -128,7 +128,7 @@ impl Plaivo {
                             } else {
                                 this.settings.skip_intro = m
                             }
-                            this.settings.save();
+                            this.save_settings_soon(cx);
                             cx.notify();
                         },
                     ))
@@ -151,7 +151,7 @@ impl Plaivo {
                     } else {
                         s.seek_small = nudge(s.seek_small, *step, 5, 5, 60, 10)
                     }
-                    s.save();
+                    this.save_settings_soon(cx);
                     cx.notify();
                 }),
             ))
@@ -166,7 +166,7 @@ impl Plaivo {
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings.autoplay_next = !this.settings.autoplay_next;
-                    this.settings.save();
+                    this.save_settings_soon(cx);
                     cx.notify();
                 })),
             )
@@ -190,7 +190,7 @@ impl Plaivo {
                                 COUNTDOWN_MAX,
                                 5,
                             );
-                            this.settings.save();
+                            this.save_settings_soon(cx);
                             cx.notify();
                         }),
                     )),
@@ -250,7 +250,7 @@ impl Plaivo {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.settings.stop_on_close = !this.settings.stop_on_close;
-                        this.settings.save();
+                        this.save_settings_soon(cx);
                         cx.notify();
                     })),
                 ),
@@ -330,7 +330,7 @@ impl Plaivo {
                     .child(toggle(!hidden))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.settings.set_library_hidden(&id, !hidden);
-                        this.settings.save();
+                        this.save_settings_soon(cx);
                         cx.notify();
                     }))
                 }),
@@ -346,7 +346,7 @@ impl Plaivo {
             .flat_map(|(_, rows)| rows.into_iter().map(|r| r.id.clone()))
             .collect();
         self.settings.move_library(&arranged, id, step);
-        self.settings.save();
+        self.save_settings_soon(cx);
         cx.notify();
     }
 
@@ -384,7 +384,7 @@ impl Plaivo {
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.settings.debug_logging = !this.settings.debug_logging;
-                            this.settings.save();
+                            this.save_settings_soon(cx);
                             logging::set_debug(this.settings.debug_logging);
                             if let Some(m) = &this.player.mpv {
                                 m.sync_log_level();
@@ -467,9 +467,9 @@ impl Plaivo {
                         "shader",
                         None,
                         choices,
-                        |this, id, _| {
+                        |this, id, cx| {
                             this.settings.shader = id.to_owned();
-                            this.settings.save();
+                            this.save_settings_soon(cx);
                         },
                         cx,
                     ))
@@ -682,7 +682,7 @@ impl Plaivo {
     fn set_density(&mut self, d: u32, cx: &mut Context<Self>) {
         if self.settings.density != d {
             self.settings.density = d;
-            self.settings.save();
+            self.save_settings_soon(cx);
             cx.notify();
         }
     }
@@ -829,7 +829,7 @@ impl Plaivo {
                             if rebuild {
                                 this.cards_changed(cx);
                             } else {
-                                this.settings.save();
+                                this.save_settings_soon(cx);
                                 cx.notify();
                             }
                         },
@@ -853,7 +853,7 @@ impl Plaivo {
             s.grid_spacing,
             |this, g, cx| {
                 this.settings.grid_spacing = g;
-                this.settings.save();
+                this.save_settings_soon(cx);
                 cx.notify();
             },
             cx,

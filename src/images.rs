@@ -21,11 +21,18 @@ pub struct Queue {
 }
 
 impl Queue {
-    // Overflow drops the oldest request: that row is the one most likely to have scrolled away.
-    pub fn push(&self, job: Job) -> Option<Job> {
+    // Overflow drops the oldest request no longer drawn; if all are still wanted, the new one waits a frame.
+    pub fn push(&self, job: Job, wanted: impl Fn(&str) -> bool) -> Option<Job> {
         let mut jobs = self.jobs.lock().unwrap();
+        let dropped = if jobs.len() < QUEUE_CAP {
+            None
+        } else {
+            match jobs.iter().position(|j| !wanted(&j.key)) {
+                Some(i) => jobs.remove(i),
+                None => return Some(job),
+            }
+        };
         jobs.push_back(job);
-        let dropped = (jobs.len() > QUEUE_CAP).then(|| jobs.pop_front()).flatten();
         self.cv.notify_one();
         dropped
     }
@@ -65,7 +72,12 @@ fn load(
         store::cache_path("img", key)
     };
     let bytes = match std::fs::read(&file) {
-        Ok(b) => b,
+        Ok(b) => {
+            if !local {
+                store::touch(&file);
+            }
+            b
+        }
         Err(e) if local => {
             log::warn!("image {key}: {e}");
             return None;
@@ -112,6 +124,7 @@ pub struct Lru {
     map: HashMap<String, (Arc<RenderImage>, u64, usize)>,
     tick: u64,
     frame: u64,
+    prev_frame: u64,
     bytes: usize,
     budget: usize,
 }
@@ -122,13 +135,23 @@ impl Lru {
             map: HashMap::new(),
             tick: 0,
             frame: 0,
+            prev_frame: 0,
             bytes: 0,
             budget,
         }
     }
 
     pub fn start_frame(&mut self) {
+        self.prev_frame = self.frame;
         self.frame = self.tick;
+    }
+
+    pub fn frame(&self) -> u64 {
+        self.frame
+    }
+
+    pub fn used_last_frame(&self, key: &str) -> bool {
+        self.map.get(key).is_some_and(|e| e.1 > self.prev_frame)
     }
 
     pub fn contains(&self, key: &str) -> bool {
@@ -158,7 +181,7 @@ impl Lru {
 
     pub fn set_budget(&mut self, budget: usize) -> Vec<Arc<RenderImage>> {
         self.budget = budget;
-        self.start_frame();
+        self.frame = self.tick;
         self.evict()
     }
 
@@ -227,6 +250,21 @@ mod tests {
     }
 
     #[test]
+    fn used_last_frame_tracks_draws_and_fresh_inserts() {
+        let mut lru = Lru::new(usize::MAX);
+        lru.insert("drawn".into(), img(10));
+        lru.insert("hidden".into(), img(10));
+        lru.start_frame();
+        assert!(lru.used_last_frame("drawn") && lru.used_last_frame("hidden"));
+        lru.get("drawn");
+        lru.start_frame();
+        assert!(lru.used_last_frame("drawn") && !lru.used_last_frame("hidden"));
+        lru.insert("new".into(), img(10));
+        lru.start_frame();
+        assert!(lru.used_last_frame("new") && !lru.used_last_frame("drawn"));
+    }
+
+    #[test]
     fn local_art_shrinks_to_cover_the_drawn_size() {
         let big = image::DynamicImage::new_rgba8(960, 1440);
         let fitted = fit(big, (250, 375));
@@ -245,10 +283,13 @@ mod tests {
             size: (0, 0),
         };
         let dropped: Vec<_> = (0..QUEUE_CAP + 2)
-            .filter_map(|i| q.push(job(i)))
+            .filter_map(|i| q.push(job(i), |_| false))
             .map(|j| j.key)
             .collect();
         assert_eq!(dropped, ["0", "1"]);
+        let new = q.push(job(99), |_| true).unwrap();
+        assert_eq!(new.key, "99");
+        assert_eq!(q.push(job(99), |k| k != "5").unwrap().key, "5");
         assert_eq!(q.pop().key, "2");
     }
 }

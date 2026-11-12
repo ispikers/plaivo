@@ -112,6 +112,7 @@ struct Inner {
     free_space: fn(&Path) -> Option<u64>,
     on_change: Box<dyn Fn() + Send + Sync>,
     shared: Mutex<Shared>,
+    disk: Mutex<()>,
     wake: Condvar,
     abort: AtomicBool,
 }
@@ -129,6 +130,8 @@ struct Shared {
     replay_at: Option<Instant>,
     replay_backoff: Duration,
     last_notify: Option<Instant>,
+    save_queue: bool,
+    save_progress: bool,
     shutdown: bool,
 }
 
@@ -184,7 +187,7 @@ fn subtitles(part: &Part) -> impl Iterator<Item = (String, &Stream)> {
     part.stream
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.stream_type == 3 && !s.key.is_empty())
+        .filter(|(_, s)| s.is_external_subtitle())
         .map(|(i, s)| (format!("sub-{i}.{}", extension(&s.codec, "srt")), s))
 }
 
@@ -328,6 +331,7 @@ impl Downloads {
             free_space,
             on_change,
             shared: Mutex::new(shared),
+            disk: Mutex::new(()),
             wake: Condvar::new(),
             abort: AtomicBool::new(false),
         });
@@ -529,8 +533,11 @@ impl Downloads {
         duration_ms: u64,
         synced: bool,
     ) {
-        let watched = progress::watched(time_ms, duration_ms);
         let stopped = state == "stopped";
+        if synced && !stopped {
+            return;
+        }
+        let watched = progress::watched(time_ms, duration_ms);
         let snapshot = {
             let mut s = self.inner.lock();
             if !synced {
@@ -545,7 +552,7 @@ impl Downloads {
                         watched,
                     },
                 );
-                self.inner.save_progress(&s);
+                s.save_progress = true;
                 s.replay_at
                     .get_or_insert_with(|| Instant::now() + REPLAY_DELAY);
             }
@@ -560,6 +567,7 @@ impl Downloads {
                     it.clone()
                 })
         };
+        self.inner.flush();
         self.inner.wake.notify_all();
         if let Some(it) = snapshot {
             let _ = write_item(&self.inner.dir(server, key), &it);
@@ -577,7 +585,10 @@ impl Downloads {
 
 impl Drop for Downloads {
     fn drop(&mut self) {
-        self.inner.lock().shutdown = true;
+        {
+            let _disk = self.inner.disk.lock().unwrap_or_else(|e| e.into_inner());
+            self.inner.lock().shutdown = true;
+        }
         self.inner.abort.store(true, Ordering::Relaxed);
         self.inner.wake.notify_all();
         let Some(worker) = self.worker.take() else {
@@ -609,15 +620,25 @@ impl Inner {
             .join(format!("{:016x}.jpg", store::fnv1a(path)))
     }
 
-    fn save(&self, s: &Shared) {
-        if !s.shutdown {
-            store::write_json(&self.root.join(QUEUE), &s.entries);
+    // Snapshots under `shared` but writes outside it, so a slow disk never blocks render; `disk` keeps writes in order.
+    fn flush(&self) {
+        let _disk = self.disk.lock().unwrap_or_else(|e| e.into_inner());
+        let (entries, pending) = {
+            let mut g = self.lock();
+            let s = &mut *g;
+            if s.shutdown {
+                return;
+            }
+            (
+                std::mem::take(&mut s.save_queue).then(|| s.entries.clone()),
+                std::mem::take(&mut s.save_progress).then(|| s.pending.clone()),
+            )
+        };
+        if let Some(entries) = entries {
+            store::write_json(&self.root.join(QUEUE), &entries);
         }
-    }
-
-    fn save_progress(&self, s: &Shared) {
-        if !s.shutdown {
-            store::write_json(&self.root.join(PROGRESS), &s.pending);
+        if let Some(pending) = pending {
+            store::write_json(&self.root.join(PROGRESS), &pending);
         }
     }
 
@@ -625,9 +646,10 @@ impl Inner {
         let r = {
             let mut s = self.lock();
             let r = f(&mut s);
-            self.save(&s);
+            s.save_queue = true;
             r
         };
+        self.flush();
         self.wake.notify_all();
         (self.on_change)();
         r
@@ -658,6 +680,7 @@ impl Inner {
                         .0;
                 }
             };
+            self.flush();
             match job {
                 Job::Download(e, srv) => self.download(*e, &srv),
                 Job::Replay(batch) => self.replay(batch),
@@ -746,7 +769,7 @@ impl Inner {
         s.active = Some(e.id());
         self.abort.store(false, Ordering::Relaxed);
         let job = Job::Download(Box::new(e.clone()), Box::new(s.servers[&e.server].clone()));
-        self.save(s);
+        s.save_queue = true;
         Some(job)
     }
 
@@ -802,6 +825,10 @@ impl Inner {
                     s.entries[i].error = "Nothing to download".into();
                 }
                 Ok(Outcome::Expanded(items)) => {
+                    let state = match s.entries[i].state {
+                        State::Paused => State::Paused,
+                        _ => State::Queued,
+                    };
                     let fresh: Vec<Entry> = items
                         .iter()
                         .filter(|it| {
@@ -809,7 +836,10 @@ impl Inner {
                                 && !it.rating_key.is_empty()
                                 && !s.entries.iter().any(|x| x.is(&e.server, &it.rating_key))
                         })
-                        .map(|it| Entry::new(&e.server, it))
+                        .map(|it| Entry {
+                            state,
+                            ..Entry::new(&e.server, it)
+                        })
                         .collect();
                     s.entries.splice(i..=i, fresh);
                 }
@@ -826,8 +856,10 @@ impl Inner {
                 }
                 Err(Fail::Net(m) | Fail::Fatal(m)) => {
                     log::warn!("download {} from {} failed: {m}", e.key, srv.name);
-                    s.entries[i].state = State::Failed;
-                    s.entries[i].error = m;
+                    if s.entries[i].state != State::Paused {
+                        s.entries[i].state = State::Failed;
+                        s.entries[i].error = m;
+                    }
                 }
                 Err(Fail::Abort) => {}
             }
@@ -954,22 +986,25 @@ impl Inner {
     }
 
     fn progress(&self, server: &str, key: &str, done: u64, total: u64) -> bool {
-        let due = {
+        let (due, save) = {
             let mut g = self.lock();
             let s = &mut *g;
             if let Some(e) = s.entries.iter_mut().find(|e| e.is(server, key)) {
                 e.bytes = done;
                 if e.total != total {
                     e.total = total;
-                    self.save(s);
+                    s.save_queue = true;
                 }
             }
             let due = s.last_notify.is_none_or(|t| t.elapsed() >= NOTIFY_EVERY);
             if due {
                 s.last_notify = Some(Instant::now());
             }
-            due
+            (due, s.save_queue)
         };
+        if save {
+            self.flush();
+        }
         if due {
             (self.on_change)();
         }
@@ -1004,7 +1039,7 @@ impl Inner {
         }
         let mut s = self.lock();
         s.pending.retain(|p| !sent.contains(p));
-        self.save_progress(&s);
+        s.save_progress = true;
         s.replay_backoff = if failed {
             (s.replay_backoff * 2).min(MAX_REPLAY_DELAY)
         } else {
@@ -1013,6 +1048,8 @@ impl Inner {
         if !s.pending.is_empty() {
             s.replay_at = Some(Instant::now() + s.replay_backoff);
         }
+        drop(s);
+        self.flush();
     }
 
     fn purge(&self, gone: Vec<Entry>) {
@@ -1056,7 +1093,7 @@ impl Inner {
             if removed.len() < gone.len() {
                 s.prune_at = Some(Instant::now() + PURGE_RETRY);
             }
-            self.save(&s);
+            s.save_queue = true;
             let keep = s
                 .items
                 .iter()
@@ -1068,6 +1105,7 @@ impl Inner {
                 .collect();
             (keep, gone.iter().map(|e| e.server.clone()).collect())
         };
+        self.flush();
         let stale: Vec<PathBuf> = servers
             .iter()
             .flat_map(|srv| {

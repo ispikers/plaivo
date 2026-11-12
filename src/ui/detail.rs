@@ -160,14 +160,11 @@ impl Plaivo {
             d.art.clone(),
             d.is_show,
         );
-        let (logo, ratings, media_line, info, cast, extras, related, watchlisted) = (
+        let (logo, ratings, media_line, info, watchlisted) = (
             d.logo.clone(),
             d.ratings.clone(),
             d.media_line.clone(),
             d.info.clone(),
-            d.cast.clone(),
-            d.extras.clone(),
-            d.related.clone(),
             d.watchlisted,
         );
         let it = &d.item;
@@ -189,9 +186,8 @@ impl Plaivo {
             .image(&logo, Shape::Logo)
             .map(|im| (im, self.image_alpha()));
         let bg = theme::bg();
-        let episodes: Vec<AnyElement> = self
-            .episodes
-            .clone()
+        let episode_cards = std::mem::take(&mut self.episodes);
+        let episodes: Vec<AnyElement> = episode_cards
             .iter()
             .enumerate()
             .map(|(i, e)| {
@@ -199,6 +195,7 @@ impl Plaivo {
                 self.episode_row(i, e, download, cx)
             })
             .collect();
+        self.episodes = episode_cards;
         let download = self.detail_download_button(cx);
         let season_download = self.season_download_chip(cx);
         let title_el = match logo {
@@ -463,6 +460,12 @@ impl Plaivo {
                     })
                     .child(div().pt(px(6.)).child(actions)),
             );
+        let d = self.detail.as_mut().expect("checked above");
+        let (cast, extras, related_rows) = (
+            std::mem::take(&mut d.cast),
+            std::mem::take(&mut d.extras),
+            std::mem::take(&mut d.related),
+        );
         let cast_cards: Vec<AnyElement> = cast
             .iter()
             .enumerate()
@@ -474,8 +477,8 @@ impl Plaivo {
             .map(|(i, c)| self.media_card(("extra", i), c, EXTRA_W, true, cx))
             .collect();
         let poster_w = card_width(cw - 32., false, self.settings.card_scale());
-        let related: Vec<AnyElement> = related
-            .into_iter()
+        let related: Vec<AnyElement> = related_rows
+            .iter()
             .enumerate()
             .map(|(h, (title, cards))| {
                 let cards: Vec<AnyElement> = cards
@@ -488,11 +491,13 @@ impl Plaivo {
                 div()
                     .flex()
                     .flex_col()
-                    .child(heading(title))
+                    .child(heading(title.clone()))
                     .child(shelf(("related-shelf", h), cards))
                     .into_any_element()
             })
             .collect();
+        let d = self.detail.as_mut().expect("checked above");
+        (d.cast, d.extras, d.related) = (cast, extras, related_rows);
         let posters = self.settings.season_posters;
         let season_tabs: Vec<AnyElement> = self
             .seasons

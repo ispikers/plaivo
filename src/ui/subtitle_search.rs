@@ -14,7 +14,7 @@ const CHIP_LANGUAGES: usize = 10;
 fn subtitle_keys(streams: &[Stream]) -> Vec<String> {
     streams
         .iter()
-        .filter(|s| s.stream_type == 3 && !s.key.is_empty())
+        .filter(|s| s.is_external_subtitle())
         .map(|s| s.key.clone())
         .collect()
 }
@@ -89,7 +89,7 @@ impl Plaivo {
                         .flat_map(|m| m.part)
                         .flat_map(|p| p.stream);
                     if let Some(new) = streams
-                        .filter(|s| s.stream_type == 3 && !s.key.is_empty())
+                        .filter(|s| s.is_external_subtitle())
                         .find(|s| !before.contains(&s.key))
                     {
                         return Ok(Some(new));

@@ -25,10 +25,10 @@ impl Plaivo {
         Self::bg(
             cx,
             move || prefs::account(&c, token.as_deref(), &jellyfin),
-            move |this, r, _| match r {
+            move |this, r, cx| match r {
                 Ok(Some(p)) if p != before && this.settings.languages() == before => {
                     this.settings.set_languages(&p);
-                    this.settings.save();
+                    this.save_settings_soon(cx);
                 }
                 Ok(_) => {}
                 Err(e) => log::warn!("could not load account language preferences: {e}"),
@@ -40,7 +40,7 @@ impl Plaivo {
         let mut p = self.settings.languages();
         change(&mut p);
         self.settings.set_languages(&p);
-        self.settings.save();
+        self.save_settings_soon(cx);
         let (c, token, jellyfin, generation) = (
             self.client.clone(),
             self.account.token.clone(),
@@ -72,7 +72,7 @@ impl Plaivo {
             value,
             cx.listener(move |this, step: &i8, _, cx| {
                 change(&mut this.settings, *step);
-                this.settings.save();
+                this.save_settings_soon(cx);
                 this.apply_sub_style();
                 cx.notify();
             }),
@@ -110,7 +110,7 @@ impl Plaivo {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.settings.subtitle_color = hex.into();
-                    this.settings.save();
+                    this.save_settings_soon(cx);
                     this.apply_sub_style();
                     cx.notify();
                 }))

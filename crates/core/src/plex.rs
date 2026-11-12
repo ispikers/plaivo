@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+use crate::settings::CardPrefs;
 use crate::{first, jellyfin, join, store, watch_together};
 
 pub type R<T> = Result<T, String>;
@@ -392,6 +393,12 @@ pub struct Stream {
     pub selected: bool,
 }
 
+impl Stream {
+    pub fn is_external_subtitle(&self) -> bool {
+        self.stream_type == 3 && !self.key.is_empty()
+    }
+}
+
 impl Hub {
     pub fn is_continue(&self) -> bool {
         let id = self.id.to_ascii_lowercase();
@@ -442,6 +449,11 @@ impl Item {
             (Some(o), Some(d)) if d > 0 => (o as f32 / d as f32).clamp(0.0, 1.0),
             _ => 0.0,
         }
+    }
+
+    pub fn resume_ms(&self) -> Option<u64> {
+        self.view_offset
+            .filter(|&o| o > 5_000 && self.progress() < 0.95)
     }
 
     pub fn time_left(&self) -> Option<String> {
@@ -590,6 +602,18 @@ impl Item {
     }
 }
 
+fn next_child(children: &[Item]) -> Option<&Item> {
+    let regular = || {
+        children
+            .iter()
+            .filter(|i| i.kind != "season" || i.index != Some(0))
+    };
+    regular()
+        .find(|i| !i.watched())
+        .or_else(|| regular().next())
+        .or(children.first())
+}
+
 pub fn resolve_playable(srv: &Server, cx: &Ctx, key: &str) -> R<Item> {
     let mut key = key.to_owned();
     for _ in 0..4 {
@@ -606,12 +630,10 @@ pub fn resolve_playable(srv: &Server, cx: &Ctx, key: &str) -> R<Item> {
             }
             "show" | "season" => {
                 let children = srv.children(cx, &key)?;
-                let next = children
-                    .iter()
-                    .find(|i| !i.watched())
-                    .or(children.first())
-                    .ok_or("Nothing to play")?;
-                key = next.rating_key.clone();
+                key = next_child(&children)
+                    .ok_or("Nothing to play")?
+                    .rating_key
+                    .clone();
             }
             _ => return Ok(it),
         }
@@ -766,6 +788,37 @@ pub fn merge_continue<'a>(lists: &[(&'a str, &'a [Item])]) -> Vec<(&'a str, &'a 
         .collect()
 }
 
+pub struct ContinueRow<'a> {
+    pub title: &'a str,
+    pub key: &'a str,
+    pub wide: bool,
+    pub items: Vec<(&'a str, &'a Item)>,
+}
+
+// The home hub's key only lists its own server, so it is dropped once another server contributes.
+pub fn continue_row<'a>(
+    home_id: &'a str,
+    home: &'a Hub,
+    others: impl IntoIterator<Item = (&'a str, &'a [Item])>,
+    prefs: &CardPrefs,
+) -> Option<ContinueRow<'a>> {
+    let lists: Vec<_> = std::iter::once((home_id, &home.metadata[..]))
+        .chain(others.into_iter().filter(|&(id, _)| id != home_id))
+        .collect();
+    let items = merge_continue(&lists);
+    if items.is_empty() {
+        return None;
+    }
+    let hub = Some(home).filter(|h| !h.id.is_empty());
+    let local = items.iter().all(|&(id, _)| id == home_id);
+    Some(ContinueRow {
+        title: hub.map_or("Continue Watching", |h| h.title.as_str()),
+        key: hub.filter(|_| local).map_or("", |h| h.key.as_str()),
+        wide: hub.is_none_or(|h| prefs.wide_hub(h)),
+        items,
+    })
+}
+
 const TMDB_WIDTHS: [u32; 7] = [92, 154, 185, 342, 500, 780, 1280];
 
 pub fn direct_image_url(path: &str, w: u32) -> String {
@@ -858,6 +911,11 @@ pub(crate) fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+// ureq returns a connection to the pool only once its body is read to the end.
+pub(crate) fn drain(mut r: ureq::http::Response<ureq::Body>) {
+    let _ = r.body_mut().read_to_vec();
+}
+
 pub(crate) fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| {
@@ -912,6 +970,8 @@ impl Client {
             .timeout_connect(Some(Duration::from_secs(5)))
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(true)
+            .max_idle_connections_per_host(12)
+            .max_idle_connections(32)
             .build()
             .into();
         Self {
@@ -1032,6 +1092,7 @@ impl Client {
         );
         self.headers(self.agent.put(&url), Some(account_token))
             .send_empty()
+            .map(drain)
             .map_err(err)?;
         Ok(())
     }
@@ -1116,6 +1177,7 @@ impl Client {
                     .build()
                     .header("X-Plex-Token", &token)
                     .call()
+                    .map(drain)
                     .is_ok();
                 log::debug!("probe {uri}: {}", if ok { "ok" } else { "unreachable" });
                 let _ = tx.send((rank, ok.then_some(uri)));
@@ -1187,7 +1249,9 @@ impl Server {
             if is_down(&self.id) {
                 return Err(format!("{} is offline", self.name));
             }
-            std::fs::read(&file).map_err(err)
+            let bytes = std::fs::read(&file).map_err(err)?;
+            store::touch(&file);
+            Ok(bytes)
         } else {
             let started = std::time::Instant::now();
             let url = format!("{}{path}", self.uri);
@@ -1370,16 +1434,7 @@ impl Server {
         if self.is_jellyfin() {
             return jellyfin::hub_items(self, c, key);
         }
-        let key = escape_uri(key);
-        let mut out = Vec::new();
-        loop {
-            let (items, total) = self.paged(c, &key, out.len(), 100)?;
-            let done = items.is_empty() || out.len() + items.len() >= total.min(HUB_MAX);
-            out.extend(items);
-            if done {
-                return Ok(out);
-            }
-        }
+        Ok(self.paged_all(c, &escape_uri(key), 0, HUB_MAX, 100)?.0)
     }
 
     pub fn watchlist(
@@ -1390,16 +1445,45 @@ impl Server {
         size: usize,
         sort: &str,
     ) -> R<(Vec<Item>, usize)> {
-        let path = watchlist_path(kind, sort);
-        let (mut items, mut total) = (Vec::new(), 0);
-        while items.len() < size {
-            // Discover rejects large container sizes, so page it in small chunks like plezy does.
-            let (page, t) =
-                self.paged(c, &path, start + items.len(), (size - items.len()).min(25))?;
-            total = t;
-            let done = page.is_empty() || start + items.len() + page.len() >= t;
+        // Discover rejects large container sizes, so page it in small chunks like plezy does.
+        self.paged_all(c, &watchlist_path(kind, sort), start, start + size, 25)
+    }
+
+    fn paged_all(
+        &self,
+        c: &Ctx,
+        path: &str,
+        start: usize,
+        end: usize,
+        step: usize,
+    ) -> R<(Vec<Item>, usize)> {
+        if start >= end {
+            return Ok((Vec::new(), 0));
+        }
+        let (mut items, total) = self.paged(c, path, start, step.min(end - start))?;
+        let end = end.min(total);
+        let from = start + items.len();
+        if items.is_empty() || from >= end {
+            return Ok((items, total));
+        }
+        let pages: Vec<R<(Vec<Item>, usize)>> = std::thread::scope(|s| {
+            let jobs: Vec<_> = (from..end)
+                .step_by(step)
+                .map(|at| s.spawn(move || self.paged(c, path, at, step.min(end - at))))
+                .collect();
+            jobs.into_iter()
+                .map(|j| {
+                    j.join()
+                        .unwrap_or_else(|_| Err("page request panicked".into()))
+                })
+                .collect()
+        });
+        // A short page means the list shrank while loading; later offsets would leave a gap.
+        for (page, at) in pages.into_iter().zip((from..end).step_by(step)) {
+            let (page, _) = page?;
+            let short = page.len() < step.min(end - at);
             items.extend(page);
-            if done {
+            if short {
                 break;
             }
         }
@@ -1445,6 +1529,7 @@ impl Server {
         } else {
             c.get(&url, Some(&self.token)).call()
         }
+        .map(drain)
         .map_err(err)?;
         Ok(())
     }
@@ -1475,6 +1560,7 @@ impl Server {
         );
         c.headers(c.agent.put(&url), Some(&self.token))
             .send_empty()
+            .map(drain)
             .map_err(err)?;
         Ok(())
     }
@@ -1534,6 +1620,7 @@ impl Server {
         );
         c.headers(c.agent.put(&url), Some(&self.token))
             .send_empty()
+            .map(drain)
             .map_err(err)?;
         Ok(())
     }
@@ -1623,8 +1710,8 @@ impl Server {
             "{}/:/timeline?ratingKey={key}&key=%2Flibrary%2Fmetadata%2F{key}&state={state}&time={time_ms}&duration={duration_ms}",
             self.uri
         );
-        match c.get(&url, Some(&self.token)).call() {
-            Ok(_) => {
+        match c.get(&url, Some(&self.token)).call().map(drain) {
+            Ok(()) => {
                 log::debug!(
                     "{} timeline {state} {key} at {}s",
                     self.name,
@@ -1781,7 +1868,7 @@ impl Server {
             self.uri,
             encode(session)
         );
-        if let Err(e) = c.get(&url, Some(&self.token)).call() {
+        if let Err(e) = c.get(&url, Some(&self.token)).call().map(drain) {
             log::debug!("{} stop transcode {session}: {e}", self.name);
         }
     }
@@ -1882,6 +1969,39 @@ pub fn fmt_bitrate(kbps: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn play_skips_specials_unless_nothing_else_exists() {
+        let season = |key: &str, index: i64, watched: bool| Item {
+            rating_key: key.into(),
+            kind: "season".into(),
+            index: Some(index),
+            leaf_count: Some(2),
+            viewed_leaf_count: Some(if watched { 2 } else { 0 }),
+            ..Default::default()
+        };
+        let pick = |children: &[Item]| next_child(children).map(|i| i.rating_key.clone());
+        let normal = [
+            season("s0", 0, false),
+            season("s1", 1, true),
+            season("s2", 2, false),
+        ];
+        assert_eq!(pick(&normal).as_deref(), Some("s2"));
+        let all_watched = [
+            season("s0", 0, true),
+            season("s1", 1, true),
+            season("s2", 2, true),
+        ];
+        assert_eq!(pick(&all_watched).as_deref(), Some("s1"));
+        let only_specials_left = [season("s0", 0, false), season("s1", 1, true)];
+        assert_eq!(
+            pick(&only_specials_left).as_deref(),
+            Some("s1"),
+            "unwatched specials do not outrank a rewatch from season 1"
+        );
+        assert_eq!(pick(&[season("s0", 0, true)]).as_deref(), Some("s0"));
+        assert_eq!(pick(&[]), None);
+    }
 
     #[test]
     fn only_https_plex_direct_addresses_are_retried_from_memory() {
@@ -2116,6 +2236,66 @@ mod tests {
             episode("2", "Severance", 1, 5, Some(200)),
         ];
         assert_eq!(merged(&[("j", &jf[..])]), ["j1", "j2"]);
+    }
+
+    #[test]
+    fn continue_row_keeps_the_home_hub_only_while_it_lists_everything() {
+        let prefs = crate::settings::Settings::default().card_prefs();
+        let home = Hub {
+            id: "continueWatching".into(),
+            key: "/hubs/continue".into(),
+            title: "Keep Watching".into(),
+            kind: "movie".into(),
+            metadata: vec![movie("1", "Arrival", 2016, &[], 100)],
+        };
+        let remote = [movie("9", "Heat", 1995, &[], 200)];
+        let row = continue_row("h", &home, [("h", &[][..])], &prefs).unwrap();
+        assert_eq!(
+            (row.title, row.key, row.wide),
+            ("Keep Watching", "/hubs/continue", true)
+        );
+        let row = continue_row("h", &home, [("r", &remote[..])], &prefs).unwrap();
+        assert_eq!(row.key, "");
+        assert_eq!(
+            row.items
+                .iter()
+                .map(|&(s, it)| format!("{s}{}", it.rating_key))
+                .collect::<Vec<_>>(),
+            ["r9", "h1"]
+        );
+        let none = Hub::default();
+        let row = continue_row("h", &none, [("r", &remote[..])], &prefs).unwrap();
+        assert_eq!(
+            (row.title, row.key, row.wide),
+            ("Continue Watching", "", true)
+        );
+        assert!(continue_row("h", &none, [], &prefs).is_none());
+    }
+
+    #[test]
+    fn resume_needs_five_seconds_and_less_than_95_percent() {
+        let at = |offset: u64| Item {
+            view_offset: Some(offset),
+            duration: Some(100_000),
+            ..Default::default()
+        };
+        assert_eq!(at(5_000).resume_ms(), None);
+        assert_eq!(at(5_001).resume_ms(), Some(5_001));
+        assert_eq!(at(94_000).resume_ms(), Some(94_000));
+        assert_eq!(at(95_000).resume_ms(), None);
+        assert_eq!(Item::default().resume_ms(), None);
+    }
+
+    #[test]
+    fn external_subtitles_are_keyed_text_streams() {
+        let s = |stream_type: u8, key: &str| Stream {
+            stream_type,
+            key: key.into(),
+            ..Default::default()
+        };
+        assert!(s(3, "/library/streams/1").is_external_subtitle());
+        assert!(!s(3, "").is_external_subtitle());
+        assert!(!s(2, "/library/streams/2").is_external_subtitle());
     }
 
     #[test]

@@ -94,7 +94,7 @@ impl Log for Logger {
         if !self.enabled(r.metadata()) {
             return;
         }
-        let line = redact(&format!(
+        let mut line = redact(&format!(
             "{} {:5} {}: {}",
             clock(),
             r.level(),
@@ -114,7 +114,8 @@ impl Log for Logger {
         if let Some(f) = &self.file
             && let Ok(mut f) = f.lock()
         {
-            let _ = writeln!(f, "{line}");
+            line.push('\n');
+            let _ = f.write_all(line.as_bytes());
         }
     }
 

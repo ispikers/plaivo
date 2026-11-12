@@ -14,6 +14,7 @@ use gpui::{
     MouseUpEvent, ObjectFit, PathBuilder, SharedString, Window, canvas, div, linear_color_stop,
     linear_gradient, point, prelude::*, px, rgb, uniform_list,
 };
+use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -64,10 +65,17 @@ fn fmt_speed(s: f64) -> String {
     }
 }
 
+const SPIN_FRAME: Duration = Duration::from_micros(16_667);
+
+thread_local! {
+    static SPIN_SCHEDULED: Cell<bool> = const { Cell::new(false) };
+    static CLICK_PAUSED: Cell<bool> = const { Cell::new(false) };
+}
+
 pub fn spinner(size: f32, color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| (),
-        move |bounds, _, window, _| {
+        move |bounds, _, window, cx| {
             const SEGMENTS: usize = 40;
             let turn = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -88,7 +96,16 @@ pub fn spinner(size: f32, color: Hsla) -> impl IntoElement {
             if let Ok(path) = path.build() {
                 window.paint_path(path, color);
             }
-            window.request_animation_frame();
+            // 60 fps instead of every display frame: each frame re-renders the whole window.
+            if !SPIN_SCHEDULED.replace(true) {
+                let view = window.current_view();
+                cx.spawn(async move |cx| {
+                    cx.background_executor().timer(SPIN_FRAME).await;
+                    SPIN_SCHEDULED.set(false);
+                    cx.update(|cx| cx.notify(view));
+                })
+                .detach();
+            }
         },
     )
     .size(px(size))
@@ -258,13 +275,18 @@ impl Plaivo {
                 }),
             )
             .on_click(cx.listener(|this, ev: &gpui::ClickEvent, window, cx| {
+                let first_click_paused = CLICK_PAUSED.replace(false);
                 if this.end_mouse_hold() {
                 } else if ev.click_count() >= 2 {
+                    if first_click_paused {
+                        this.toggle_pause();
+                    }
                     window.toggle_fullscreen();
                 } else if this.player.panel.is_some() {
                     this.player.panel = None;
                 } else {
                     this.toggle_pause();
+                    CLICK_PAUSED.set(true);
                 }
                 cx.notify();
             }));
@@ -305,6 +327,46 @@ impl Plaivo {
                     cx.notify();
                 }))
         });
+        let hint = self.player.hint.clone().map(|(i, text)| {
+            div()
+                .absolute()
+                .top(px(18.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .h(px(36.))
+                        .px(px(14.))
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .bg(theme::black(0.65))
+                        .shadow(shadow(12., 0.3))
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::white())
+                        .child(icon(i, 20., theme::white()))
+                        .child(text),
+                )
+        });
+        let base = div()
+            .id("player")
+            .size_full()
+            .relative()
+            .on_mouse_move(wake)
+            .child(background)
+            .children(spinner);
+        if hide {
+            let up_next = up_next.map(|(card, left)| self.render_up_next(card, left, hide, cx));
+            return base
+                .children(hint)
+                .children(skip)
+                .children(up_next)
+                .into_any_element();
+        }
         let timeline = {
             let e1 = entity.clone();
             let bar = if hover.is_some() { 6. } else { 4. };
@@ -743,7 +805,7 @@ impl Plaivo {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.set_scale(scale.next());
+                                        this.set_scale(scale.next(), cx);
                                         this.hint(
                                             scale_icon(scale.next()),
                                             scale.next().label(),
@@ -780,39 +842,7 @@ impl Plaivo {
             Some(p) => Some(self.render_settings(p, window, cx).into_any_element()),
             None => None,
         };
-        let hint = self.player.hint.clone().map(|(i, text)| {
-            div()
-                .absolute()
-                .top(px(18.))
-                .left_0()
-                .right_0()
-                .flex()
-                .justify_center()
-                .child(
-                    div()
-                        .h(px(36.))
-                        .px(px(14.))
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .bg(theme::black(0.65))
-                        .shadow(shadow(12., 0.3))
-                        .text_size(px(15.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::white())
-                        .child(icon(i, 20., theme::white()))
-                        .child(text),
-                )
-        });
-        div()
-            .id("player")
-            .size_full()
-            .relative()
-            .on_mouse_move(wake)
-            .child(background)
-            .children(spinner)
-            .when(!hide, |d| d.child(controls))
+        base.child(controls)
             .children(hint)
             .children(skip)
             .children(up_next)
@@ -1087,7 +1117,7 @@ impl Plaivo {
                 match panel {
                     Panel::Quality => this.set_quality(id.parse().unwrap_or(0), cx),
                     Panel::Speed => this.set_speed(id.parse().unwrap_or(1.)),
-                    Panel::Output => this.set_audio_device(&id),
+                    Panel::Output => this.set_audio_device(&id, cx),
                     Panel::Shader => this.set_shader(&id, cx),
                     _ => {}
                 }

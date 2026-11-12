@@ -20,6 +20,7 @@ const CONTROLS_FOR: Duration = Duration::from_secs(3);
 const HINT_FOR: Duration = Duration::from_millis(1200);
 const QUIT_REPORT_WAIT: Duration = Duration::from_secs(2);
 const HOME_REFRESH: Duration = Duration::from_secs(120);
+const CACHE_RENDER: Duration = Duration::from_millis(250);
 
 #[derive(Deserialize)]
 struct MpvTrack {
@@ -115,7 +116,7 @@ pub struct Player {
     pub title_link: Option<Nav>,
     pub crumbs: Vec<Crumb>,
     pub queue: Vec<Card>,
-    queue_show: String,
+    queue_show: (String, String),
     pub queue_scroll: UniformListScrollHandle,
     pub buffering: bool,
     pub volume: f64,
@@ -131,11 +132,10 @@ pub struct Player {
     hide_task: Option<Task<()>>,
     controls_until: Option<Instant>,
     play_gen: u64,
-    version: Option<(String, usize)>,
-    from_start: Option<String>,
     pub opening: bool,
     pub sub_search: SubSearch,
     home_refreshed: Option<Instant>,
+    cache_render: bool,
     pub hint: Option<(Icon, SharedString)>,
     hint_task: Option<Task<()>>,
     clock_task: Option<Task<()>>,
@@ -255,11 +255,22 @@ impl Plaivo {
     }
 
     pub fn play(&mut self, server: String, key: String, cx: &mut Context<Self>) {
+        self.play_with(server, key, None, false, cx);
+    }
+
+    fn play_with(
+        &mut self,
+        server: String,
+        key: String,
+        version: Option<usize>,
+        from_start: bool,
+        cx: &mut Context<Self>,
+    ) {
         log::info!("play request {server}/{key}");
         if server == plex::DISCOVER_ID {
             return self.toast("This title isn't in any of your libraries.", cx);
         }
-        if self.player.version.as_ref().is_none_or(|(k, _)| *k != key)
+        if version.is_none()
             && self.playing()
             && self.player.key == key
             && self.player.server.as_ref().is_some_and(|s| s.id == server)
@@ -286,7 +297,7 @@ impl Plaivo {
             return self.advance_failed();
         };
         self.show_opening(&server, &key, cx);
-        let c = self.client.clone();
+        let (c, requested) = (self.client.clone(), key.clone());
         let (token, local, downloads, rules) = (
             self.account.token.clone(),
             self.settings.languages(),
@@ -296,6 +307,8 @@ impl Plaivo {
         Self::bg(
             cx,
             move || {
+                // Loads libmpv and its DLLs here instead of on the UI thread at first play.
+                mpv::preload();
                 if let Some(d) = &downloads
                     && let Some(file) = d.local(&srv.id, &key)
                     && let Some(it) = d.item(&srv.id, &key)
@@ -319,7 +332,10 @@ impl Plaivo {
                     }
                     this.player.languages = languages;
                     this.player.rule = rule;
-                    if let Err(e) = this.start_item(srv, it, file, cx) {
+                    let same = it.rating_key == requested;
+                    let version = version.filter(|_| same);
+                    if let Err(e) = this.start_item(srv, it, file, version, from_start && same, cx)
+                    {
                         this.advance_failed();
                         this.abort_opening(cx);
                         this.toast(e, cx);
@@ -342,8 +358,7 @@ impl Plaivo {
             self.seek_by(-self.player.time);
             return self.expand_player(cx);
         }
-        self.player.from_start = Some(key.clone());
-        self.play(server, key, cx);
+        self.play_with(server, key, None, true, cx);
     }
 
     pub fn play_version(
@@ -353,8 +368,7 @@ impl Plaivo {
         version: usize,
         cx: &mut Context<Self>,
     ) {
-        self.player.version = Some((key.clone(), version));
-        self.play(server, key, cx);
+        self.play_with(server, key, Some(version), false, cx);
     }
 
     fn start_item(
@@ -362,14 +376,11 @@ impl Plaivo {
         srv: Server,
         mut it: Item,
         local: Option<Local>,
+        version: Option<usize>,
+        from_start: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        if let Some((_, v)) = self
-            .player
-            .version
-            .take()
-            .filter(|(k, v)| *k == it.rating_key && *v < it.media.len() && local.is_none())
-        {
+        if let Some(v) = version.filter(|v| *v < it.media.len() && local.is_none()) {
             it.media.swap(0, v);
         }
         let part = it
@@ -377,13 +388,7 @@ impl Plaivo {
             .first()
             .and_then(|m| m.part.first())
             .ok_or("This item has no playable media")?;
-        let offset = it.view_offset.unwrap_or(0) as f64 / 1000.0;
-        let from_start = self
-            .player
-            .from_start
-            .take()
-            .is_some_and(|k| k == it.rating_key);
-        let resume = !from_start && offset > 5.0 && it.progress() < 0.95;
+        let resume = it.resume_ms().filter(|_| !from_start);
         let subs = match &local {
             Some(l) => l
                 .subtitles
@@ -402,7 +407,7 @@ impl Plaivo {
             None => part
                 .stream
                 .iter()
-                .filter(|st| st.stream_type == 3 && !st.key.is_empty())
+                .filter(|st| st.is_external_subtitle())
                 .map(|st| {
                     (
                         [
@@ -439,7 +444,7 @@ impl Plaivo {
             &title,
             &subtitle,
             it.duration.unwrap_or(0) as f64 / 1000.0,
-            resume.then_some(offset),
+            resume.map(|ms| ms as f64 / 1000.0),
             subs,
             &library,
             cx,
@@ -452,7 +457,7 @@ impl Plaivo {
             .as_ref()
             .map(|s| s.id.clone())
             .unwrap_or_default();
-        let at = if resume { (offset * 1000.0) as i64 } else { 0 };
+        let at = resume.unwrap_or(0) as i64;
         self.watch_share(server, it.rating_key.clone(), Some(it.clone()), at, cx);
         let id = &self.player.server.as_ref().unwrap().id;
         let link = |key: &str, season: Option<&str>| {
@@ -500,15 +505,18 @@ impl Plaivo {
                     .as_ref()
                     .map(|s| s.id.clone())
                     .unwrap_or_default();
-                self.player.queue = self
-                    .offline_episodes(&server, &it.grandparent_rating_key)
-                    .into_iter()
-                    .map(|e| queue_card(e, &server))
-                    .collect();
+                self.player.queue = crate::ui::downloads::offline_episodes(
+                    &self.offline,
+                    &server,
+                    &it.grandparent_rating_key,
+                )
+                .into_iter()
+                .map(|e| queue_card(e, &server))
+                .collect();
             }
         } else {
             self.player.queue.clear();
-            self.player.queue_show.clear();
+            self.player.queue_show = Default::default();
         }
         let p = &mut self.player;
         p.title_link = title_link;
@@ -541,20 +549,21 @@ impl Plaivo {
         let Some(srv) = self.player.server.clone() else {
             return;
         };
-        if self.player.queue_show != show {
+        let wanted = (srv.id.clone(), show);
+        if self.player.queue_show != wanted {
             self.player.queue.clear();
-            self.player.queue_show = show.clone();
+            self.player.queue_show = wanted.clone();
         }
         let c = self.client.clone();
         Self::bg(
             cx,
             move || {
-                srv.all_episodes(&Ctx::new(c, Source::Network), &show)
-                    .map(|eps| (srv.id, show, eps))
+                srv.all_episodes(&Ctx::new(c, Source::Network), &wanted.1)
+                    .map(|eps| (wanted, eps))
             },
             |this, r, _| match r {
-                Ok((server, show, eps)) if this.player.queue_show == show => {
-                    this.player.queue = eps.iter().map(|e| queue_card(e, &server)).collect();
+                Ok((wanted, eps)) if this.player.queue_show == wanted => {
+                    this.player.queue = eps.iter().map(|e| queue_card(e, &wanted.0)).collect();
                 }
                 Ok(_) => {}
                 Err(e) => log::warn!("could not load episode queue: {e}"),
@@ -799,13 +808,13 @@ impl Plaivo {
 
     pub fn set_quality(&mut self, kbps: u32, cx: &mut Context<Self>) {
         self.settings.set_quality_for(&self.player.library, kbps);
-        self.settings.save();
+        self.save_settings_soon(cx);
         self.apply_quality(kbps, cx);
     }
 
     pub fn set_default_quality(&mut self, kbps: u32, cx: &mut Context<Self>) {
         self.settings.quality = kbps;
-        self.settings.save();
+        self.save_settings_soon(cx);
         if self.settings.quality_for(&self.player.library) == kbps {
             self.apply_quality(kbps, cx);
         }
@@ -873,9 +882,9 @@ impl Plaivo {
         cx.notify();
     }
 
-    pub fn set_scale(&mut self, scale: Scale) {
+    pub fn set_scale(&mut self, scale: Scale, cx: &mut Context<Self>) {
         self.settings.scale = scale;
-        self.settings.save();
+        self.save_settings_soon(cx);
         if let Some(m) = &self.player.mpv {
             for (k, v) in scale.mpv() {
                 m.set(k, v);
@@ -930,13 +939,13 @@ impl Plaivo {
         }
     }
 
-    pub fn set_audio_device(&mut self, name: &str) {
+    pub fn set_audio_device(&mut self, name: &str, cx: &mut Context<Self>) {
         self.settings.audio_device = if name == "auto" {
             String::new()
         } else {
             name.to_owned()
         };
-        self.settings.save();
+        self.save_settings_soon(cx);
         if let Some(m) = &self.player.mpv {
             m.set("audio-device", name);
         }
@@ -1244,6 +1253,16 @@ impl Plaivo {
         if let Some(host) = &self.player.host {
             host.set_region(Some(Region { x, bottom, w, h }));
         }
+        if self.home_stale() {
+            self.player.home_refreshed = Some(Instant::now());
+            self.load_home(cx);
+        }
+    }
+
+    fn home_stale(&self) -> bool {
+        self.player
+            .home_refreshed
+            .is_none_or(|t| t.elapsed() >= HOME_REFRESH)
     }
 
     pub fn minimize_player(&mut self, cx: &mut Context<Self>) {
@@ -1282,11 +1301,7 @@ impl Plaivo {
     }
 
     fn report(&mut self, state: &str, cx: &mut Context<Self>) {
-        let refresh = state == "stopped"
-            || self
-                .player
-                .home_refreshed
-                .is_none_or(|t| t.elapsed() >= HOME_REFRESH);
+        let refresh = state == "stopped" || (self.player.mini && self.home_stale());
         let Some(job) = self.report_job(state, true) else {
             return;
         };
@@ -1334,7 +1349,7 @@ impl Plaivo {
         }
         Some(move || {
             let synced = network && srv.timeline(&c, &key, &state, t, d, session.as_deref());
-            if let Some(downloads) = offline.filter(|_| state == "stopped" || !synced) {
+            if let Some(downloads) = offline {
                 downloads.record_progress(&srv.id, &key, &state, t, d, synced);
             }
         })
@@ -1345,13 +1360,17 @@ impl Plaivo {
             mpv::Event::Time(t) => {
                 let shown = |this: &mut Self| {
                     (
-                        this.player.time as u64,
+                        this.controls_shown().then_some(this.player.time as u64),
                         this.active_skip().is_some(),
                         this.up_next().map(|(_, left)| left.max(0.).ceil() as u64),
                     )
                 };
                 let before = shown(self);
+                let second = self.player.time as u64;
                 self.player.time = t;
+                if self.player.mini && t as u64 != second {
+                    cx.emit(crate::ui::shell::MiniTick);
+                }
                 if self
                     .player
                     .last_report
@@ -1378,7 +1397,20 @@ impl Plaivo {
             }
             mpv::Event::Cached(t) => {
                 self.player.cached = t;
-                self.controls_shown()
+                // A refill after a seek sends dozens of these a second; coalesce them into one render.
+                if self.controls_shown() && !std::mem::replace(&mut self.player.cache_render, true)
+                {
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(CACHE_RENDER).await;
+                        this.update(cx, |this, cx| {
+                            this.player.cache_render = false;
+                            cx.notify();
+                        })
+                        .ok();
+                    })
+                    .detach();
+                }
+                false
             }
             mpv::Event::Pause(p) => {
                 self.player.paused = p;
@@ -1524,7 +1556,7 @@ impl Plaivo {
         p.panel = None;
         p.hide_task = None;
         p.queue.clear();
-        p.queue_show.clear();
+        p.queue_show = Default::default();
         if let Some(mpv) = &p.mpv {
             mpv.command(&["stop"]);
         }

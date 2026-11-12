@@ -981,36 +981,29 @@ impl Plaivo {
     }
 
     pub fn continue_row(&self, home_id: String) -> Option<Row> {
-        let mut servers = self.account.lock().unwrap().all_servers();
-        servers.sort_by_key(|s| s.id != home_id);
+        let servers = self.account.lock().unwrap().all_servers();
         let continuing = self.continuing.lock().unwrap();
-        let lists: Vec<(&str, &[Item])> = servers
-            .iter()
-            .filter_map(|s| Some((s.id.as_str(), &continuing.get(&s.id)?.metadata[..])))
-            .collect();
-        let merged = plex::merge_continue(&lists);
-        if merged.is_empty() {
-            return None;
-        }
+        let none = Hub::default();
         let prefs = self.card_prefs();
-        let home = continuing.get(&home_id).filter(|h| !h.id.is_empty());
-        let wide = home.is_none_or(|h| prefs.wide_hub(h));
-        let local = merged.iter().all(|&(id, _)| id == home_id);
+        let row = plex::continue_row(
+            &home_id,
+            continuing.get(&home_id).unwrap_or(&none),
+            servers
+                .iter()
+                .filter_map(|s| Some((s.id.as_str(), &continuing.get(&s.id)?.metadata[..]))),
+            &prefs,
+        )?;
         Some(Row {
-            key: home
-                .filter(|_| local)
-                .map(|h| h.key.clone())
-                .unwrap_or_default(),
-            title: home
-                .map_or("Continue Watching", |h| h.title.as_str())
-                .to_owned(),
+            key: row.key.to_owned(),
+            title: row.title.to_owned(),
             resume: true,
-            wide,
-            cards: merged
+            wide: row.wide,
+            cards: row
+                .items
                 .iter()
                 .filter_map(|&(id, it)| {
                     let srv = servers.iter().find(|s| s.id == id)?;
-                    Some(card(srv, it, wide, &prefs))
+                    Some(card(srv, it, row.wide, &prefs))
                 })
                 .collect(),
         })
@@ -1419,7 +1412,7 @@ impl Plaivo {
         let subtitles = part
             .stream
             .iter()
-            .filter(|st| st.stream_type == 3 && !st.key.is_empty())
+            .filter(|st| st.is_external_subtitle())
             .map(|st| Subtitle {
                 url: srv.media_url(&st.key),
                 codec: st.codec.clone(),
@@ -1530,8 +1523,7 @@ impl Plaivo {
                 transcode_session.as_deref(),
             )
         });
-        if state == "stopped"
-            && let Some(d) = self.downloads.get()
+        if let Some(d) = self.downloads.get()
             && d.local(&server_id, &key).is_some()
         {
             d.record_progress(&server_id, &key, &state, time_ms, duration_ms, synced);
@@ -1986,10 +1978,7 @@ impl Plaivo {
         quality_kbps: u32,
     ) -> Playback {
         let (title, subtitle) = it.card_text();
-        let start_ms = it
-            .view_offset
-            .filter(|&o| o > 5_000 && it.progress() < 0.95)
-            .unwrap_or(0);
+        let start_ms = it.resume_ms().unwrap_or(0);
         let settings = self.settings.lock().unwrap();
         let markers = it
             .marker

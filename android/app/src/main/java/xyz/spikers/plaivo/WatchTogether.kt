@@ -59,7 +59,6 @@ object Watch : WatchListener {
         private set
 
     var player: PlayerActivity? = null
-    private var pendingShare: MediaCard? = null
     private var resolving: Pair<String, Long>? = null
 
     val inRoom
@@ -87,13 +86,7 @@ object Watch : WatchListener {
 
     fun create() =
         background.launch {
-            runCatching { core.watchCreate(deviceName()) }
-                .onFailure {
-                    main.post {
-                        pendingShare = null
-                        toast(it.message)
-                    }
-                }
+            runCatching { core.watchCreate(deviceName()) }.onFailure { main.post { toast(it.message) } }
         }
 
     fun join(code: String) =
@@ -102,13 +95,13 @@ object Watch : WatchListener {
         }
 
     fun share(card: MediaCard) {
-        if (!inRoom) {
-            pendingShare = card
-            create()
-            return
-        }
+        val create = !inRoom && state?.connection != WatchConnection.CONNECTING
         background.launch {
-            runCatching { core.watchShare(card.server, card.key) }.onFailure { main.post { toast(it.message) } }
+            runCatching {
+                    if (create) core.watchCreate(deviceName())
+                    core.watchShare(card.server, card.key)
+                }
+                .onFailure { main.post { toast(it.message) } }
         }
     }
 
@@ -139,17 +132,11 @@ object Watch : WatchListener {
         val before = state
         state = s
         if (!inRoom) {
-            if (s.connection != WatchConnection.CONNECTING) pendingShare = null
             item = null
             resolving = null
             return
         }
         if (s.code != before?.code) rooms = editSettings { rememberRoom(it, s.code) }.watchRooms
-        if (s.host)
-            pendingShare?.let {
-                pendingShare = null
-                share(it)
-            }
         val target = s.code to s.epoch
         if (s.media == null) {
             item = null

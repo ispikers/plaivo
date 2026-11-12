@@ -8,6 +8,7 @@ mod party;
 mod protocol;
 mod relays;
 mod resolve;
+mod text;
 
 pub use client::{Update, WatchTogether};
 pub use follow::{PlayerCommand, PlayerFeed};
@@ -19,3 +20,4 @@ pub use resolve::{
     SAME_LENGTH_MS, clean, describe, find_copy, find_owned, item_ids, match_for, pick_episode,
     same_title, shares_id, title_key,
 };
+pub use text::sync_label;

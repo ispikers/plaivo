@@ -51,17 +51,22 @@ fn main() {
             };
             let window = cx
                 .open_window(options, |window, cx| {
-                    cx.new(|cx| app::Plaivo::new(window, cx, account, settings, client, queue, rx))
+                    let app = cx.new(|cx| {
+                        app::Plaivo::new(window, cx, account, settings, client, queue, rx)
+                    });
+                    cx.new(|cx| ui::shell::Root::new(app, cx))
                 })
                 .expect("open window");
             if let Some(target) = std::env::args().nth(1) {
                 window
-                    .update(cx, |app, _, cx| {
-                        if let Err(e) =
-                            app.launch(&target, "", &target, "", 0.0, None, Vec::new(), "", cx)
-                        {
-                            app.toast(e, cx);
-                        }
+                    .update(cx, |root, _, cx| {
+                        root.app.update(cx, |app, cx| {
+                            if let Err(e) =
+                                app.launch(&target, "", &target, "", 0.0, None, Vec::new(), "", cx)
+                            {
+                                app.toast(e, cx);
+                            }
+                        })
                     })
                     .ok();
             }

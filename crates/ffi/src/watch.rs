@@ -2,9 +2,9 @@ use crate::{Plaivo, R};
 use plaivo_core::plex::{Ctx, Source, resolve_playable};
 use plaivo_core::settings::Settings;
 use plaivo_core::watch_together::{
-    Connection, Control, EndReason, Event, Match, MatchState, Media, Participant, PartyState,
-    PlayerCommand, PlayerFeed, PlayerState, Relays, Update, WatchTogether, clean, describe,
-    find_copy, format_code, match_for, normalize_code,
+    Connection, Control, Match, MatchState, Media, Participant, PartyState, PlayerCommand,
+    PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy, format_code, match_for,
+    normalize_code, sync_label,
 };
 use std::sync::{Arc, Mutex};
 
@@ -291,7 +291,7 @@ fn deliver(listener: &dyn WatchListener, shared: &Mutex<PartyState>, update: Upd
             listener.state(view);
         }
         Update::Event(e) => {
-            let text = notice(&e, &shared.lock().unwrap());
+            let text = e.text(&shared.lock().unwrap());
             if let Some(text) = text {
                 listener.notice(text);
             }
@@ -357,21 +357,12 @@ fn view(s: &PartyState) -> WatchState {
 }
 
 fn peer(p: &Participant, me: Option<&str>) -> WatchPeer {
-    let status = match (p.connected, p.match_.map(|m| m.state), p.player) {
-        (false, _, _) => "Reconnecting",
-        (_, Some(MatchState::Searching), _) => "Finding the video",
-        (_, Some(MatchState::Unavailable), _) => "Doesn't have this video",
-        (_, _, PlayerState::Idle) => "",
-        (_, _, PlayerState::Loading) => "Loading",
-        (_, _, PlayerState::Buffering) => "Buffering",
-        (_, _, PlayerState::Ready) => "Ready",
-    };
     WatchPeer {
         peer_id: p.peer_id.clone(),
         name: p.name.clone(),
         host: p.host,
         me: Some(p.peer_id.as_str()) == me,
-        status: status.into(),
+        status: sync_label(p.player, p.match_, p.connected).into(),
     }
 }
 
@@ -387,52 +378,10 @@ fn media_title(m: &Media) -> String {
     }
 }
 
-fn notice(e: &Event, s: &PartyState) -> Option<String> {
-    let name = |id: Option<&str>| {
-        id.and_then(|id| s.room.as_ref()?.participant(id))
-            .map_or("Someone", |p| p.name.as_str())
-            .to_owned()
-    };
-    Some(match e {
-        Event::Action { by_me: true, .. } => return None,
-        Event::Action { kind, by, .. } => {
-            let what = match kind.as_str() {
-                "play" => "pressed play",
-                "pause" => "paused",
-                "seek" => "skipped",
-                "rate" => "changed the speed",
-                "media" => "picked something to watch",
-                _ => return None,
-            };
-            format!("{} {what}", name(by.as_deref()))
-        }
-        Event::ParticipantJoined(p) => format!("{} joined", p.name),
-        Event::ParticipantLeft(p) => format!("{} left", p.name),
-        Event::Error(e) | Event::Failed(e) => match e.code.as_str() {
-            "cancelled" => return None,
-            "forbidden" => "Only the host can do that".into(),
-            "room_not_found" => "There's no room with that code".into(),
-            "unreachable" => "Couldn't reach the Watch Together relay".into(),
-            "invalid_code" => "Room codes are six letters and numbers".into(),
-            "room_locked" | "locked" => "That room is locked".into(),
-            code if e.message.is_empty() => format!("Watch Together: {code}"),
-            _ => format!("Watch Together: {}", e.message),
-        },
-        Event::Ended { reason, .. } => match reason {
-            EndReason::Left => return None,
-            EndReason::Ended => "The host ended the room".into(),
-            EndReason::Kicked => "You were removed from the room".into(),
-            EndReason::Expired => "The room expired".into(),
-            EndReason::Replaced => "You joined this room from somewhere else".into(),
-            EndReason::Lost => "Lost the connection to the room".into(),
-        },
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plaivo_core::watch_together::{Phase, Room};
+    use plaivo_core::watch_together::{EndReason, Event, Phase, PlayerState, Room};
 
     fn participant(id: &str, name: &str, host: bool) -> Participant {
         Participant {
@@ -490,38 +439,32 @@ mod tests {
             [("Ann", true, true), ("Bob", false, false)]
         );
         assert_eq!(
-            notice(
-                &Event::Action {
-                    kind: "pause".into(),
-                    by: Some("p2".into()),
-                    by_me: false
-                },
-                &s
-            )
+            Event::Action {
+                kind: "pause".into(),
+                by: Some("p2".into()),
+                by_me: false
+            }
+            .text(&s)
             .as_deref(),
             Some("Bob paused")
         );
         assert_eq!(
-            notice(
-                &Event::Action {
-                    kind: "pause".into(),
-                    by: Some("p1".into()),
-                    by_me: true
-                },
-                &s
-            ),
+            Event::Action {
+                kind: "pause".into(),
+                by: Some("p1".into()),
+                by_me: true
+            }
+            .text(&s),
             None
         );
         assert_eq!(
-            notice(
-                &Event::Ended {
-                    reason: EndReason::Kicked,
-                    error: None
-                },
-                &s
-            )
+            Event::Ended {
+                reason: EndReason::Kicked,
+                error: None
+            }
+            .text(&s)
             .as_deref(),
-            Some("You were removed from the room")
+            Some("You were removed from the room.")
         );
         assert_eq!(
             display_name("  ", "Living Room TV").as_deref(),

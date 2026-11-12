@@ -177,15 +177,20 @@ fn find_title(srv: &Server, cx: &Ctx, target: &Target) -> Option<Item> {
         .inspect_err(|e| log::warn!("search on {}: {e}", srv.name))
         .ok()?;
     let mut seen = HashSet::new();
-    hits.into_iter()
+    let candidates: Vec<Item> = hits
+        .into_iter()
         .map(|(it, _)| it.as_show())
         .filter(|it| it.kind == target.kind && seen.insert(it.rating_key.clone()))
         .take(CANDIDATES)
-        .find_map(|it| {
-            srv.metadata(cx, &it.rating_key)
-                .ok()
-                .filter(|full| target.matches(full))
-        })
+        .collect();
+    std::thread::scope(|s| {
+        let full: Vec<_> = candidates
+            .iter()
+            .map(|it| s.spawn(|| srv.metadata(cx, &it.rating_key)))
+            .collect();
+        full.into_iter()
+            .find_map(|h| h.join().ok()?.ok().filter(|full| target.matches(full)))
+    })
 }
 
 fn find_on(srv: &Server, cx: &Ctx, target: &Target, media: &Media) -> Option<Item> {
@@ -203,6 +208,7 @@ pub fn find_copy(media: &Media, servers: &[Server], client: &Client) -> Option<(
     if let Some(hint) = media.plaivo()
         && let Some(srv) = servers.iter().find(|s| s.id == hint.server)
         && let Ok(it) = srv.metadata(&cx, &hint.item)
+        && shares_id(&media.ids, &it) != Some(false)
     {
         return Some((srv.id.clone(), it));
     }

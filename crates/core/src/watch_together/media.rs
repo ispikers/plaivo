@@ -129,7 +129,9 @@ impl Media {
     }
 
     pub fn plaivo(&self) -> Option<PlaivoExt> {
-        serde_json::from_value(self.ext.get(PLAIVO_EXT)?.clone()).ok()
+        serde_json::from_value::<PlaivoExt>(self.ext.get(PLAIVO_EXT)?.clone())
+            .ok()
+            .filter(|h| safe_key(&h.item))
     }
 
     pub fn set_plaivo(&mut self, ext: &PlaivoExt) {
@@ -138,6 +140,10 @@ impl Media {
             serde_json::to_value(ext).unwrap_or_default(),
         );
     }
+}
+
+fn safe_key(key: &str) -> bool {
+    !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 pub fn ids_from_guids<'a>(guids: impl IntoIterator<Item = &'a str>) -> BTreeMap<String, String> {
@@ -210,6 +216,27 @@ mod tests {
         assert_eq!(back, m);
         assert_eq!(back.plaivo().unwrap().item, "4711");
         assert_eq!(m.check(true), Ok(()));
+    }
+
+    #[test]
+    fn peer_item_hints_must_be_plain_ids() {
+        assert!(safe_key("4711") && safe_key("f137a2dd-21bb-c1b9-9aa5-c0f6bf02a805"));
+        for bad in [
+            "",
+            "../users",
+            "1?X-Plex-Token=x",
+            "1/children",
+            "1%2F",
+            "1 2",
+        ] {
+            assert!(!safe_key(bad), "{bad}");
+        }
+        let mut m = movie();
+        m.set_plaivo(&PlaivoExt {
+            server: "abc123".into(),
+            item: "1/../../accounts".into(),
+        });
+        assert_eq!(m.plaivo(), None);
     }
 
     #[test]

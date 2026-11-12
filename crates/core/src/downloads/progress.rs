@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::jellyfin;
-use crate::plex::{Backend, Client, Server, encode};
+use crate::plex::{Backend, Client, Server, drain, encode};
 
 const WATCHED: f64 = 0.9;
 const TICKS_PER_MS: u64 = 10_000;
@@ -87,7 +87,7 @@ pub(crate) fn send(c: &Client, srv: &Server, r: &Replay) -> Result<(), ureq::Err
         return c
             .headers(c.agent.get(&url), Some(&srv.token))
             .call()
-            .map(drop);
+            .map(drain);
     };
     let current: Value = jellyfin::authed(c.agent.get(&url), c, Some(&srv.token))
         .call()?
@@ -100,7 +100,7 @@ pub(crate) fn send(c: &Client, srv: &Server, r: &Replay) -> Result<(), ureq::Err
     };
     jellyfin::authed(c.agent.post(&url), c, Some(&srv.token))
         .send_json(&body)
-        .map(drop)
+        .map(drain)
 }
 
 pub(crate) fn iso(secs: u64) -> String {

@@ -69,6 +69,10 @@ const LIB_NAMES: &[&str] = &["libmpv.2.dylib", "libmpv.dylib"];
 #[cfg(all(unix, not(target_os = "macos")))]
 const LIB_NAMES: &[&str] = &["libmpv.so.2", "libmpv.so"];
 
+pub fn preload() {
+    let _ = api();
+}
+
 fn api() -> Result<&'static Api, String> {
     static API: OnceLock<Result<Api, String>> = OnceLock::new();
     API.get_or_init(|| unsafe {
@@ -197,7 +201,14 @@ impl Ctx {
     }
 }
 
-// libmpv's client API is thread-safe; the handle is only freed by the event thread after SHUTDOWN.
+impl Drop for Ctx {
+    fn drop(&mut self) {
+        unsafe { (self.api.terminate_destroy)(self.h) };
+    }
+}
+
+// libmpv's client API is thread-safe; the handle is freed only when the last owner drops it, normally the
+// event thread after SHUTDOWN.
 // Only the event thread makes blocking calls: on macOS mpv's video output waits on the main thread while it
 // (re)configures, so a blocking call from the main thread can deadlock.
 unsafe impl Send for Ctx {}
@@ -230,7 +241,6 @@ impl Mpv {
         log::info!("mpv: initializing with {} option(s)", options.len());
         let rc = unsafe { (api.initialize)(h) };
         if rc < 0 {
-            unsafe { (api.terminate_destroy)(h) };
             return Err(format!("mpv_initialize: {}", error_string(api, rc)));
         }
         let info = INFO.iter().map(|name| (name, &FORMAT_STRING));
@@ -388,5 +398,4 @@ fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
             _ => {}
         }
     }
-    unsafe { (ctx.api.terminate_destroy)(ctx.h) };
 }

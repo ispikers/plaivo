@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::first;
 use crate::plex::{
     Backend, Client, Ctx, Directory, Extras, Guid, Hub, Image, Item, Marker, Media, OnDeck,
-    PRODUCT, Part, Person, Quality, R, Rating, Server, Stream, Tag, encode, err,
+    PRODUCT, Part, Person, Quality, R, Rating, Server, Stream, Tag, drain, encode, err,
 };
 
 const TICKS_PER_MS: u64 = 10_000;
@@ -460,6 +460,14 @@ fn get_quiet<T: DeserializeOwned>(srv: &Server, c: &Ctx, path: &str) -> R<T> {
     serde_json::from_slice(&srv.try_fetch_cached(c, path)?).map_err(err)
 }
 
+fn library_id(ancestors: Vec<Dto>) -> String {
+    ancestors
+        .into_iter()
+        .find(|a| a.kind == "CollectionFolder")
+        .map(|a| a.id)
+        .unwrap_or_default()
+}
+
 fn into_items(page: Page) -> Vec<Item> {
     page.items.into_iter().map(Dto::into_item).collect()
 }
@@ -703,20 +711,24 @@ pub fn hub_items(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Item>> {
         } else {
             format!("&ParentId={parent}")
         };
-        let resume = items(
-            srv,
-            c,
-            &format!(
-                "/UserItems/Resume?userId={u}{scope}&Limit={max}&MediaTypes=Video&Fields={LIST_FIELDS}"
-            ),
-        )?;
-        let next_up = items(
-            srv,
-            c,
-            &format!("/Shows/NextUp?UserId={u}{scope}&Limit={max}&Fields={LIST_FIELDS}"),
-        )
-        .unwrap_or_default();
-        return Ok(continue_hub(resume, next_up, parent).metadata);
+        let (resume, next_up) = std::thread::scope(|s| {
+            let next_up = s.spawn(|| {
+                items(
+                    srv,
+                    c,
+                    &format!("/Shows/NextUp?UserId={u}{scope}&Limit={max}&Fields={LIST_FIELDS}"),
+                )
+            });
+            let resume = items(
+                srv,
+                c,
+                &format!(
+                    "/UserItems/Resume?userId={u}{scope}&Limit={max}&MediaTypes=Video&Fields={LIST_FIELDS}"
+                ),
+            );
+            (resume, next_up.join().ok().and_then(Result::ok))
+        });
+        return Ok(continue_hub(resume?, next_up.unwrap_or_default(), parent).metadata);
     }
     let parent = key.strip_prefix("latest:").ok_or("Unknown list")?;
     Ok(get::<Vec<Dto>>(srv, c, &format!("/Items/Latest?userId={u}&ParentId={parent}&Limit={max}&GroupItems=true&Fields={LIST_FIELDS}"))?.into_iter().map(Dto::into_item).collect())
@@ -725,36 +737,58 @@ pub fn hub_items(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Item>> {
 pub fn metadata(srv: &Server, c: &Ctx, key: &str) -> R<Item> {
     let u = &srv.user_id;
     let mut it = get::<Dto>(srv, c, &format!("/Items/{key}?userId={u}"))?.into_item();
-    match it.kind.as_str() {
-        "show" => {
-            let next = items(
-                srv,
-                c,
-                &format!("/Shows/NextUp?UserId={u}&SeriesId={key}&Limit=1&Fields={LIST_FIELDS}"),
+    let kind = it.kind.clone();
+    let list = |path: &str| {
+        get_quiet::<Vec<Dto>>(srv, c, &format!("/Items/{key}/{path}?userId={u}"))
+            .unwrap_or_default()
+            .into_iter()
+            .map(Dto::into_item)
+            .collect::<Vec<_>>()
+    };
+    let (extras, library) = std::thread::scope(|s| {
+        let library = s.spawn(|| {
+            get_quiet::<Vec<Dto>>(srv, c, &format!("/Items/{key}/Ancestors?userId={u}"))
+                .map(library_id)
+                .unwrap_or_default()
+        });
+        let extras = matches!(kind.as_str(), "movie" | "show").then(|| {
+            (
+                s.spawn(|| list("LocalTrailers")),
+                s.spawn(|| list("SpecialFeatures")),
             )
-            .ok()
-            .and_then(|v| v.into_iter().next());
-            it.on_deck = next.map(|m| Box::new(OnDeck { metadata: Some(m) }));
+        });
+        match kind.as_str() {
+            "show" => {
+                let next = items(
+                    srv,
+                    c,
+                    &format!(
+                        "/Shows/NextUp?UserId={u}&SeriesId={key}&Limit=1&Fields={LIST_FIELDS}"
+                    ),
+                )
+                .ok()
+                .and_then(|v| v.into_iter().next());
+                it.on_deck = next.map(|m| Box::new(OnDeck { metadata: Some(m) }));
+            }
+            "movie" | "episode" => {
+                it.marker = get_quiet::<Segments>(srv, c, &format!("/MediaSegments/{key}"))
+                    .map(markers)
+                    .unwrap_or_default()
+            }
+            _ => {}
         }
-        "movie" | "episode" => {
-            it.marker = get_quiet::<Segments>(srv, c, &format!("/MediaSegments/{key}"))
-                .map(markers)
-                .unwrap_or_default()
-        }
-        _ => {}
-    }
-    if matches!(it.kind.as_str(), "movie" | "show") {
-        let list = |path: &str| {
-            get_quiet::<Vec<Dto>>(srv, c, &format!("/Items/{key}/{path}?userId={u}"))
-                .unwrap_or_default()
-                .into_iter()
-                .map(Dto::into_item)
-        };
-        let trailers = list("LocalTrailers").map(|t| Item {
+        (
+            extras.map(|(t, f)| (t.join().unwrap_or_default(), f.join().unwrap_or_default())),
+            library.join().unwrap_or_default(),
+        )
+    });
+    it.library_section_id = library;
+    if let Some((trailers, features)) = extras {
+        let trailers = trailers.into_iter().map(|t| Item {
             subtype: "trailer".into(),
             ..t
         });
-        let metadata: Vec<Item> = trailers.chain(list("SpecialFeatures")).collect();
+        let metadata: Vec<Item> = trailers.chain(features).collect();
         it.extras = (!metadata.is_empty()).then_some(Extras { metadata });
     }
     Ok(it)
@@ -788,7 +822,7 @@ pub fn clear_progress(srv: &Server, c: &Client, key: &str) -> R<()> {
     );
     authed(c.agent.post(&url), c, Some(&srv.token))
         .send_json(json!({ "PlaybackPositionTicks": 0 }))
-        .map(drop)
+        .map(drain)
         .map_err(err)
 }
 
@@ -799,7 +833,7 @@ pub fn set_watched(srv: &Server, c: &Client, key: &str, watched: bool) -> R<()> 
     } else {
         authed(c.agent.delete(&url), c, Some(&srv.token)).call()
     };
-    r.map(drop).map_err(err)
+    r.map(drain).map_err(err)
 }
 
 pub fn children(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Item>> {
@@ -891,8 +925,9 @@ pub fn timeline(
         Some(&srv.token),
     )
     .send_json(progress_body(key, state, time_ms, transcode_session))
+    .map(drain)
     {
-        Ok(_) => {
+        Ok(()) => {
             log::debug!("{} {path} {key} at {}s", srv.name, time_ms / 1000);
             true
         }
@@ -963,7 +998,10 @@ pub fn stop_transcode(srv: &Server, c: &Client, session: &str) {
         encode(&c.client_id),
         encode(session)
     );
-    if let Err(e) = authed(c.agent.delete(&url), c, Some(&srv.token)).call() {
+    if let Err(e) = authed(c.agent.delete(&url), c, Some(&srv.token))
+        .call()
+        .map(drain)
+    {
         log::debug!("{} stop transcode {session}: {e}", srv.name);
     }
 }
@@ -1201,6 +1239,7 @@ pub fn set_language_prefs(srv: &Server, c: &Client, prefs: &LanguagePrefs) -> R<
         Some(&srv.token),
     )
     .send_json(&config)
+    .map(drain)
     .map_err(err)?;
     Ok(())
 }
@@ -1435,6 +1474,26 @@ mod tests {
             eps[2].summary,
             "Walt and Jesse try to find a way to get to their RV."
         );
+    }
+
+    #[test]
+    fn library_is_the_collection_folder_ancestor() {
+        let ancestors: Vec<Dto> = serde_json::from_str(
+            r#"[
+                {"Id": "s1", "Type": "Season", "Name": "Season 1"},
+                {"Id": "show", "Type": "Series", "Name": "Show"},
+                {"Id": "a656b907eb3a73532e40e44b968d0225", "Type": "CollectionFolder", "Name": "Shows"},
+                {"Id": "root", "Type": "UserRootFolder"}
+            ]"#,
+        )
+        .unwrap();
+        let shows = fixture::<Page>("views")
+            .items
+            .into_iter()
+            .find(|v| v.collection_type == "tvshows")
+            .unwrap();
+        assert_eq!(library_id(ancestors), shows.id);
+        assert_eq!(library_id(vec![]), "");
     }
 
     #[test]

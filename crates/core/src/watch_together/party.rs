@@ -440,8 +440,12 @@ impl Party {
         if resumed {
             self.diff_participants(before.as_ref());
         }
+        let queued = (!resumed).then(|| self.pending_media.take()).flatten();
         if !resumed || self.epoch != Some(epoch) {
             self.start_epoch(j.media);
+        }
+        if queued.is_some() {
+            self.pending_media = queued;
         }
         self.attempt = 0;
         self.attempt_at = None;
@@ -675,17 +679,26 @@ impl Party {
     }
 
     pub fn set_media(&mut self, media: Media, position_ms: i64) -> Result<(), PartyError> {
-        self.host()?;
+        let queue = match self.state.connection {
+            Connection::Reconnecting => self.state.is_host(),
+            Connection::Connecting => self.request == Some(Request::Create),
+            _ => false,
+        };
+        if !queue {
+            self.host()?;
+        }
         if media.check(true).is_err() || !(0..=MAX_INT).contains(&position_ms) {
             return Err(PartyError::local("invalid_message"));
         }
         self.own_media = Some(media.clone());
         self.pending_media = Some((media.clone(), position_ms));
         self.rebind();
-        self.send(ClientMsg::SetMedia {
-            media: Box::new(media),
-            position_ms,
-        });
+        if !queue {
+            self.send(ClientMsg::SetMedia {
+                media: Box::new(media),
+                position_ms,
+            });
+        }
         Ok(())
     }
 
@@ -1476,6 +1489,52 @@ mod tests {
             matches!(&events[..], [Event::ParticipantJoined(a), Event::ParticipantLeft(b)] if a.peer_id == "p3" && b.peer_id == "p2"),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn media_set_while_reconnecting_or_creating_is_sent_on_join() {
+        let token = "a".repeat(43);
+        let media = Media::parse(movie()).unwrap();
+        let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, true), Value::Null);
+        drain(&mut p, 0);
+        p.on_drop(0, None);
+        p.set_media(media.clone(), 500).unwrap();
+        assert!(drain(&mut p, 0).sent.is_empty());
+        p.on_open(URL, 600, None);
+        drain(&mut p, 600);
+        p.on_text(600, &json!({"type": "joined", "code": "K7MQ2X", "you": {"peerId": "p1", "token": token}, "room": snapshot(2, 0, "idle", 0, 0, true), "media": null, "serverTime": 0}).to_string());
+        let sent = drain(&mut p, 600).sent;
+        assert!(
+            sent.iter()
+                .any(|m| m["type"] == "setMedia" && m["positionMs"] == 500),
+            "{sent:?}"
+        );
+
+        let mut p = Party::new("Tester", "Plaivo/0.1.0", 7).unwrap();
+        assert_eq!(
+            p.set_media(media.clone(), 0).unwrap_err().code,
+            "not_in_room"
+        );
+        p.start(Request::Create, 0).unwrap();
+        p.set_media(media.clone(), 0).unwrap();
+        p.on_open(URL, 0, None);
+        assert!(
+            !drain(&mut p, 0)
+                .sent
+                .iter()
+                .any(|m| m["type"] == "setMedia")
+        );
+        p.on_text(10, &json!({"type": "joined", "code": "K7MQ2X", "you": {"peerId": "p1", "token": token}, "room": snapshot(1, 0, "idle", 0, 0, true), "media": null, "serverTime": 0}).to_string());
+        assert!(
+            drain(&mut p, 10)
+                .sent
+                .iter()
+                .any(|m| m["type"] == "setMedia")
+        );
+
+        let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
+        p.on_drop(0, None);
+        assert_eq!(p.set_media(media, 0).unwrap_err().code, "not_in_room");
     }
 
     #[test]

@@ -111,6 +111,20 @@ pub fn offline_cards(items: &[(String, Item)]) -> Vec<Card> {
     cards
 }
 
+pub fn offline_episodes<'a>(
+    offline: &'a [(String, Item)],
+    server: &str,
+    key: &str,
+) -> Vec<&'a Item> {
+    let mut items: Vec<&Item> = offline
+        .iter()
+        .filter(|(s, it)| s == server && (it.rating_key == key || it.grandparent_rating_key == key))
+        .map(|(_, it)| it)
+        .collect();
+    items.sort_by_key(|it| (it.parent_index, it.index));
+    items
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Detail,
@@ -280,19 +294,6 @@ impl Plaivo {
         )
     }
 
-    pub fn offline_episodes(&self, server: &str, key: &str) -> Vec<&Item> {
-        let mut items: Vec<&Item> = self
-            .offline
-            .iter()
-            .filter(|(s, it)| {
-                s == server && (it.rating_key == key || it.grandparent_rating_key == key)
-            })
-            .map(|(_, it)| it)
-            .collect();
-        items.sort_by_key(|it| (it.parent_index, it.index));
-        items
-    }
-
     pub fn pick_download_dir(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -368,7 +369,7 @@ impl Plaivo {
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.settings.auto_remove_watched = !this.settings.auto_remove_watched;
-                        this.settings.save();
+                        this.save_settings_soon(cx);
                         let on = this.settings.auto_remove_watched;
                         this.with_downloads(cx, move |d| d.set_auto_remove_watched(on));
                         cx.notify();
@@ -405,7 +406,7 @@ impl Plaivo {
         .detach();
     }
 
-    fn queue_row(&self, i: usize, e: &Entry, cx: &mut Context<Self>) -> AnyElement {
+    fn queue_row(&self, e: &Entry, cx: &mut Context<Self>) -> AnyElement {
         let status = match e.state {
             State::Downloading if e.total > 0 => {
                 format!("{} of {}", fmt_size(e.bytes), fmt_size(e.total))
@@ -425,9 +426,10 @@ impl Plaivo {
             0.
         };
         let stopped = matches!(e.state, State::Paused | State::Failed);
+        let id = SharedString::from(format!("{}/{}", e.server, e.key));
         let button = |n: usize, i_: Icon, label: &'static str| {
             round_button(
-                ("download-action", i * 2 + n),
+                (id.clone(), n),
                 i_,
                 36.,
                 22.,
@@ -462,7 +464,7 @@ impl Plaivo {
                 this.with_downloads(cx, move |d| d.remove(&server, &key));
             }));
         div()
-            .id(("download-row", i))
+            .id((id.clone(), 2))
             .w_full()
             .px(px(20.))
             .py(px(10.))
@@ -512,23 +514,17 @@ impl Plaivo {
         if let Some((server, key)) = self.offline_view.clone() {
             return self.render_offline_item(server, key, cx);
         }
-        let queue: Vec<Entry> = self
-            .download_entries
-            .iter()
-            .filter(|e| e.state != State::Done)
-            .cloned()
-            .collect();
+        let entries = std::mem::take(&mut self.download_entries);
+        let queue: Vec<&Entry> = entries.iter().filter(|e| e.state != State::Done).collect();
         let active = queue
             .iter()
             .any(|e| matches!(e.state, State::Queued | State::Downloading));
         let stopped = queue
             .iter()
             .any(|e| matches!(e.state, State::Paused | State::Failed));
-        let rows: Vec<AnyElement> = queue
-            .iter()
-            .enumerate()
-            .map(|(i, e)| self.queue_row(i, e, cx))
-            .collect();
+        let rows: Vec<AnyElement> = queue.iter().map(|e| self.queue_row(e, cx)).collect();
+        let queue_empty = queue.is_empty();
+        self.download_entries = entries;
         let empty = self.offline_cards.is_empty();
         let scroll = self.offline_scroll.clone();
         let grid =
@@ -589,7 +585,7 @@ impl Plaivo {
                 )
                 .child(grid)
             })
-            .when(queue.is_empty() && empty, |d| {
+            .when(queue_empty && empty, |d| {
                 d.child(div().px(px(16.)).child(note("Nothing downloaded yet.")))
             })
             .into_any_element()
@@ -601,11 +597,8 @@ impl Plaivo {
         key: String,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let items: Vec<Item> = self
-            .offline_episodes(&server, &key)
-            .into_iter()
-            .cloned()
-            .collect();
+        let offline = std::mem::take(&mut self.offline);
+        let items = offline_episodes(&offline, &server, &key);
         let title = items.first().map_or(String::new(), |it| {
             if it.kind == "episode" {
                 it.grandparent_title.clone()
@@ -652,6 +645,8 @@ impl Plaivo {
             let card = episode_card(it, &server);
             list = list.child(self.episode_row(i, &card, Some(remove.into_any_element()), cx));
         }
+        let nothing = items.is_empty();
+        self.offline = offline;
         let header = div()
             .flex()
             .items_center()
@@ -699,9 +694,7 @@ impl Plaivo {
                     .flex_col()
                     .gap(px(12.))
                     .child(header)
-                    .when(items.is_empty(), |d| {
-                        d.child(note("Nothing downloaded here."))
-                    })
+                    .when(nothing, |d| d.child(note("Nothing downloaded here.")))
                     .child(list),
             )
             .into_any_element()

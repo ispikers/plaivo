@@ -3,8 +3,8 @@ use crate::menu;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, shadow};
 use gpui::{
-    AnyElement, Context, ElementId, FontWeight, Hsla, KeyDownEvent, KeyUpEvent, SharedString,
-    Window, div, prelude::*, px, rgb,
+    AnyElement, AnyView, Context, ElementId, Entity, EventEmitter, FontWeight, Hsla, KeyDownEvent,
+    KeyUpEvent, SharedString, StyleRefinement, Subscription, Window, div, prelude::*, px, rgb,
 };
 use std::time::{Duration, Instant};
 
@@ -27,66 +27,121 @@ pub fn progress(start: Option<Instant>, dur: Duration, window: &mut Window) -> f
     }
 }
 
+// The page is a cached view, so a miniplayer tick, overlay or toast (drawn here) doesn't rebuild it.
+pub struct Root {
+    pub app: Entity<Plaivo>,
+    _tick: Subscription,
+}
+
+pub struct MiniTick;
+
+impl EventEmitter<MiniTick> for Plaivo {}
+
+impl Root {
+    pub fn new(app: Entity<Plaivo>, cx: &mut Context<Self>) -> Self {
+        let _tick = cx.subscribe(&app, |_, _, _: &MiniTick, cx| cx.notify());
+        Self { app, _tick }
+    }
+
+    fn on_app<E>(
+        f: fn(&mut Plaivo, &E, &mut Window, &mut Context<Plaivo>),
+    ) -> impl Fn(&mut Self, &E, &mut Window, &mut Context<Self>) {
+        move |this, ev, window, cx| this.app.update(cx, |app, cx| f(app, ev, window, cx))
+    }
+}
+
+impl Render for Root {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (focus, mini, overlays, toast) = self.app.update(cx, |app, cx| {
+            if app.start_frame(window) {
+                let id = cx.entity_id();
+                window.on_next_frame(move |_, cx| cx.notify(id));
+            }
+            let mini = app.mini_shown().then(|| app.render_mini(cx));
+            let overlays = if app.page == Page::Player {
+                Vec::new()
+            } else {
+                app.render_overlays(window, cx)
+            };
+            let lift = if mini.is_some() { theme::MINI_BAR } else { 0. };
+            let toast = app
+                .toast
+                .clone()
+                .map(|msg| app.render_toast(msg, lift).into_any_element());
+            (app.focus.clone(), mini, overlays, toast)
+        });
+        div()
+            .id("root")
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .font_family(".SystemUIFont")
+            .text_color(theme::text())
+            .text_size(px(14.))
+            .track_focus(&focus)
+            .on_key_down(cx.listener(Self::on_app(Plaivo::on_key)))
+            .on_key_up(cx.listener(Self::on_app(Plaivo::on_key_up)))
+            .on_action(cx.listener(|this, _: &menu::OpenSettings, _, cx| {
+                this.app.update(cx, |app, cx| {
+                    if !matches!(app.page, Page::Splash | Page::Auth) {
+                        app.open_from_player(Nav::Settings(None), cx);
+                    }
+                })
+            }))
+            .on_action(|_: &menu::ToggleFullScreen, window, _| window.toggle_fullscreen())
+            .on_action(|_: &menu::Minimize, window, _| window.minimize_window())
+            .on_action(|_: &menu::Zoom, window, _| window.zoom_window())
+            .child(
+                AnyView::from(self.app.clone())
+                    .cached(StyleRefinement::default().flex_1().min_h_0().w_full()),
+            )
+            .children(mini)
+            .children(overlays)
+            .children(toast)
+    }
+}
+
 impl Render for Plaivo {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let standalone = self.add_server_standalone();
+        let content = match self.page {
+            Page::Splash => self.render_splash(),
+            Page::Auth => self.render_auth(cx),
+            Page::Player => self.render_player(window, cx),
+            Page::AddServer if standalone => self.render_add_server(window, cx),
+            _ => self.render_chrome(window, cx),
+        };
+        let background: Option<Hsla> = match self.page {
+            Page::Player if self.player.video_ready => None,
+            Page::Player | Page::Splash => Some(rgb(0x000000).into()),
+            _ => Some(theme::bg().into()),
+        };
+        div()
+            .size_full()
+            .when_some(background, |d, bg| d.bg(bg))
+            .child(content)
+    }
+}
+
+impl Plaivo {
+    // Per-frame setup, run by `Root` even when the page is served from cache; true while an image fades in.
+    fn start_frame(&mut self, window: &Window) -> bool {
         theme::apply(self.settings.theme, window.appearance());
         self.scale = window.scale_factor();
         self.viewport_w = (f32::from(window.viewport_size().width) * self.scale) as u32;
         self.lru.start_frame();
         self.arrivals
             .retain(|_, t| t.elapsed() < crate::app::IMAGE_FADE);
-        if !self.arrivals.is_empty() {
-            window.request_animation_frame();
-        }
-        let standalone = self.add_server_standalone();
-        let chrome = !matches!(self.page, Page::Splash | Page::Auth | Page::Player) && !standalone;
-        let mini = chrome && self.player.mini && self.playing();
-        let content = match self.page {
-            Page::Splash => self.render_splash(),
-            Page::Auth => self.render_auth(cx),
-            Page::Player => self.render_player(window, cx),
-            Page::AddServer if standalone => self.render_add_server(window, cx),
-            _ => self.render_chrome(mini, window, cx),
-        };
-        let overlays = if self.page == Page::Player {
-            Vec::new()
-        } else {
-            self.render_overlays(window, cx)
-        };
-        let background: Option<Hsla> = match self.page {
-            Page::Player if self.player.video_ready => None,
-            Page::Player | Page::Splash => Some(rgb(0x000000).into()),
-            _ if mini => None,
-            _ => Some(theme::bg().into()),
-        };
-        div()
-            .id("root")
-            .size_full()
-            .relative()
-            .font_family(".SystemUIFont")
-            .text_color(theme::text())
-            .text_size(px(14.))
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::on_key))
-            .on_key_up(cx.listener(Self::on_key_up))
-            .on_action(cx.listener(|this, _: &menu::OpenSettings, _, cx| {
-                if !matches!(this.page, Page::Splash | Page::Auth) {
-                    this.open_from_player(Nav::Settings(None), cx);
-                }
-            }))
-            .on_action(|_: &menu::ToggleFullScreen, window, _| window.toggle_fullscreen())
-            .on_action(|_: &menu::Minimize, window, _| window.minimize_window())
-            .on_action(|_: &menu::Zoom, window, _| window.zoom_window())
-            .when_some(background, |d, bg| d.bg(bg))
-            .child(content)
-            .children(overlays)
-            .when_some(self.toast.clone(), |d, msg| {
-                d.child(self.render_toast(msg, if mini { theme::MINI_BAR } else { 0. }))
-            })
+        self.arrivals.keys().any(|k| self.lru.used_last_frame(k))
     }
-}
 
-impl Plaivo {
+    fn mini_shown(&self) -> bool {
+        let chrome = !matches!(self.page, Page::Splash | Page::Auth | Page::Player)
+            && !self.add_server_standalone();
+        chrome && self.player.mini && self.playing()
+    }
+
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if ev.keystroke.key == "escape" && self.close_overlays() {
             cx.stop_propagation();
@@ -97,6 +152,8 @@ impl Plaivo {
                 Page::Detail | Page::HubList | Page::Licenses => true,
                 Page::Settings => self.settings_page.is_some(),
                 Page::Downloads => self.offline_view.is_some(),
+                Page::Library => matches!(self.nav.last(), Some(Nav::Collection(..))),
+                Page::AddServer => self.nav.len() > 1 && !self.add_server_standalone(),
                 _ => false,
             };
             if ev.keystroke.key == "escape" && sub_page {
@@ -185,12 +242,7 @@ impl Plaivo {
             )
     }
 
-    fn render_chrome(
-        &mut self,
-        mini: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_chrome(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let page = match self.page {
             Page::Servers => self.render_servers(cx),
             Page::Home => self.render_home(window, cx),
@@ -210,17 +262,9 @@ impl Plaivo {
         div()
             .size_full()
             .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .bg(theme::bg())
-                    .children(sidebar)
-                    .child(div().flex_1().min_w_0().h_full().relative().child(page)),
-            )
-            .when(mini, |d| d.child(self.render_mini(cx)))
+            .bg(theme::bg())
+            .children(sidebar)
+            .child(div().flex_1().min_w_0().h_full().relative().child(page))
             .into_any_element()
     }
 

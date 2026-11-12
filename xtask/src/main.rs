@@ -49,6 +49,11 @@ fn build(release: bool) -> anyhow::Result<PathBuf> {
     run(Command::new(cargo)
         .args(["build", "-p", "plaivo"])
         .args(release.then_some("--release"))
+        // Static CRT: the installer doesn't ship VCRUNTIME140.dll.
+        .args([
+            "--config",
+            r#"target.'cfg(target_env = "msvc")'.rustflags = ["-C", "target-feature=+crt-static"]"#,
+        ])
         .current_dir(root()))?;
     Ok(std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)

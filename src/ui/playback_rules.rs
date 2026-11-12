@@ -100,7 +100,7 @@ impl Plaivo {
             (None, false) => rules.push(d.rule),
             _ => {}
         }
-        self.settings.save();
+        self.save_settings_soon(cx);
         self.back(cx);
     }
 

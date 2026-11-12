@@ -1,7 +1,7 @@
 use crate::ui::theme;
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
+    App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler,
+    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
     fill, point, prelude::*, px, relative, size,
@@ -30,6 +30,7 @@ actions!(
 
 const CONTEXT: &str = "TextInput";
 const MAC: bool = cfg!(target_os = "macos");
+const CARET: f32 = 2.;
 
 pub fn bind_keys(cx: &mut App) {
     let ctx = Some(CONTEXT);
@@ -70,6 +71,7 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    scroll_x: Pixels,
     is_selecting: bool,
     masked: bool,
 }
@@ -87,6 +89,7 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            scroll_x: px(0.),
             is_selecting: false,
             masked: false,
         }
@@ -196,7 +199,7 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            self.replace_text_in_range(None, &single_line(&text), window, cx);
         }
     }
 
@@ -244,7 +247,7 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        let i = line.closest_index_for_x(position.x - bounds.left());
+        let i = line.closest_index_for_x(position.x - bounds.left() + self.scroll_x);
         (0..=i)
             .rev()
             .find(|&i| self.content.is_char_boundary(i))
@@ -265,29 +268,11 @@ impl TextInput {
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-        utf8_offset
+        offset_from_utf16(&self.content, offset)
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16_offset = 0;
-        let mut utf8_count = 0;
-        for ch in self.content.chars() {
-            if utf8_count >= offset {
-                break;
-            }
-            utf8_count += ch.len_utf8();
-            utf16_offset += ch.len_utf16();
-        }
-        utf16_offset
+        offset_to_utf16(&self.content, offset)
     }
 
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
@@ -299,19 +284,70 @@ impl TextInput {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
+        previous_boundary(&self.content, offset)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.content.len())
+        next_boundary(&self.content, offset)
     }
+}
+
+fn offset_from_utf16(text: &str, offset: usize) -> usize {
+    let mut utf8_offset = 0;
+    let mut utf16_count = 0;
+    for ch in text.chars() {
+        if utf16_count >= offset {
+            break;
+        }
+        utf16_count += ch.len_utf16();
+        utf8_offset += ch.len_utf8();
+    }
+    utf8_offset
+}
+
+fn offset_to_utf16(text: &str, offset: usize) -> usize {
+    let mut utf16_offset = 0;
+    let mut utf8_count = 0;
+    for ch in text.chars() {
+        if utf8_count >= offset {
+            break;
+        }
+        utf8_count += ch.len_utf8();
+        utf16_offset += ch.len_utf16();
+    }
+    utf16_offset
+}
+
+fn previous_boundary(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .rev()
+        .find_map(|(idx, _)| (idx < offset).then_some(idx))
+        .unwrap_or(0)
+}
+
+fn next_boundary(text: &str, offset: usize) -> usize {
+    text.grapheme_indices(true)
+        .find_map(|(idx, _)| (idx > offset).then_some(idx))
+        .unwrap_or(text.len())
+}
+
+fn marked_selection(start: usize, new_text: &str, selected_utf16: &Range<usize>) -> Range<usize> {
+    start + offset_from_utf16(new_text, selected_utf16.start)
+        ..start + offset_from_utf16(new_text, selected_utf16.end)
+}
+
+fn single_line(text: &str) -> String {
+    text.trim_end_matches(['\r', '\n'])
+        .replace("\r\n", " ")
+        .replace(['\r', '\n'], " ")
+}
+
+fn scroll_to_cursor(scroll: f32, cursor: f32, line_width: f32, view_width: f32) -> f32 {
+    scroll
+        .max(cursor + CARET - view_width)
+        .min(cursor)
+        .min(line_width + CARET - view_width)
+        .max(0.)
 }
 
 impl EntityInputHandler for TextInput {
@@ -392,10 +428,9 @@ impl EntityInputHandler for TextInput {
         self.marked_range =
             (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
         self.selected_range = new_selected_range_utf16
-            .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+            .map(|r| marked_selection(range.start, new_text, &r))
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.selection_reversed = false;
         cx.notify();
     }
 
@@ -408,15 +443,10 @@ impl EntityInputHandler for TextInput {
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
+        let left = bounds.left() - self.scroll_x;
         Some(Bounds::from_corners(
-            point(
-                bounds.left() + last_layout.x_for_index(range.start),
-                bounds.top(),
-            ),
-            point(
-                bounds.left() + last_layout.x_for_index(range.end),
-                bounds.bottom(),
-            ),
+            point(left + last_layout.x_for_index(range.start), bounds.top()),
+            point(left + last_layout.x_for_index(range.end), bounds.bottom()),
         ))
     }
 
@@ -428,7 +458,7 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-        let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
+        let utf8_index = last_layout.closest_index_for_x(line_point.x + self.scroll_x);
         Some(self.offset_to_utf16(utf8_index))
     }
 }
@@ -441,6 +471,7 @@ struct PrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
+    scroll_x: Pixels,
 }
 
 impl IntoElement for TextElement {
@@ -536,13 +567,20 @@ impl Element for TextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
         let cursor_pos = line.x_for_index(cursor);
+        let scroll_x = px(scroll_to_cursor(
+            input.scroll_x.into(),
+            cursor_pos.into(),
+            line.width().into(),
+            bounds.size.width.into(),
+        ));
+        let left = bounds.left() - scroll_x;
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
-                        size(px(2.), bounds.bottom() - bounds.top()),
+                        point(left + cursor_pos, bounds.top()),
+                        size(px(CARET), bounds.bottom() - bounds.top()),
                     ),
                     theme::text(),
                 )),
@@ -551,14 +589,8 @@ impl Element for TextElement {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
+                        point(left + line.x_for_index(selected_range.start), bounds.top()),
+                        point(left + line.x_for_index(selected_range.end), bounds.bottom()),
                     ),
                     theme::tint(0.25),
                 )),
@@ -569,6 +601,7 @@ impl Element for TextElement {
             line: Some(line),
             cursor,
             selection,
+            scroll_x,
         }
     }
 
@@ -588,27 +621,31 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = prepaint.selection.take() {
-            window.paint_quad(selection)
-        }
         let line = prepaint.line.take().unwrap();
-        line.paint(
-            bounds.origin,
-            window.line_height(),
-            gpui::TextAlign::Left,
-            None,
-            window,
-            cx,
-        )
-        .unwrap();
-        if focus.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
+        let scroll_x = prepaint.scroll_x;
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            if let Some(selection) = prepaint.selection.take() {
+                window.paint_quad(selection)
+            }
+            line.paint(
+                point(bounds.left() - scroll_x, bounds.top()),
+                window.line_height(),
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .unwrap();
+            if focus.is_focused(window)
+                && let Some(cursor) = prepaint.cursor.take()
+            {
+                window.paint_quad(cursor);
+            }
+        });
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
+            input.scroll_x = scroll_x;
         });
     }
 }
@@ -648,5 +685,57 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ime_caret_is_relative_to_inserted_text() {
+        assert_eq!(marked_selection(0, "か", &(1..1)), 3..3);
+        assert_eq!(marked_selection(2, "か", &(1..1)), 5..5);
+        assert_eq!(marked_selection(1, "é🙂", &(1..3)), 3..7);
+        assert_eq!(marked_selection(1, "漢", &(5..9)), 4..4);
+        assert_eq!(marked_selection(1, "", &(0..0)), 1..1);
+    }
+
+    #[test]
+    fn utf16_offsets_round_trip_surrogate_pairs() {
+        let text = "a🙂b";
+        assert_eq!(offset_to_utf16(text, 1), 1);
+        assert_eq!(offset_to_utf16(text, 5), 3);
+        assert_eq!(offset_to_utf16(text, 6), 4);
+        assert_eq!(offset_from_utf16(text, 3), 5);
+        assert_eq!(offset_from_utf16(text, 4), 6);
+        assert_eq!(offset_from_utf16(text, 99), 6);
+    }
+
+    #[test]
+    fn boundaries_step_whole_graphemes() {
+        let family = "a👨‍👩‍👧";
+        assert_eq!(previous_boundary(family, family.len()), 1);
+        assert_eq!(next_boundary(family, 1), family.len());
+        let accent = "xe\u{301}";
+        assert_eq!(previous_boundary(accent, accent.len()), 1);
+        assert_eq!(next_boundary(accent, 1), accent.len());
+    }
+
+    #[test]
+    fn paste_flattens_to_one_line() {
+        assert_eq!(single_line("http://host:32400\r\n"), "http://host:32400");
+        assert_eq!(single_line("a\r\nb\nc\rd"), "a b c d");
+        assert_eq!(single_line(" pass "), " pass ");
+    }
+
+    #[test]
+    fn scroll_keeps_cursor_visible() {
+        assert_eq!(scroll_to_cursor(0., 50., 100., 200.), 0.);
+        assert_eq!(scroll_to_cursor(0., 500., 500., 200.), 302.);
+        assert_eq!(scroll_to_cursor(302., 0., 500., 200.), 0.);
+        assert_eq!(scroll_to_cursor(302., 400., 500., 200.), 302.);
+        assert_eq!(scroll_to_cursor(302., 100., 100., 200.), 0.);
+        assert_eq!(scroll_to_cursor(0., 0., 0., 0.), 0.);
     }
 }

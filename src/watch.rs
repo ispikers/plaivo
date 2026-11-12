@@ -4,11 +4,11 @@ use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::theme::Icon;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
-use gpui::{AppContext, Context, Entity, SharedString, Task};
+use gpui::{AppContext, Context, Entity, SharedString};
 use plaivo_core::watch_together::{
-    Connection, EndReason, Event, Match, MatchState, Media, PartyError, PartyState, PlaivoExt,
-    PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy,
-    match_for, normalize_code,
+    Connection, Event, Match, MatchState, Media, PartyError, PartyState, PlaivoExt, PlayerCommand,
+    PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy, match_for,
+    normalize_code,
 };
 use std::time::{Duration, Instant};
 
@@ -37,7 +37,6 @@ pub struct Watch {
     pub name: Entity<TextInput>,
     pub relay: Entity<TextInput>,
     pub account_name: Option<String>,
-    save_task: Option<Task<()>>,
 }
 
 impl Watch {
@@ -113,7 +112,6 @@ impl Watch {
             name: name_input,
             relay: relay_input,
             account_name: None,
-            save_task: None,
         }
     }
 
@@ -132,10 +130,9 @@ impl Watch {
         self.starting || self.in_room() || self.state.connection == Connection::Connecting
     }
 
-    pub fn shutdown(&mut self) -> bool {
+    pub fn shutdown(&mut self) {
         self.generation += 1;
         drop(self.wt.take());
-        self.save_task.take().is_some()
     }
 }
 
@@ -195,58 +192,6 @@ pub fn holds(
             .is_some_and(|((fs, fk), (ps, pk))| fs == ps && fk == pk)
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Share {
-    Send,
-    Queue,
-    Drop,
-}
-
-pub fn share_now(s: &PartyState, creating: bool) -> Share {
-    match s.connection {
-        Connection::Connected if s.is_host() => Share::Send,
-        Connection::Reconnecting if s.is_host() => Share::Queue,
-        _ if creating => Share::Queue,
-        _ => Share::Drop,
-    }
-}
-
-fn error_text(e: &PartyError) -> Option<&'static str> {
-    Some(match e.code.as_str() {
-        "cancelled" => return None,
-        "invalid_code" => "That isn't a valid room code.",
-        "room_not_found" => "No room with that code.",
-        "room_full" => "That room is full.",
-        "room_locked" | "locked" => "That room is locked.",
-        "relay_full" => "The Watch Together servers are busy. Try again soon.",
-        "unreachable" => "Couldn't reach the Watch Together server.",
-        "forbidden" | "not_host" => "Only the host can do that in this room.",
-        _ => "Watch Together ran into a problem.",
-    })
-}
-
-fn end_text(reason: EndReason) -> Option<&'static str> {
-    Some(match reason {
-        EndReason::Left => return None,
-        EndReason::Ended => "The room has ended.",
-        EndReason::Kicked => "You were removed from the room.",
-        EndReason::Expired => "The room expired.",
-        EndReason::Replaced => "You joined this room from another device.",
-        EndReason::Lost => "Lost the connection to the room.",
-    })
-}
-
-fn action_text(kind: &str) -> Option<&'static str> {
-    Some(match kind {
-        "pause" => "paused",
-        "play" => "resumed",
-        "seek" => "skipped",
-        "rate" => "changed the speed",
-        "media" => "changed what's playing",
-        _ => return None,
-    })
-}
-
 impl Plaivo {
     pub fn watch_create(&mut self, cx: &mut Context<Self>) {
         self.watch_start(None, cx);
@@ -271,6 +216,7 @@ impl Plaivo {
         w.starting = true;
         w.creating = code.is_none();
         w.error = None;
+        w.share = None;
         let generation = w.generation;
         let (old, tx) = (w.wt.take(), w.tx.clone());
         let (setting, relays, client, token) = (
@@ -309,15 +255,20 @@ impl Plaivo {
                 (wt, account)
             },
             move |this, (wt, account): (Result<WatchTogether, PartyError>, Option<String>), cx| {
-                if account.is_some() {
-                    this.watch.account_name = account;
-                }
                 if this.watch.generation != generation {
                     return Self::detach(cx, move || drop(wt));
                 }
+                if account.is_some() {
+                    this.watch.account_name = account;
+                }
                 this.watch.starting = false;
                 match wt {
-                    Ok(wt) => this.watch.wt = Some(wt),
+                    Ok(wt) => {
+                        if let Some((media, at)) = this.watch.share.take() {
+                            wt.set_media(media, at);
+                        }
+                        this.watch.wt = Some(wt);
+                    }
                     Err(e) => {
                         log::warn!("watch together: could not start: {e:?}");
                         this.watch.creating = false;
@@ -361,15 +312,16 @@ impl Plaivo {
         cx.notify();
     }
 
-    fn save_settings_soon(&mut self, cx: &mut Context<Self>) {
-        self.watch.save_task = Some(cx.spawn(async move |this, cx| {
+    // Settings writes are coalesced off the click path; quit flushes a pending one.
+    pub fn save_settings_soon(&mut self, cx: &mut Context<Self>) {
+        self.settings_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_AFTER).await;
             this.update(cx, |this, _| this.save_settings_now()).ok();
         }));
     }
 
-    fn save_settings_now(&mut self) {
-        if self.watch.save_task.take().is_some() {
+    pub fn save_settings_now(&mut self) {
+        if self.settings_save.take().is_some() {
             self.settings.save();
         }
     }
@@ -378,9 +330,8 @@ impl Plaivo {
         self.watch.custom_relay = !public;
         if public {
             self.watch.relay_error = None;
-            self.watch.save_task = None;
             self.settings.watch_relay.clear();
-            self.settings.save();
+            self.save_settings_soon(cx);
         } else {
             let url = self.watch.relay.read(cx).text().trim().to_owned();
             self.set_relay(&url, cx);
@@ -425,9 +376,7 @@ impl Plaivo {
             server: server.clone(),
             item: key.clone(),
         };
-        let shared = w.state.media.as_ref().and_then(Media::plaivo).as_ref() == Some(&hint)
-            || w.share.as_ref().and_then(|(m, _)| m.plaivo()).as_ref() == Some(&hint);
-        if shared {
+        if w.state.media.as_ref().and_then(Media::plaivo).as_ref() == Some(&hint) {
             return;
         }
         let (srv, downloads, c) = (
@@ -461,10 +410,9 @@ impl Plaivo {
                     return this.toast("This video can't be shared with the room.", cx);
                 };
                 let w = &mut this.watch;
-                match (share_now(&w.state, w.creating), &w.wt) {
-                    (Share::Send, Some(wt)) => wt.set_media(media, position_ms.max(0)),
-                    (Share::Send | Share::Queue, _) => w.share = Some((media, position_ms.max(0))),
-                    (Share::Drop, _) => {}
+                match &w.wt {
+                    Some(wt) => wt.set_media(media, position_ms.max(0)),
+                    None => w.share = Some((media, position_ms.max(0))),
                 }
             },
         );
@@ -502,14 +450,8 @@ impl Plaivo {
                 Bind::Clear => {}
             }
         }
-        if share_now(&s, w.creating) == Share::Send
-            && let (Some(wt), Some((media, at))) = (&w.wt, w.share.take())
-        {
-            wt.set_media(media, at);
-        }
         if matches!(s.connection, Connection::Idle | Connection::Ended) {
             w.creating = false;
-            w.share = None;
             w.file = None;
             w.epoch = None;
             w.unavailable = false;
@@ -564,40 +506,17 @@ impl Plaivo {
     }
 
     fn watch_event(&mut self, event: Event, cx: &mut Context<Self>) {
-        let name = |s: &PartyState, peer: &Option<String>| {
-            s.room
-                .as_ref()
-                .zip(peer.as_deref())
-                .and_then(|(r, p)| r.participant(p))
-                .map(|p| p.name.clone())
-        };
+        let text = event.text(&self.watch.state);
         let text = match event {
-            Event::ParticipantJoined(p) => Some(format!("{} joined", p.name)),
-            Event::ParticipantLeft(p) => Some(format!("{} left", p.name)),
-            Event::Action {
-                kind,
-                by,
-                by_me: false,
-            } => action_text(&kind).map(|a| {
-                format!(
-                    "{} {a}",
-                    name(&self.watch.state, &by).unwrap_or_else(|| "Someone".into())
-                )
-            }),
-            Event::Action { .. } => None,
-            Event::Error(e) => error_text(&e).map(str::to_owned),
-            Event::Failed(e) => {
-                self.watch.error = error_text(&e).map(SharedString::from);
-                self.watch
-                    .error
-                    .as_ref()
-                    .filter(|_| self.page != Page::Watch)
-                    .map(|e| e.to_string())
+            Event::Failed(_) => {
+                self.watch.error = text.clone().map(SharedString::from);
+                text.filter(|_| self.page != Page::Watch)
             }
-            Event::Ended { reason, .. } => {
+            Event::Ended { .. } => {
                 self.watch.creating = false;
-                end_text(reason).map(str::to_owned)
+                text
             }
+            _ => text,
         };
         if let Some(text) = text {
             if self.page == Page::Player {
@@ -846,33 +765,6 @@ mod tests {
             Some(&ep1),
             Some(("srv", "ep1"))
         ));
-    }
-
-    #[test]
-    fn shares_send_when_hosting_and_queue_while_creating_or_reconnecting() {
-        assert_eq!(
-            share_now(&state(Connection::Connected, true, 1, None, None), false),
-            Share::Send
-        );
-        assert_eq!(
-            share_now(&state(Connection::Reconnecting, true, 1, None, None), false),
-            Share::Queue
-        );
-        assert_eq!(
-            share_now(
-                &PartyState {
-                    connection: Connection::Connecting,
-                    ..Default::default()
-                },
-                true
-            ),
-            Share::Queue
-        );
-        assert_eq!(
-            share_now(&state(Connection::Connected, false, 1, None, None), false),
-            Share::Drop
-        );
-        assert_eq!(share_now(&PartyState::default(), false), Share::Drop);
     }
 
     #[test]

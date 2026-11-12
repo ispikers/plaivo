@@ -12,7 +12,7 @@ pub mod playback_rules;
 mod player;
 pub mod services;
 pub mod settings;
-mod shell;
+pub mod shell;
 mod subtitle_search;
 pub mod theme;
 mod watch;

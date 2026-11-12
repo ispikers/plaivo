@@ -3,6 +3,7 @@ use crate::plex::Backend;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::AtomicU32;
 
 #[derive(Clone, Debug)]
 struct Req {
@@ -1012,11 +1013,7 @@ fn auto_remove_watched_and_replay_when_reachable() {
                 && p.contains("time=400&")
                 && p.contains("offline=1&updated="))
     );
-    assert!(
-        store::read_json::<Vec<Pending>>(&root.join(PROGRESS))
-            .unwrap()
-            .is_empty()
-    );
+    until(|| store::read_json::<Vec<Pending>>(&root.join(PROGRESS)).is_some_and(|p| p.is_empty()));
     drop(d);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1115,9 +1112,22 @@ fn synced_progress_updates_the_snapshot_without_a_replay() {
     let d = engine(&root, plenty);
     d.enqueue(&srv, &ep("101"));
     wait(&d, |s| s.len() == 1 && s[0].state == State::Done);
+    d.record_progress("srv1", "101", "playing", 300, 1000, true);
+    assert!(d.inner.lock().pending.is_empty());
     d.record_progress("srv1", "101", "stopped", 400, 1000, true);
     assert_eq!(d.item("srv1", "101").unwrap().view_offset, Some(400));
     assert!(d.inner.lock().pending.is_empty());
+    d.record_progress("srv1", "101", "playing", 500, 1000, false);
+    assert_eq!(
+        d.inner
+            .lock()
+            .pending
+            .iter()
+            .map(|p| p.time_ms)
+            .collect::<Vec<_>>(),
+        [500],
+        "an unsynced report keeps the resume point even before the stop"
+    );
 }
 
 #[test]
@@ -1151,6 +1161,68 @@ fn removed_servers_stop_downloading_and_empty_keys_never_purge_the_server() {
     assert!(
         d.local("srv1", "101").is_some_and(|l| l.file.exists()),
         "the server folder survives an empty key"
+    );
+    drop(d);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn pausing_during_a_metadata_request_sticks() {
+    let (entered, released) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+    let (inside, open) = (entered.clone(), released.clone());
+    let (base, _) = serve(move |req| {
+        let gate = |n| {
+            inside.store(n, Ordering::SeqCst);
+            while open.load(Ordering::SeqCst) < n {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let wrap = |m: Value| Resp::ok(json!({"MediaContainer": {"Metadata": m}}).to_string());
+        match req.path.split('?').next().unwrap() {
+            "/library/metadata/100/allLeaves" => {
+                gate(1);
+                wrap(json!([episode(101, false), episode(102, false)]))
+            }
+            "/library/metadata/101" => {
+                gate(2);
+                wrap(json!([episode(101, false)]))
+            }
+            "/library/metadata/110" => wrap(json!([{"ratingKey": "110", "type": "season"}])),
+            "/library/metadata/100" => wrap(json!([{"ratingKey": "100", "type": "show"}])),
+            _ => Resp::status(404),
+        }
+    });
+    let srv = Server {
+        id: "srv1".into(),
+        uri: base,
+        token: "t".into(),
+        ..Default::default()
+    };
+    let root = temp("pause-inflight");
+    let d = engine(&root, plenty);
+    let reached = |n| until(|| entered.load(Ordering::SeqCst) == n);
+
+    d.enqueue(&srv, &show());
+    reached(1);
+    d.pause("srv1", "100");
+    released.store(1, Ordering::SeqCst);
+    let s = wait(&d, |s| s.len() == 2);
+    assert!(
+        s.iter().all(|e| e.state == State::Paused),
+        "episodes of a paused show stay paused: {:?}",
+        s.iter().map(|e| e.state).collect::<Vec<_>>()
+    );
+
+    d.resume("srv1", "101");
+    reached(2);
+    d.pause("srv1", "101");
+    released.store(2, Ordering::SeqCst);
+    until(|| d.inner.lock().active.is_none());
+    let s = d.snapshot();
+    assert_eq!(
+        (s[0].state, s[0].error.as_str()),
+        (State::Paused, ""),
+        "an error after pausing does not overwrite the pause"
     );
     drop(d);
     let _ = std::fs::remove_dir_all(root);

@@ -5,23 +5,7 @@ use crate::ui::widgets::{chip, icon, pill, row, section};
 use gpui::{
     AnyElement, ClipboardItem, Context, Div, FontWeight, SharedString, Window, div, prelude::*, px,
 };
-use plaivo_core::watch_together::{
-    Connection, Control, Match, MatchState, PlayerState, format_code,
-};
-
-fn sync_label(player: PlayerState, m: Option<Match>, connected: bool) -> &'static str {
-    match (connected, m.map(|m| m.state), player) {
-        (false, _, _) => "Reconnecting",
-        (_, None, _) => "Nothing playing",
-        (_, Some(MatchState::Searching), _) => "Finding the video",
-        (_, Some(MatchState::Unavailable), _) => "Not in their libraries",
-        (_, _, PlayerState::Idle) => "Not watching",
-        (_, _, PlayerState::Loading) => "Loading",
-        (_, _, PlayerState::Buffering) => "Buffering",
-        (_, Some(MatchState::Mismatched), PlayerState::Ready) => "In sync · different cut",
-        (_, Some(MatchState::Matched), PlayerState::Ready) => "In sync",
-    }
-}
+use plaivo_core::watch_together::{Connection, Control, format_code, sync_label};
 
 fn error_text(text: SharedString) -> Div {
     div()
@@ -166,7 +150,7 @@ impl Plaivo {
             sync_label(s.player, s.match_, true)
         };
         let copy = code.clone();
-        let participants = room.participants.iter().enumerate().map(|(i, p)| {
+        let participants = room.participants.iter().map(|p| {
             let you = p.peer_id == me;
             let title = if you {
                 format!("{} (you)", p.name)
@@ -180,13 +164,14 @@ impl Plaivo {
                 sync_label(p.player, p.match_, p.connected).into(),
             ]);
             let (transfer, kick) = (p.peer_id.clone(), p.peer_id.clone());
-            row(("watch-peer", i), Some(Icon::Person), title, detail).when(host && !you, |r| {
+            let id = SharedString::from(format!("watch-peer/{}", p.peer_id));
+            row((id.clone(), 0), Some(Icon::Person), title, detail).when(host && !you, |r| {
                 r.child(
-                    pill(("watch-make-host", i), "Make host", None, false).on_click(cx.listener(
+                    pill((id.clone(), 1), "Make host", None, false).on_click(cx.listener(
                         move |this, _, _, _| this.watch_call(|wt| wt.transfer_host(&transfer)),
                     )),
                 )
-                .child(pill(("watch-kick", i), "Remove", None, false).on_click(
+                .child(pill((id, 2), "Remove", None, false).on_click(
                     cx.listener(move |this, _, _, _| this.watch_call(|wt| wt.kick(&kick))),
                 ))
             })

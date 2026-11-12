@@ -7,6 +7,7 @@ use gpui::{
     ScrollEvent, SharedString, Window, div, img, linear_color_stop, linear_gradient, point,
     prelude::*, px, rgb,
 };
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 const SWIPE: f32 = 60.;
@@ -135,13 +136,14 @@ impl Plaivo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.view.hero_h = height;
         let item = self.hero[self.hero_index.min(self.hero.len() - 1)].clone();
         let current = self.image(&item.thumb, Shape::Backdrop);
         let arrived = self.image_alpha();
         let upcoming = self.hero[(self.hero_index + 1) % self.hero.len()]
             .thumb
             .clone();
-        self.image(&upcoming, Shape::Backdrop);
+        self.prefetch(&upcoming, Shape::Backdrop);
         let fade = self.view.hero_prev.map(|(i, t0)| {
             (
                 i,
@@ -380,16 +382,36 @@ impl Plaivo {
             .offset()
             .y,
         );
-        (0..self.hub_vec(lib).len())
+        let mut prefetch = Vec::new();
+        let hubs = (0..self.hub_vec(lib).len())
             .map(|i| {
                 let wide = self.hub_vec(lib)[i].wide;
                 let w = card_width(cw, wide, self.settings.card_scale());
                 let height = 38. + card_height(w, wide, self.settings.card_pad());
-                let near = top + height > scrolled - vh && top < scrolled + 2. * vh;
+                let band = |above: f32, below: f32| {
+                    top + height > scrolled - above * vh && top < scrolled + below * vh
+                };
+                let bands = (band(1., 2.), band(0.25, 1.25));
                 top += height + 16.;
-                self.render_hub(lib, i, cw, near, window, cx)
+                let (hub, rest) = self.render_hub(lib, i, cw, bands, window, cx);
+                prefetch.push((i, rest));
+                hub
             })
-            .collect()
+            .collect();
+        // After every visible card, so on-screen art is queued first.
+        for (i, rest) in prefetch {
+            let shape = if self.hub_vec(lib)[i].wide {
+                Shape::Wide
+            } else {
+                Shape::Poster
+            };
+            let items = std::mem::take(&mut self.hub_vec(lib)[i].items);
+            for c in rest.into_iter().flat_map(|r| &items[r]) {
+                self.image(&c.thumb, shape);
+            }
+            self.hub_vec(lib)[i].items = items;
+        }
+        hubs
     }
 
     pub fn render_hub_skeleton(&self, i: usize, cw: f32) -> AnyElement {
@@ -425,10 +447,10 @@ impl Plaivo {
         lib: bool,
         i: usize,
         cw: f32,
-        near: bool,
+        (near, visible): (bool, bool),
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> (AnyElement, [Range<usize>; 2]) {
         let (title, resume, wide, scroll, key, server) = {
             let h = &self.hub_vec(lib)[i];
             (
@@ -451,29 +473,34 @@ impl Plaivo {
             }
         }
         let offset = f32::from(scroll.offset().x);
-        let first = ((-offset - cw) / w).floor().max(0.) as usize;
-        let last = if near {
-            ((-offset + 2. * cw) / w).ceil() as usize
-        } else {
-            0
-        };
         let items = std::mem::take(&mut self.hub_vec(lib)[i].items);
-        let cards: Vec<AnyElement> = items
-            .iter()
-            .enumerate()
-            .map(|(j, c)| {
-                if (first..last).contains(&j) {
-                    self.media_card(("card", j), c, w, wide, cx)
-                } else {
-                    div()
-                        .w(px(w))
-                        .h(px(card_height(w, wide, pad)))
-                        .flex_none()
-                        .into_any_element()
-                }
-            })
-            .collect();
+        let cards_in = |show: bool, before: f32, after: f32| {
+            let last = if show {
+                (((-offset + after) / w).ceil().max(0.) as usize).min(items.len())
+            } else {
+                0
+            };
+            (((-offset - before) / w).floor().max(0.) as usize).min(last)..last
+        };
+        let shown = cards_in(visible, w, cw + w);
+        let near = cards_in(near, cw, 2. * cw);
+        let spacer = |n: usize| {
+            div()
+                .w(px(n as f32 * w))
+                .h(px(card_height(w, wide, pad)))
+                .flex_none()
+                .into_any_element()
+        };
+        let mut cards = vec![spacer(shown.start)];
+        for j in shown.clone() {
+            cards.push(self.media_card(("card", j), &items[j], w, wide, cx));
+        }
+        cards.push(spacer(items.len() - shown.end));
         self.hub_vec(lib)[i].items = items;
+        let rest = [
+            near.start..shown.start.clamp(near.start, near.end),
+            shown.end.clamp(near.start, near.end)..near.end,
+        ];
         let base = self.hub_vec(lib)[i].slide.map_or(offset, |(_, to, _)| to);
         let max = f32::from(scroll.max_offset().x);
         let page = (cw - 16.) * 0.8;
@@ -485,7 +512,7 @@ impl Plaivo {
             + pad;
         let left = hovered && offset < -1.;
         let right = hovered && -offset < max - 1.;
-        div()
+        let hub = div()
             .id(("hub", i))
             .flex()
             .flex_col()
@@ -593,7 +620,8 @@ impl Plaivo {
                         )
                     }),
             )
-            .into_any_element()
+            .into_any_element();
+        (hub, rest)
     }
 }
 

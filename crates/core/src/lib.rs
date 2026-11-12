@@ -119,6 +119,9 @@ pub fn first<'a>(options: &[&'a str]) -> &'a str {
 }
 
 pub fn redact(line: &str) -> String {
+    if !line.contains("Token") && !line.contains("ApiKey") {
+        return line.to_owned();
+    }
     ["X-Plex-Token", "ApiKey", "Token"]
         .iter()
         .fold(line.to_owned(), |l, key| redact_key(&l, key))

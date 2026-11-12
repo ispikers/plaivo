@@ -1,5 +1,5 @@
 use crate::jellyfin;
-use crate::plex::{Client, Item, R, Server, encode, err};
+use crate::plex::{Client, Item, R, Server, drain, encode, err};
 use crate::settings::library_key;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -357,6 +357,7 @@ fn set_plex_account(c: &Client, token: &str, p: &LanguagePrefs) -> R<()> {
         Some(token),
     )
     .send_empty()
+    .map(drain)
     .map_err(err)?;
     Ok(())
 }

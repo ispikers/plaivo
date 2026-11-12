@@ -262,7 +262,10 @@ impl Plaivo {
     }
 
     pub fn close_overlays(&mut self) -> bool {
-        self.menu.take().is_some() | self.dialog.take().is_some() | self.services.cancel()
+        self.menu.take().is_some()
+            | self.dialog.take().is_some()
+            | std::mem::take(&mut self.sort_open)
+            | self.services.cancel()
     }
 
     fn menu_entries(
@@ -704,7 +707,7 @@ impl Plaivo {
                             .child(radio(t == current))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.settings.theme = t;
-                                this.settings.save();
+                                this.save_settings_soon(cx);
                                 this.dialog = None;
                                 cx.notify();
                             }))
