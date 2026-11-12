@@ -105,7 +105,11 @@ impl Plaivo {
                     .pb(px(24.))
                     .children(hero)
                     .children(hubs),
-            )
+            );
+        div()
+            .size_full()
+            .relative()
+            .child(page)
             .child(
                 div().absolute().top(px(12.)).right(px(12.)).child(
                     overlay_button(
@@ -119,11 +123,7 @@ impl Plaivo {
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))),
                 ),
-            );
-        div()
-            .size_full()
-            .relative()
-            .child(page)
+            )
             .child(scrollbar(&self.home_scroll))
             .into_any_element()
     }
