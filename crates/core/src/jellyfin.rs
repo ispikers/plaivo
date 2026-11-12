@@ -64,7 +64,7 @@ struct Dto {
     season_name: String,
     series_id: String,
     season_id: String,
-    parent_id: String,
+    parent_id: Option<String>,
     index_number: Option<i64>,
     parent_index_number: Option<i64>,
     production_year: Option<i64>,
@@ -311,7 +311,11 @@ impl Dto {
             .map(|t| image(&self.parent_backdrop_item_id, "Backdrop/0", t))
             .unwrap_or_default();
         let series_thumb = image(&self.series_id, "Primary", &self.series_primary_image_tag);
-        let parent_key = first(&[&self.season_id, &self.parent_id]).to_owned();
+        let parent_key = first(&[
+            &self.season_id,
+            self.parent_id.as_deref().unwrap_or_default(),
+        ])
+        .to_owned();
         let (
             parent_title,
             parent_rating_key,
@@ -336,7 +340,11 @@ impl Dto {
             ),
             "season" => (
                 self.series_name,
-                first(&[&self.series_id, &self.parent_id]).to_owned(),
+                first(&[
+                    &self.series_id,
+                    self.parent_id.as_deref().unwrap_or_default(),
+                ])
+                .to_owned(),
                 series_thumb,
                 String::new(),
                 String::new(),
@@ -1563,7 +1571,7 @@ mod tests {
                 {"Id": "s1", "Type": "Season", "Name": "Season 1"},
                 {"Id": "show", "Type": "Series", "Name": "Show"},
                 {"Id": "a656b907eb3a73532e40e44b968d0225", "Type": "CollectionFolder", "Name": "Shows"},
-                {"Id": "root", "Type": "UserRootFolder"}
+                {"Id": "root", "Type": "UserRootFolder", "ParentId": null}
             ]"#,
         )
         .unwrap();
