@@ -19,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const QUEUE_ROW: f32 = 75.;
 const SEEK_PREVIEW: Duration = Duration::from_millis(500);
+const BOOST_HOLD: Duration = Duration::from_millis(300);
 const SPIN_PERIOD_MS: u128 = 900;
 
 fn control(
@@ -164,6 +165,10 @@ impl Plaivo {
         row
     }
 
+    fn end_mouse_hold(&mut self) -> bool {
+        self.view.mouse_hold.take().is_some() && self.end_boost()
+    }
+
     fn end_seek_drag(&mut self, x: f32, cx: &mut Context<Self>) {
         self.view.seek_preview = None;
         if self.view.seek_drag.take().is_some() {
@@ -231,8 +236,30 @@ impl Plaivo {
             .id("video")
             .absolute()
             .size_full()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                    this.view.mouse_hold = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(BOOST_HOLD).await;
+                        this.update(cx, |this, cx| {
+                            this.start_boost();
+                            cx.notify();
+                        })
+                        .ok();
+                    }));
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.end_mouse_hold() {
+                        cx.notify();
+                    }
+                }),
+            )
             .on_click(cx.listener(|this, ev: &gpui::ClickEvent, window, cx| {
-                if ev.click_count() >= 2 {
+                if this.end_mouse_hold() {
+                } else if ev.click_count() >= 2 {
                     window.toggle_fullscreen();
                 } else if this.player.panel.is_some() {
                     this.player.panel = None;

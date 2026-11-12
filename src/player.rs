@@ -186,6 +186,8 @@ impl Plaivo {
             // Default lanczos upscaling was ~30% GPU for 1080p on an M4 Air; hermite ~16%, softer but no ringing.
             ("scale", "hermite"),
             ("target-colorspace-hint", "yes"),
+            // Audio queued at the old speed is timed at the new one, so a speed change shifts video by up to this much (default 0.2s ≈ 5 frames).
+            ("audio-buffer", "0.05"),
             ("idle", "yes"),
             ("keep-open", "no"),
             ("osc", "no"),
@@ -861,6 +863,21 @@ impl Plaivo {
         }
         self.player.speed = speed;
         self.mpv(|m| m.set("speed", &speed.to_string()));
+    }
+
+    pub fn start_boost(&mut self) {
+        if self.view.boost.is_none() {
+            self.view.boost = Some(self.player.speed);
+            self.set_speed(2.0);
+        }
+    }
+
+    pub fn end_boost(&mut self) -> bool {
+        let Some(prev) = self.view.boost.take() else {
+            return false;
+        };
+        self.set_speed(prev);
+        true
     }
 
     pub fn nudge_delay(&mut self, audio: bool, ms: f64) {

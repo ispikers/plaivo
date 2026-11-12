@@ -295,6 +295,9 @@ pub struct ViewState {
     pub volume_drag: bool,
     pub hub_hover: Option<usize>,
     pub cursor_hidden: bool,
+    pub boost: Option<f64>,
+    pub space_down: bool,
+    pub mouse_hold: Option<Task<()>>,
 }
 
 pub struct Plaivo {

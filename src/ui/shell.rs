@@ -3,7 +3,7 @@ use crate::menu;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, shadow};
 use gpui::{
-    AnyElement, Context, ElementId, FontWeight, Hsla, KeyDownEvent, SharedString, Window, div,
+    AnyElement, Context, ElementId, FontWeight, Hsla, KeyDownEvent, KeyUpEvent, SharedString, Window, div,
     prelude::*, px, rgb,
 };
 use std::time::{Duration, Instant};
@@ -68,6 +68,7 @@ impl Render for Plaivo {
             .text_size(px(14.))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .on_key_up(cx.listener(Self::on_key_up))
             .on_action(cx.listener(|this, _: &menu::OpenSettings, _, cx| {
                 if !matches!(this.page, Page::Splash | Page::Auth) {
                     this.open_from_player(Nav::Settings(None), cx);
@@ -105,7 +106,13 @@ impl Plaivo {
         }
         self.wake_controls(cx);
         match ev.keystroke.key.as_str() {
-            "space" | "k" => self.toggle_pause(),
+            "space" if ev.is_held => {
+                if self.view.space_down {
+                    self.start_boost();
+                }
+            }
+            "space" => self.view.space_down = true,
+            "k" => self.toggle_pause(),
             "left" | "right" => {
                 let step = if ev.keystroke.modifiers.shift {
                     self.settings.seek_large
@@ -141,6 +148,17 @@ impl Plaivo {
                 }
             }
             _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn on_key_up(&mut self, ev: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if ev.keystroke.key != "space" || !std::mem::take(&mut self.view.space_down) {
+            return;
+        }
+        if !self.end_boost() && self.page == Page::Player {
+            self.toggle_pause();
         }
         cx.stop_propagation();
         cx.notify();
