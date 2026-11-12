@@ -24,6 +24,7 @@
   {"name": "Little CMS", "version": "", "license": "MIT", "files": ["libmpv/lcms2.txt"]},
   {"name": "mingw-w64 runtime (Windows)", "version": "", "license": "ZPL-2.1 AND MIT", "files": ["libmpv/mingw-w64.txt"]},
   {"name": "MoltenVK (macOS)", "version": "", "license": "Apache-2.0", "files": ["libmpv/moltenvk-notice.txt", "Apache-2.0.txt"]},
+  {"name": "OpenSSL (Windows)", "version": "", "license": "Apache-2.0", "files": ["libmpv/openssl-notice.txt", "Apache-2.0.txt"]},
   {"name": "PCRE2", "version": "", "license": "BSD-3-Clause WITH PCRE2-exception", "files": ["libmpv/pcre2.txt"]},
   {"name": "shaderc", "version": "", "license": "Apache-2.0", "files": ["libmpv/shaderc-notice.txt", "Apache-2.0.txt"]},
   {"name": "SPIRV-Cross", "version": "", "license": "Apache-2.0", "files": ["libmpv/spirv-cross-notice.txt", "Apache-2.0.txt"]},

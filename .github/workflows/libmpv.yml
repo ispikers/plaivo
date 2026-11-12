@@ -19,7 +19,7 @@ jobs:
           pacboy: >-
             gcc:p meson:p ninja:p nasm:p pkgconf:p
             dav1d:p libass:p lcms2:p shaderc:p spirv-cross:p
-            vulkan-headers:p vulkan-loader:p uchardet:p
+            vulkan-headers:p vulkan-loader:p uchardet:p openssl:p
       - run: bash deps/build-libmpv.sh out
       - run: cd out && tar -czf ../libmpv-windows-x64.tar.gz *
       - uses: actions/upload-artifact@v7

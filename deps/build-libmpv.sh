@@ -12,7 +12,7 @@ export PKG_CONFIG_PATH=$prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH
 
 case "$(uname -s)" in
   MINGW*)
-    ffmpeg_os=(--enable-d3d11va --enable-dxva2 --enable-schannel)
+    ffmpeg_os=(--enable-d3d11va --enable-dxva2 --enable-openssl)
     placebo_os=(-Dd3d11=enabled)
     mpv_os=(-Dd3d11=enabled -Dd3d-hwaccel=enabled -Dshaderc=enabled -Dspirv-cross=enabled -Dvulkan=enabled)
     ;;

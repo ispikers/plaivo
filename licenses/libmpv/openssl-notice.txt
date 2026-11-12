@@ -1,0 +1,6 @@
+OpenSSL, https://www.openssl.org
+
+Copyright (c) 1998-2026 The OpenSSL Project Authors
+Copyright (c) 1995-1998 Eric A. Young, Tim J. Hudson
+
+Licensed under the Apache License, Version 2.0.
