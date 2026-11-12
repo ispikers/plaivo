@@ -438,17 +438,24 @@ fun PlayerScreen(player: PlayerActivity) {
                         if (episodic)
                             Control(
                                 Glyph.SkipPrevious,
+                                "Previous episode",
                                 size = 60.dp,
                                 icon = 34.dp,
                                 enabled = prev != null,
                                 onClick = playPrev,
                             )
-                        Control(if (paused) Glyph.Play else Glyph.Pause, size = 76.dp, icon = 46.dp) {
+                        Control(
+                            if (paused) Glyph.Play else Glyph.Pause,
+                            if (paused) "Play" else "Pause",
+                            size = 76.dp,
+                            icon = 46.dp,
+                        ) {
                             player.togglePause()
                         }
                         if (episodic)
                             Control(
                                 Glyph.SkipNext,
+                                "Next episode",
                                 size = 60.dp,
                                 icon = 34.dp,
                                 enabled = next != null,
@@ -509,20 +516,32 @@ fun PlayerScreen(player: PlayerActivity) {
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         if (!touch) {
-                            if (episodic) Control(Glyph.SkipPrevious, enabled = prev != null, onClick = playPrev)
-                            Control(Glyph.Replay, badge = "${small / 1000}") { player.seekBy(-small) }
+                            if (episodic)
+                                Control(
+                                    Glyph.SkipPrevious,
+                                    "Previous episode",
+                                    enabled = prev != null,
+                                    onClick = playPrev,
+                                )
+                            Control(Glyph.Replay, "Back ${small / 1000} seconds", badge = "${small / 1000}") {
+                                player.seekBy(-small)
+                            }
                             Control(
                                 if (paused) Glyph.Play else Glyph.Pause,
+                                if (paused) "Play" else "Pause",
                                 size = 52.dp,
                                 icon = 30.dp,
                                 modifier = Modifier.focusRequester(playButton),
                             ) {
                                 player.togglePause()
                             }
-                            Control(Glyph.Forward, badge = "${small / 1000}") { player.seekBy(small) }
-                            if (episodic) Control(Glyph.SkipNext, enabled = next != null, onClick = playNext)
+                            Control(Glyph.Forward, "Forward ${small / 1000} seconds", badge = "${small / 1000}") {
+                                player.seekBy(small)
+                            }
+                            if (episodic)
+                                Control(Glyph.SkipNext, "Next episode", enabled = next != null, onClick = playNext)
                         }
-                        Control(Glyph.Stop) { player.finish() }
+                        Control(Glyph.Stop, "Stop") { player.finish() }
                         if (duration > 0) {
                             val ends = System.currentTimeMillis() + ((duration - position) / player.speed).toLong()
                             Text(
@@ -535,18 +554,19 @@ fun PlayerScreen(player: PlayerActivity) {
                         Spacer(Modifier.weight(1f))
                         Control(
                             Glyph.Tune,
+                            Panel.Settings.title,
                             selected = panel?.let { it == Panel.Settings || it.parent == Panel.Settings } == true,
                         ) {
                             panel = if (panel == Panel.Settings) null else Panel.Settings
                         }
-                        Control(Glyph.Subtitles, selected = panel == Panel.Tracks) {
+                        Control(Glyph.Subtitles, Panel.Tracks.title, selected = panel == Panel.Tracks) {
                             panel = if (panel == Panel.Tracks) null else Panel.Tracks
                         }
                         if (episodic)
-                            Control(Glyph.Queue, selected = panel == Panel.Queue) {
+                            Control(Glyph.Queue, Panel.Queue.title, selected = panel == Panel.Queue) {
                                 panel = if (panel == Panel.Queue) null else Panel.Queue
                             }
-                        Control(player.scale.glyph) {
+                        Control(player.scale.glyph, "Video scale: ${player.scale.label}") {
                             val s = player.cycleScale()
                             hint = s.glyph to s.label
                         }
@@ -659,6 +679,7 @@ fun PlayerScreen(player: PlayerActivity) {
 @Composable
 private fun Control(
     glyph: Glyph,
+    label: String,
     modifier: Modifier = Modifier,
     size: Dp = 44.dp,
     icon: Dp = 24.dp,
@@ -676,6 +697,7 @@ private fun Control(
             modifier
                 .size(if (touch) size.coerceAtLeast(48.dp) else size)
                 .alpha(if (enabled) 1f else 0.4f)
+                .semantics { contentDescription = label }
                 .tap(touch, source, enabled, onClick),
         interactionSource = source,
         shape = ClickableSurfaceDefaults.shape(CircleShape),

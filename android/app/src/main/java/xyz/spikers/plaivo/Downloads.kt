@@ -6,6 +6,7 @@ import android.app.Application
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.storage.StorageManager
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -79,6 +80,16 @@ object DownloadQueue : DownloadListener {
     }
 }
 
+fun freeSpace(dir: File): ULong {
+    if (Build.VERSION.SDK_INT >= 26) {
+        val storage = App.instance.getSystemService(StorageManager::class.java)
+        runCatching {
+            return storage.getAllocatableBytes(storage.getUuidForPath(dir)).toULong()
+        }
+    }
+    return dir.usableSpace.toULong()
+}
+
 fun fmtSize(bytes: ULong): String = Formatter.formatShortFileSize(App.instance, bytes.toLong())
 
 private fun Download.detail(available: Boolean): String {
@@ -105,7 +116,7 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
     val queue = entries.filter { it.state != DownloadState.DONE }
     val done = entries.filter { it.state == DownloadState.DONE }.map { "${it.server}/${it.key}/${it.watched}" }
     val library by produceState(emptyList<MediaCard>(), done) { value = io { core.offlineLibrary() } }
-    val free = remember(done) { DownloadQueue.root.usableSpace.toULong() }
+    val free by produceState<ULong?>(null, done) { value = io { freeSpace(DownloadQueue.root) } }
     val servers = remember { core.servers().map { it.id }.toSet() }
     val keys = queue.map { "q/${it.server}/${it.key}" } + library.map { "${it.server}/${it.key}" }
     val latestKeys by rememberUpdatedState(keys)
@@ -144,7 +155,11 @@ fun DownloadsScreen(play: (MediaCard) -> Unit) {
                             if (entries.isEmpty())
                                 "Nothing downloaded yet. ${if (touch) "Long-press" else "Hold OK on"} a poster to download it."
                             else "${library.size} downloaded · ${queue.size} in queue"
-                        Text("$status · ${fmtSize(free)} free", fontSize = 13.sp, color = Palette.muted)
+                        Text(
+                            listOfNotNull(status, free?.let { "${fmtSize(it)} free" }).joinToString(" · "),
+                            fontSize = 13.sp,
+                            color = Palette.muted,
+                        )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         val running =

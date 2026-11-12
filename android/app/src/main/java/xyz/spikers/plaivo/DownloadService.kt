@@ -24,12 +24,14 @@ class DownloadService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val list = DownloadQueue.entries.value
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION,
-            notification(this, list),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-        )
+        val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
+        val started = runCatching { ServiceCompat.startForeground(this, NOTIFICATION, notification(this, list), type) }
+        started.exceptionOrNull()?.let {
+            blocked = true
+            android.util.Log.w("Plaivo", "download service could not enter the foreground: $it")
+            stopSelf()
+            return START_NOT_STICKY
+        }
         running = this
         if (intent?.action == PAUSE) background.launch { core.pauseAllDownloads() } else if (!active(list)) stopSelf()
         return START_NOT_STICKY
@@ -115,7 +117,7 @@ class DownloadService : Service() {
                 PendingIntent.getActivity(
                     context,
                     0,
-                    Intent(context, MainActivity::class.java),
+                    Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
                     PendingIntent.FLAG_IMMUTABLE,
                 )
             return NotificationCompat.Builder(context, CHANNEL)

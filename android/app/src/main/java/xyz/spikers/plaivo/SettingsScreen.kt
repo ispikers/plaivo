@@ -1,5 +1,6 @@
 package xyz.spikers.plaivo
 
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -29,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,6 +49,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -408,9 +412,7 @@ fun SettingsScreen(
                         }
                 Category.General -> {
                     SectionTitle("Home server")
-                    Note(
-                        "Home shows Continue Watching and recommendations from this server. Libraries from every server stay in the sidebar."
-                    )
+                    Note("Home shows Continue Watching and recommendations from this server.")
                     servers.forEach { s ->
                         val selected = s.id == home?.id
                         SettingsRow(
@@ -591,7 +593,7 @@ fun SettingsScreen(
                         SettingsRow(
                             null,
                             "Countdown",
-                            "Seconds the Up next card waits before playing. 0 plays at once.",
+                            "Seconds before the next video plays",
                             onClick = { onEdit { it.copy(autoplayCountdown = COUNTDOWNS.after(it.autoplayCountdown)) } },
                         ) {
                             Value("${settings.autoplayCountdown} s")
@@ -633,9 +635,7 @@ fun SettingsScreen(
                         Value("${settings.seekLarge} s")
                     }
                     SectionTitle("Default quality")
-                    Note(
-                        "Videos play at this quality unless the file is already smaller. Changing quality in the player updates it too."
-                    )
+                    Note("Used unless the file is already smaller.")
                     val original = qualities.none { it.kbps.toInt() == quality }
                     SettingsRow(
                         null,
@@ -744,7 +744,7 @@ fun SettingsScreen(
                     }
                 Category.PlaybackOverrideQuality ->
                     playbackDraft?.let { (index, r) ->
-                        Note("Videos play at this quality unless the file is already smaller.")
+                        Note("Used unless the file is already smaller.")
                         (listOf(null, 0u) + qualities.map { it.kbps }).forEachIndexed { i, kbps ->
                             val on = r.quality == kbps
                             SettingsRow(
@@ -761,9 +761,7 @@ fun SettingsScreen(
                     }
                 Category.AudioSubtitles -> {
                     SectionTitle("Languages")
-                    Note(
-                        "Saved to your Plex account and Jellyfin users, so other apps follow them too. This device keeps a copy for offline playback."
-                    )
+                    Note("Saved to your Plex and Jellyfin accounts.")
                     SettingsRow(
                         null,
                         "Audio language",
@@ -784,15 +782,13 @@ fun SettingsScreen(
                     SettingsRow(
                         null,
                         "Show subtitles",
-                        "Forced subtitles for foreign dialogue show in every mode",
+                        "Forced subtitles always show",
                         onClick = { editLanguages { it.copy(mode = SubtitleMode.entries.after(it.mode)) } },
                     ) {
                         Value(settings.subtitleMode.label)
                     }
                     SectionTitle("Overrides")
-                    Note(
-                        "Use different languages for some libraries, like Japanese audio for an anime library. Saved on this device. The first matching override wins."
-                    )
+                    Note("Use different languages for some libraries. The first match wins.")
                     settings.languageRules.forEachIndexed { i, r ->
                         SettingsRow(
                             Glyph.Sort,
@@ -816,7 +812,7 @@ fun SettingsScreen(
                         },
                     )
                     SectionTitle("Subtitle style")
-                    Note("Applies to text subtitles. Styled ASS subtitles keep their own colours.")
+                    Note("Styled ASS subtitles keep their own look.")
                     SettingsRow(
                         null,
                         "Size",
@@ -1001,9 +997,7 @@ fun SettingsScreen(
                     }
                 }
                 Category.Services -> {
-                    Note(
-                        "Marks what you watch as watched on these services. Trakt also shows what you are watching now."
-                    )
+                    Note("Syncs what you watch to these services.")
                     Service.entries.forEach { s ->
                         val status = trackers.getValue(s)
                         SectionTitle(s.title)
@@ -1054,7 +1048,7 @@ fun SettingsScreen(
                 }
                 Category.WatchTogether -> {
                     SectionTitle("Display name")
-                    Note("Shown to everyone in the room. Leave it empty to use this TV's name.")
+                    Note("Leave empty to use this TV's name.")
                     var name by remember { mutableStateOf(settings.watchName) }
                     Field(
                         name,
@@ -1069,9 +1063,7 @@ fun SettingsScreen(
                         Modifier.takeFocus(true),
                     )
                     SectionTitle("Relay")
-                    Note(
-                        "Rooms go through a relay server. Everyone in a room must use the same relay. Changes apply the next time you create or join a room."
-                    )
+                    Note("Everyone in a room must use the same relay. Applies from the next room you join.")
                     var custom by remember { mutableStateOf(settings.watchRelay.isNotBlank()) }
                     SettingsRow(
                         Glyph.Link,
@@ -1103,10 +1095,11 @@ fun SettingsScreen(
                 }
                 Category.Downloads -> {
                     SectionTitle("Location")
-                    Note("Downloads are kept in Plaivo's own storage on this device. Uninstalling Plaivo deletes them.")
+                    Note("Uninstalling Plaivo deletes your downloads.")
                     val root = DownloadQueue.root
+                    val free by produceState<ULong?>(null) { value = io { freeSpace(root) } }
                     SettingsRow(Glyph.Download, "Download folder", root.absolutePath, Modifier.takeFocus(true)) {
-                        Value("${fmtSize(root.usableSpace.toULong())} free")
+                        free?.let { Value("${fmtSize(it)} free") }
                     }
                     SectionTitle("Cleanup")
                     SettingsRow(
@@ -1238,10 +1231,17 @@ fun Switch(on: Boolean) {
 
 @Composable
 fun MoveButton(glyph: Glyph, enabled: Boolean, onClick: () -> Unit) {
+    val label =
+        when (glyph) {
+            Glyph.ExpandLess -> "Move up"
+            Glyph.ExpandMore -> "Move down"
+            Glyph.Close -> "Remove"
+            else -> glyph.name
+        }
     if (LocalTouch.current) {
         TouchSurface(
             onClick = onClick,
-            modifier = Modifier.size(44.dp).alpha(if (enabled) 1f else 0.35f),
+            modifier = Modifier.size(44.dp).alpha(if (enabled) 1f else 0.35f).semantics { contentDescription = label },
             enabled = enabled,
             shape = CircleShape,
             color = Palette.surface,
@@ -1254,7 +1254,7 @@ fun MoveButton(glyph: Glyph, enabled: Boolean, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.size(44.dp).alpha(if (enabled) 1f else 0.35f),
+        modifier = Modifier.size(44.dp).alpha(if (enabled) 1f else 0.35f).semantics { contentDescription = label },
         shape = ClickableSurfaceDefaults.shape(CircleShape),
         colors =
             ClickableSurfaceDefaults.colors(

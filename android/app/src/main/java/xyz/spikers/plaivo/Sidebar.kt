@@ -87,7 +87,7 @@ fun Sidebar(
         )
     val labelAlpha by
         animateFloatAsState(if (expanded) 1f else 0f, tween(SIDEBAR_ANIM_MS, easing = EaseOutQuart), label = "labels")
-    val groups = libraries.groupBy { it.serverName }
+    val groups = remember(libraries) { libraries.groupBy { it.serverName } }
     fun Modifier.selectedFocus(selected: Boolean) = if (selected) focusRequester(focus) else this
     Column(
         modifier

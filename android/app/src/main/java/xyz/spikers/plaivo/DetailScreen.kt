@@ -49,8 +49,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -77,6 +77,7 @@ import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.discoverId
 
 private val rowShape = RoundedCornerShape(10.dp)
+private val TV_WIDTH = 960.dp
 
 private fun Detail.card(key: String = this.key) =
     MediaCard(
@@ -110,6 +111,7 @@ fun DetailScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var season by remember { mutableStateOf<String?>(null) }
     var episodes by remember { mutableStateOf<List<MediaCard>>(emptyList()) }
+    var episodesOf by remember { mutableStateOf<String?>(null) }
     var related by remember { mutableStateOf<List<MediaRow>>(emptyList()) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(refresh) {
@@ -129,7 +131,10 @@ fun DetailScreen(
     }
     LaunchedEffect(chosen, refresh) {
         if (chosen == null) return@LaunchedEffect
-        io { runCatching { core.episodes(server, chosen, true) } }.onSuccess { episodes = it }
+        io { runCatching { core.episodes(server, chosen, true) } }
+            .onSuccess { episodes = it }
+            .onFailure { if (episodesOf != chosen) episodes = emptyList() }
+        episodesOf = chosen
         io { runCatching { core.episodes(server, chosen, false) } }.onSuccess { episodes = it }
     }
     val touch = LocalTouch.current
@@ -144,9 +149,11 @@ fun DetailScreen(
             Toast.makeText(context, result.getOrElse { "Could not update: ${it.message}" }, Toast.LENGTH_SHORT).show()
             if (result.isSuccess) onChanged()
         }
-    val portrait = touch && LocalWindowInfo.current.containerSize.let { it.width < it.height }
+    val window = LocalWindowInfo.current.containerSize
+    val portrait = touch && window.width < window.height
+    val sideInfo = d.info.isNotEmpty() && (!touch || with(LocalDensity.current) { window.width.toDp() } >= TV_WIDTH)
     val edge = if (portrait) Dims.gutter else Dims.edge
-    val screenH = LocalConfiguration.current.screenHeightDp.dp
+    val screenH = with(LocalDensity.current) { window.height.toDp() }
     var hint by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 48.dp)) {
         if (portrait)
@@ -214,7 +221,7 @@ fun DetailScreen(
                                 )
                             )
                     )
-                    if (d.info.isNotEmpty()) {
+                    if (sideInfo) {
                         Column(
                             Modifier.align(Alignment.TopEnd)
                                 .padding(top = 40.dp, end = Dims.edge)
@@ -229,7 +236,7 @@ fun DetailScreen(
                     Column(
                         Modifier.align(Alignment.BottomStart)
                             .padding(start = Dims.edge, end = Dims.edge, top = 48.dp, bottom = 16.dp)
-                            .fillMaxWidth(if (d.info.isEmpty()) 1f else 0.68f),
+                            .fillMaxWidth(if (sideInfo) 0.68f else 1f),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         if (d.eyebrow.isNotEmpty())
@@ -255,6 +262,10 @@ fun DetailScreen(
                             Text(hint, fontSize = 13.sp, color = Palette.muted, modifier = Modifier.weight(1f))
                             MediaLine(d)
                         }
+                        if (!sideInfo && d.info.isNotEmpty())
+                            Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                InfoRows(d)
+                            }
                     }
                 }
             }

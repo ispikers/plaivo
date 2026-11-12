@@ -7,12 +7,12 @@ use plaivo_core::plex::{
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{
     BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, PlaybackRule, SUBTITLE_COLORS, Scale,
-    Settings, SkipMode, Theme, ViewMode, library_key,
+    Settings, SkipMode, Theme, ViewMode, library_key, rank_in,
 };
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
 use plaivo_core::{Account, detail, first, jellyfin, join, store};
 use qrcodegen::{QrCode, QrCodeEcc};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -811,9 +811,12 @@ impl Plaivo {
         }
     }
 
-    pub fn arrange_libraries(&self, mut sections: Vec<Section>) -> Vec<Section> {
-        let settings = self.settings.lock().unwrap();
-        sections.sort_by_cached_key(|s| settings.library_rank(&s.id));
+    pub fn arrange_libraries(
+        &self,
+        mut sections: Vec<Section>,
+        order: Vec<String>,
+    ) -> Vec<Section> {
+        sections.sort_by_cached_key(|s| rank_in(&order, &s.id));
         sections
     }
 
@@ -1737,10 +1740,14 @@ fn hub_sorts(items: &[Item], key: &str) -> Vec<HubSort> {
         .collect()
 }
 
+// Kotlin's lazy lists key rows by title and cards by key, and crash on duplicates.
 fn rows(srv: &Server, hubs: &[Hub], prefs: &CardPrefs) -> Vec<Row> {
+    let mut titles = HashSet::new();
     hubs.iter()
+        .filter(|h| titles.insert(h.title.as_str()))
         .map(|h| {
             let wide = prefs.wide_hub(h);
+            let mut keys = HashSet::new();
             Row {
                 key: h.key.clone(),
                 title: h.title.clone(),
@@ -1749,6 +1756,7 @@ fn rows(srv: &Server, hubs: &[Hub], prefs: &CardPrefs) -> Vec<Row> {
                 cards: h
                     .metadata
                     .iter()
+                    .filter(|it| keys.insert(it.rating_key.as_str()))
                     .map(|it| card(srv, it, wide, prefs))
                     .collect(),
             }
@@ -2062,6 +2070,36 @@ pub fn rust_license_text(index: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rows_drop_duplicate_titles_and_cards() {
+        use super::{Hub, Item, Server, Settings, rows};
+        let item = |key: &str| Item {
+            rating_key: key.into(),
+            ..Default::default()
+        };
+        let hub = |title: &str, keys: &[&str]| Hub {
+            title: title.into(),
+            metadata: keys.iter().map(|k| item(k)).collect(),
+            ..Default::default()
+        };
+        let hubs = [
+            hub("A", &["1", "2", "1"]),
+            hub("B", &["1"]),
+            hub("A", &["3"]),
+        ];
+        let out = rows(&Server::default(), &hubs, &Settings::default().card_prefs());
+        let shape: Vec<_> = out
+            .iter()
+            .map(|r| {
+                (
+                    r.title.as_str(),
+                    r.cards.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(shape, [("A", vec!["1", "2"]), ("B", vec!["1"])]);
+    }
+
     #[test]
     fn download_scope_picks_the_season_or_show() {
         use super::{DownloadScope as S, Item, download_parent};

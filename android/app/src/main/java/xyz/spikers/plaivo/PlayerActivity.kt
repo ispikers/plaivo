@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -315,8 +316,8 @@ class PlayerActivity : ComponentActivity() {
                     queueShow = null
                     queue = emptyList()
                 } else if (show != queueShow) {
-                    queueShow = show
                     queue = io { runCatching { core.queue(p.server, show) } }.getOrDefault(emptyList())
+                    queueShow = show
                 }
             }
     }
@@ -533,12 +534,13 @@ class PlayerActivity : ComponentActivity() {
         val v = exo.videoFormat
         val a = exo.audioFormat
         val color =
-            when (v?.colorInfo?.colorTransfer) {
-                C.COLOR_TRANSFER_ST2084 -> "HDR10 (PQ)"
-                C.COLOR_TRANSFER_HLG -> "HLG"
-                null -> ""
-                else -> "SDR"
-            }
+            v?.colorInfo?.let {
+                when (it.colorTransfer) {
+                    C.COLOR_TRANSFER_ST2084 -> "HDR10 (PQ)"
+                    C.COLOR_TRANSFER_HLG -> "HLG"
+                    else -> "SDR"
+                }
+            } ?: ""
         val rows =
             listOf(
                 "Playback" to if (p.transcodeSession != null) "Transcode · ${p.transcodeLabel}" else "Direct play",
@@ -549,7 +551,9 @@ class PlayerActivity : ComponentActivity() {
                     join(
                         codecName(v?.sampleMimeType),
                         v?.takeIf { it.width > 0 }?.let { "${it.width}×${it.height}" } ?: "",
-                        v?.frameRate?.takeIf { it > 0 }?.let { "%.3f fps".format(it).replace(".000", "") } ?: "",
+                        v?.frameRate
+                            ?.takeIf { it > 0 }
+                            ?.let { "${"%.3f".format(it).trimEnd('0').trimEnd('.', ',')} fps" } ?: "",
                         v?.bitrate?.takeIf { it > 0 }?.let { fmtBitrate(it / 1000L) } ?: "",
                     ),
                 "Color" to color,
@@ -586,7 +590,7 @@ class PlayerActivity : ComponentActivity() {
         if (Watch.player === this) Watch.player = null
         report("stopped")
         playback?.let { stopTranscode(it) }
-        exo.release()
+        if (::exo.isInitialized) exo.release()
         super.onDestroy()
     }
 
@@ -609,7 +613,7 @@ class PlayerActivity : ComponentActivity() {
                         "webvtt" -> MimeTypes.TEXT_VTT
                         else -> return@mapNotNull null
                     }
-                MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(s.url))
+                MediaItem.SubtitleConfiguration.Builder(s.url.toUri())
                     .setMimeType(mime)
                     .setLanguage(s.language)
                     .setLabel(s.title)

@@ -39,6 +39,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -119,14 +121,20 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit) {
         )
         onDismiss()
     }
-    fun run(action: Action) =
+    var busy by remember { mutableStateOf(false) }
+    fun run(action: Action) {
+        if (busy) return
+        busy = true
         scope.launch {
             val result = io { runCatching { core.menuAction(card.server, card.key, action) } }
             Toast.makeText(context, result.getOrElse { "Could not update: ${it.message}" }, Toast.LENGTH_SHORT).show()
             if (result.isSuccess) onChanged()
             onDismiss()
         }
-    fun rate(stars: UByte?) =
+    }
+    fun rate(stars: UByte?) {
+        if (busy) return
+        busy = true
         scope.launch {
             val result = io { runCatching { core.rate(card.server, card.key, stars) } }
             Toast.makeText(
@@ -140,6 +148,7 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit) {
                 .show()
             onDismiss()
         }
+    }
     val shape = RoundedCornerShape(16.dp)
     val touch = LocalTouch.current
     MenuFrame(page != MenuPage.Main, { page = MenuPage.Main }, onDismiss) {
@@ -276,7 +285,9 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit) {
                         (1..5).forEach { n ->
                             StarButton(
                                 n <= current,
-                                if (n == maxOf(current, 1)) Modifier.focusRequester(first) else Modifier,
+                                (if (n == maxOf(current, 1)) Modifier.focusRequester(first) else Modifier).semantics {
+                                    contentDescription = "Rate $n of 5"
+                                },
                             ) {
                                 rate(n.toUByte())
                             }

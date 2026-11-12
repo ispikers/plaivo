@@ -645,6 +645,7 @@ fun SearchScreen(play: (MediaCard) -> Unit) {
     LaunchedEffect(query) {
         val q = query.trim()
         if (q.isEmpty()) {
+            searching = false
             results = emptyList()
             return@LaunchedEffect
         }

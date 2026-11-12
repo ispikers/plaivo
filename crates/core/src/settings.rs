@@ -237,6 +237,10 @@ impl EpisodePoster {
     }
 }
 
+pub fn rank_in(order: &[String], key: &str) -> usize {
+    order.iter().position(|k| k == key).unwrap_or(usize::MAX)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CardPrefs {
     pub poster: EpisodePoster,
@@ -422,10 +426,7 @@ impl Settings {
     }
 
     pub fn library_rank(&self, key: &str) -> usize {
-        self.library_order
-            .iter()
-            .position(|k| k == key)
-            .unwrap_or(usize::MAX)
+        rank_in(&self.library_order, key)
     }
 
     fn playback_rules_for(&self, library: &str) -> impl Iterator<Item = &PlaybackRule> {

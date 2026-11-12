@@ -318,7 +318,8 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
         libraries = io { core.libraries(false) }
     }
     val home = servers.firstOrNull { it.id == settings.homeServer } ?: servers.firstOrNull()
-    val arranged = remember(libraries, settings.libraryOrder) { core.arrangeLibraries(libraries) }
+    val arranged =
+        remember(libraries, settings.libraryOrder) { core.arrangeLibraries(libraries, settings.libraryOrder) }
     val shown =
         remember(arranged, settings.hiddenLibraries, home) {
             arranged.filter { it.id !in settings.hiddenLibraries }.sortedBy { it.server != home?.id }
