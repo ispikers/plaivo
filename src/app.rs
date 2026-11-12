@@ -1406,9 +1406,15 @@ impl Plaivo {
         for res in resources {
             let (c, t) = (self.client.clone(), token.clone());
             let id = res.client_identifier.clone();
+            let last = self
+                .account
+                .servers
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.uri.clone());
             Self::bg(
                 cx,
-                move || c.connect(&res, &t),
+                move || c.connect(&res, &t, last.as_deref()),
                 move |this, r, cx| {
                     match &r {
                         Ok(srv) => log::info!("discovery: {} reachable at {}", srv.name, srv.uri),

@@ -872,7 +872,14 @@ impl Plaivo {
         let connected: Vec<Server> = std::thread::scope(|s| {
             let probes: Vec<_> = resources
                 .iter()
-                .map(|r| (r, s.spawn(|| self.client.connect(r, &token))))
+                .map(|r| {
+                    let last = previous
+                        .iter()
+                        .find(|p| p.id == r.client_identifier)
+                        .map(|p| p.uri.as_str());
+                    let token = token.as_str();
+                    (r, s.spawn(move || self.client.connect(r, token, last)))
+                })
                 .collect();
             probes
                 .into_iter()

@@ -998,13 +998,24 @@ impl Client {
             .collect())
     }
 
-    pub fn connect(&self, res: &Resource, account_token: &str) -> R<Server> {
+    pub fn connect(&self, res: &Resource, account_token: &str, last: Option<&str>) -> R<Server> {
         let token = res
             .access_token
             .clone()
             .unwrap_or_else(|| account_token.to_owned());
         let mut conns = res.connections.clone();
+        // Rotating-IP hosts advertise dead addresses; a plex.direct cert is bound to this server, so retrying the last one can't leak the token.
+        if let Some(uri) =
+            last.filter(|u| is_plex_direct_https(u) && !conns.iter().any(|c| c.uri == *u))
+        {
+            conns.push(Connection {
+                uri: uri.to_owned(),
+                local: false,
+                relay: false,
+            });
+        }
         conns.sort_by_key(|c| (c.relay, !c.local));
+        let tiers: Vec<_> = conns.iter().map(|c| (c.relay, !c.local)).collect();
         let (tx, rx) = mpsc::channel();
         for (rank, c) in conns.iter().enumerate() {
             let (tx, client, uri, token) = (tx.clone(), self.clone(), c.uri.clone(), token.clone());
@@ -1028,10 +1039,7 @@ impl Client {
         for (rank, uri) in rx {
             results[rank] = uri;
             done[rank] = true;
-            if let Some(best) = (0..conns.len())
-                .take_while(|&i| done[i])
-                .find(|&i| results[i].is_some())
-            {
+            if let Some(best) = best_connection(&tiers, &done, &results) {
                 set_down(&res.client_identifier, false);
                 return Ok(Server {
                     name: res.name.clone(),
@@ -1046,6 +1054,22 @@ impl Client {
         set_down(&res.client_identifier, true);
         Err(format!("Could not reach {}", res.name))
     }
+}
+
+fn is_plex_direct_https(uri: &str) -> bool {
+    uri.strip_prefix("https://")
+        .and_then(|rest| rest.split([':', '/']).next())
+        .is_some_and(|host| host.ends_with(".plex.direct"))
+}
+
+fn best_connection<T: Ord>(
+    tiers: &[T],
+    done: &[bool],
+    results: &[Option<String>],
+) -> Option<usize> {
+    (0..tiers.len()).find(|&i| {
+        results[i].is_some() && (0..tiers.len()).all(|j| done[j] || tiers[j] >= tiers[i])
+    })
 }
 
 impl Server {
@@ -1749,6 +1773,43 @@ pub fn fmt_bitrate(kbps: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_https_plex_direct_addresses_are_retried_from_memory() {
+        assert!(is_plex_direct_https(
+            "https://45-56-96-162.abc.plex.direct:8443"
+        ));
+        assert!(!is_plex_direct_https(
+            "http://45-56-96-162.abc.plex.direct:8443"
+        ));
+        assert!(!is_plex_direct_https("https://45.56.96.162:8443"));
+        assert!(!is_plex_direct_https("https://evil.com/x.plex.direct"));
+        assert!(!is_plex_direct_https("https://plex.direct.evil.com"));
+    }
+
+    #[test]
+    fn a_working_connection_waits_only_for_better_tiers() {
+        let tiers = [0, 1, 1, 2];
+        let ok = |s: &str| Some(s.to_owned());
+        let pending_local = best_connection(
+            &tiers,
+            &[false, false, true, false],
+            &[None, None, ok("b"), None],
+        );
+        assert_eq!(pending_local, None);
+        let peer_still_pending = best_connection(
+            &tiers,
+            &[true, false, true, false],
+            &[None, None, ok("b"), None],
+        );
+        assert_eq!(peer_still_pending, Some(2));
+        let both_ready = best_connection(
+            &tiers,
+            &[true, true, true, false],
+            &[None, ok("a"), ok("b"), None],
+        );
+        assert_eq!(both_ready, Some(1));
+    }
 
     #[test]
     fn recent_hub_lists_open_on_their_date_sort() {
