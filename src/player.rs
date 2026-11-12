@@ -2,7 +2,7 @@ use crate::app::{Card, Choice, Nav, Page, Plaivo, card_for, join};
 use crate::downloads::Local;
 use crate::plex::{self, Ctx, Item, Media, Quality, Server, Source, resolve_playable};
 use crate::prefs::{self, LanguagePrefs, LanguageRule, TrackInfo};
-use crate::settings::{Scale, SkipMode};
+use crate::settings::{Scale, SkipMode, library_key};
 use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::video_host::{self, Region};
@@ -99,6 +99,8 @@ pub struct Player {
     up_next_anchor: Option<f64>,
     advancing: bool,
     pub shader: String,
+    pub quality: u32,
+    library: String,
     pub shader_applied: &'static str,
     shader_failed: &'static str,
     transcode: Option<String>,
@@ -415,9 +417,15 @@ impl Plaivo {
         };
         let (title, subtitle) = heading(&it);
         let media = it.media[0].clone();
+        let library = library_key(&srv.id, &it.library_section_id);
         let (url, session) = match &local {
             Some(l) => (l.file.to_string_lossy().into_owned(), None),
-            None => self.stream_url(&srv, &it.rating_key, &media),
+            None => self.stream_url(
+                &srv,
+                &it.rating_key,
+                &media,
+                self.settings.quality_for(&library),
+            ),
         };
         if self.playing() {
             self.report("stopped", cx);
@@ -433,6 +441,7 @@ impl Plaivo {
             it.duration.unwrap_or(0) as f64 / 1000.0,
             resume.then_some(offset),
             subs,
+            &library,
             cx,
         )?;
         self.player.local = local.is_some();
@@ -767,15 +776,15 @@ impl Plaivo {
         }
     }
 
-    fn stream_url(&self, srv: &Server, key: &str, media: &Media) -> (String, Option<String>) {
-        let (url, transcode) = srv.stream_url(
-            &self.client,
-            key,
-            media,
-            self.settings.quality,
-            false,
-            "aac,ac3,eac3,mp3",
-        );
+    fn stream_url(
+        &self,
+        srv: &Server,
+        key: &str,
+        media: &Media,
+        kbps: u32,
+    ) -> (String, Option<String>) {
+        let (url, transcode) =
+            srv.stream_url(&self.client, key, media, kbps, false, "aac,ac3,eac3,mp3");
         (url, transcode.map(|(_, session)| session))
     }
 
@@ -789,11 +798,24 @@ impl Plaivo {
     }
 
     pub fn set_quality(&mut self, kbps: u32, cx: &mut Context<Self>) {
-        if kbps == self.settings.quality {
-            return;
-        }
+        self.settings.set_quality_for(&self.player.library, kbps);
+        self.settings.save();
+        self.apply_quality(kbps, cx);
+    }
+
+    pub fn set_default_quality(&mut self, kbps: u32, cx: &mut Context<Self>) {
         self.settings.quality = kbps;
         self.settings.save();
+        if self.settings.quality_for(&self.player.library) == kbps {
+            self.apply_quality(kbps, cx);
+        }
+    }
+
+    fn apply_quality(&mut self, kbps: u32, cx: &mut Context<Self>) {
+        if kbps == self.player.quality {
+            return;
+        }
+        self.player.quality = kbps;
         let Some(srv) =
             self.player.server.clone().filter(|_| {
                 self.playing() && !self.player.local && !self.player.media.part.is_empty()
@@ -801,8 +823,12 @@ impl Plaivo {
         else {
             return;
         };
-        let (url, session) =
-            self.stream_url(&srv, &self.player.key.clone(), &self.player.media.clone());
+        let (url, session) = self.stream_url(
+            &srv,
+            &self.player.key.clone(),
+            &self.player.media.clone(),
+            kbps,
+        );
         let report = self
             .player
             .transcode
@@ -984,9 +1010,9 @@ impl Plaivo {
             .and_then(|p| p.file.rsplit(['/', '\\']).next())
             .unwrap_or_default()
             .to_owned();
-        let mode = match (&self.player.transcode, Quality::find(self.settings.quality)) {
+        let mode = match (&self.player.transcode, Quality::find(self.player.quality)) {
             _ if self.player.local => "Downloaded".into(),
-            (Some(_), Some(_)) => format!("Transcode · {}", quality_label(self.settings.quality)),
+            (Some(_), Some(_)) => format!("Transcode · {}", quality_label(self.player.quality)),
             _ => "Direct play".into(),
         };
         let fps = get("container-fps")
@@ -1094,6 +1120,7 @@ impl Plaivo {
         duration: f64,
         start_at: Option<f64>,
         subs: Vec<([String; 3], bool)>,
+        library: &str,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         log::info!(
@@ -1118,7 +1145,9 @@ impl Plaivo {
         p.up_next_cancelled = false;
         p.up_next_anchor = None;
         p.advancing = false;
-        p.shader = self.settings.shader.clone();
+        p.shader = self.settings.shader_for(library).to_owned();
+        p.quality = self.settings.quality_for(library);
+        p.library = library.to_owned();
         p.local = false;
         p.last_report = None;
         p.stop_sent = false;

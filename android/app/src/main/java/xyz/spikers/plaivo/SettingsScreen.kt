@@ -65,6 +65,7 @@ import uniffi.plaivo_ffi.GridSpacing
 import uniffi.plaivo_ffi.Language
 import uniffi.plaivo_ffi.LanguagePrefs
 import uniffi.plaivo_ffi.LanguageRule
+import uniffi.plaivo_ffi.PlaybackRule
 import uniffi.plaivo_ffi.Section
 import uniffi.plaivo_ffi.ServerInfo
 import uniffi.plaivo_ffi.Service
@@ -87,6 +88,9 @@ private enum class Category(val title: String, val glyph: Glyph, val parent: Cat
     Appearance("Appearance", Glyph.Palette),
     Theme("Theme", Glyph.Palette, Appearance),
     Playback("Playback", Glyph.PlayCircle),
+    PlaybackOverride("Override", Glyph.Sort, Playback),
+    PlaybackOverrideLibraries("Libraries", Glyph.Sort, PlaybackOverride),
+    PlaybackOverrideQuality("Quality", Glyph.HighQuality, PlaybackOverride),
     AudioSubtitles("Audio & Subtitles", Glyph.Subtitles),
     AudioLanguage("Audio language", Glyph.Subtitles, AudioSubtitles),
     SubtitleLanguage("Subtitle language", Glyph.Subtitles, AudioSubtitles),
@@ -120,8 +124,8 @@ private fun densityLabel(density: UInt) = DENSITIES[density.toInt().coerceIn(1, 
 private val SkipMode.label
     get() = name.lowercase().replaceFirstChar { it.uppercase() }
 
-private fun ruleTargets(r: LanguageRule, libraries: List<Section>) =
-    r.libraries.map { id -> libraries.firstOrNull { it.id == id }?.title ?: "Missing library" }.joinToString()
+private fun ruleTargets(ids: List<String>, libraries: List<Section>) =
+    ids.map { id -> libraries.firstOrNull { it.id == id }?.title ?: "Missing library" }.joinToString()
 
 private fun ruleDetail(r: LanguageRule) =
     listOfNotNull(
@@ -147,6 +151,27 @@ private val EpisodePoster.label
             EpisodePoster.SEASON -> "Season poster"
             EpisodePoster.THUMBNAIL -> "Thumbnail"
         }
+
+@Composable
+private fun LibraryPicker(
+    libraries: List<Section>,
+    selected: List<String>,
+    focus: (Boolean) -> Modifier,
+    onChange: (List<String>) -> Unit,
+) =
+    libraries.forEachIndexed { i, l ->
+        val on = l.id in selected
+        SettingsRow(
+            null,
+            l.title,
+            l.serverName,
+            focus(i == 0),
+            on,
+            { onChange(if (on) selected - l.id else selected + l.id) },
+        ) {
+            if (on) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
+        }
+    }
 
 @Composable
 private fun Radio(on: Boolean) {
@@ -235,6 +260,12 @@ fun SettingsScreen(
     var category by rememberSaveable { mutableStateOf(if (connections) Category.Connections else null) }
     LaunchedEffect(connections) { if (connections) category = Category.Connections }
     var draft by remember { mutableStateOf<Pair<Int?, LanguageRule>?>(null) }
+    var playbackDraft by remember { mutableStateOf<Pair<Int?, PlaybackRule>?>(null) }
+    fun qualityName(kbps: UInt?) =
+        when (kbps) {
+            null -> "Default · $qualityLabel"
+            else -> qualities.firstOrNull { it.kbps == kbps }?.let { "${it.label} · ${it.bitrate}" } ?: "Original"
+        }
     var last by rememberSaveable { mutableStateOf(Category.General) }
     var navigated by remember { mutableStateOf(false) }
     var focused by remember { mutableStateOf(false) }
@@ -333,6 +364,9 @@ fun SettingsScreen(
                                     Category.Theme,
                                     Category.Override,
                                     Category.OverrideLibraries,
+                                    Category.PlaybackOverride,
+                                    Category.PlaybackOverrideLibraries,
+                                    Category.PlaybackOverrideQuality,
                                     Category.OverrideAudio,
                                     Category.OverrideSubtitles -> ""
                                     Category.AudioSubtitles ->
@@ -624,7 +658,107 @@ fun SettingsScreen(
                             if (selected) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
                         }
                     }
+                    SectionTitle("Overrides")
+                    Note("Use a different quality for some libraries. The first match wins.")
+                    settings.playbackRules.forEachIndexed { i, r ->
+                        SettingsRow(
+                            Glyph.Sort,
+                            ruleTargets(r.libraries, libraries),
+                            r.quality?.let { "Quality: ${qualityName(it)}" } ?: "Uses your defaults",
+                            onClick = {
+                                playbackDraft = i to r
+                                open(Category.PlaybackOverride)
+                            },
+                        ) {
+                            GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
+                        }
+                    }
+                    SettingsRow(
+                        Glyph.Add,
+                        "Add override",
+                        "Pick libraries and the quality to use",
+                        onClick = {
+                            playbackDraft = null to PlaybackRule(emptyList(), null, null)
+                            open(Category.PlaybackOverride)
+                        },
+                    )
                 }
+                Category.PlaybackOverride ->
+                    playbackDraft?.let { (index, r) ->
+                        val targeted = r.libraries.isNotEmpty()
+                        SettingsRow(
+                            null,
+                            "Libraries",
+                            ruleTargets(r.libraries, libraries).ifEmpty { "None" },
+                            Modifier.takeFocus(true),
+                            onClick = { open(Category.PlaybackOverrideLibraries) },
+                        ) {
+                            GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
+                        }
+                        SettingsRow(
+                            null,
+                            "Quality",
+                            qualityName(r.quality),
+                            onClick = { open(Category.PlaybackOverrideQuality) },
+                        ) {
+                            GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
+                        }
+                        SettingsRow(
+                            Glyph.Check,
+                            "Save",
+                            if (targeted) "" else "Pick at least one library",
+                            Modifier.alpha(if (targeted) 1f else 0.4f),
+                            onClick = {
+                                if (targeted) {
+                                    onEdit { s ->
+                                        s.copy(
+                                            playbackRules =
+                                                if (index == null) s.playbackRules + r
+                                                else s.playbackRules.mapIndexed { i, old -> if (i == index) r else old }
+                                        )
+                                    }
+                                    playbackDraft = null
+                                    open(Category.Playback)
+                                }
+                            },
+                        )
+                        if (index != null)
+                            SettingsRow(
+                                Glyph.Close,
+                                "Delete override",
+                                "",
+                                onClick = {
+                                    onEdit { s ->
+                                        s.copy(playbackRules = s.playbackRules.filterIndexed { i, _ -> i != index })
+                                    }
+                                    playbackDraft = null
+                                    open(Category.Playback)
+                                },
+                            )
+                    }
+                Category.PlaybackOverrideLibraries ->
+                    playbackDraft?.let { (index, r) ->
+                        LibraryPicker(libraries, r.libraries, { Modifier.takeFocus(it) }) {
+                            playbackDraft = index to r.copy(libraries = it)
+                        }
+                    }
+                Category.PlaybackOverrideQuality ->
+                    playbackDraft?.let { (index, r) ->
+                        Note("Videos play at this quality unless the file is already smaller.")
+                        (listOf(null, 0u) + qualities.map { it.kbps }).forEachIndexed { i, kbps ->
+                            val on = r.quality == kbps
+                            SettingsRow(
+                                null,
+                                qualityName(kbps),
+                                "",
+                                Modifier.takeFocus(i == 0),
+                                on,
+                                { playbackDraft = index to r.copy(quality = kbps) },
+                            ) {
+                                if (on) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
+                            }
+                        }
+                    }
                 Category.AudioSubtitles -> {
                     SectionTitle("Languages")
                     Note(
@@ -662,7 +796,7 @@ fun SettingsScreen(
                     settings.languageRules.forEachIndexed { i, r ->
                         SettingsRow(
                             Glyph.Sort,
-                            ruleTargets(r, libraries),
+                            ruleTargets(r.libraries, libraries),
                             ruleDetail(r),
                             onClick = {
                                 draft = i to r
@@ -815,21 +949,8 @@ fun SettingsScreen(
                     }
                 Category.OverrideLibraries ->
                     draft?.let { (index, r) ->
-                        libraries.forEachIndexed { i, l ->
-                            val on = l.id in r.libraries
-                            SettingsRow(
-                                null,
-                                l.title,
-                                l.serverName,
-                                Modifier.takeFocus(i == 0),
-                                on,
-                                {
-                                    draft =
-                                        index to r.copy(libraries = if (on) r.libraries - l.id else r.libraries + l.id)
-                                },
-                            ) {
-                                if (on) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
-                            }
+                        LibraryPicker(libraries, r.libraries, { Modifier.takeFocus(it) }) {
+                            draft = index to r.copy(libraries = it)
                         }
                     }
                 Category.OverrideAudio,

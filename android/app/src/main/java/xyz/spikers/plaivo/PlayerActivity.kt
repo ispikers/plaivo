@@ -57,6 +57,7 @@ import uniffi.plaivo_ffi.TrackInfo
 import uniffi.plaivo_ffi.WatchCommand
 import uniffi.plaivo_ffi.WatchFeed
 import uniffi.plaivo_ffi.pickTracks
+import uniffi.plaivo_ffi.setPlaybackQuality
 
 enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
     Fit("Letterbox", Glyph.ScaleFit, AspectRatioFrameLayout.RESIZE_MODE_FIT),
@@ -261,9 +262,7 @@ class PlayerActivity : ComponentActivity() {
             lifecycleScope.launch {
                 val p =
                     try {
-                        io {
-                            core.playback(server, key, quality.toUInt(), forceTranscode, version.toUInt(), audioCodecs)
-                        }
+                        io { core.playback(server, key, forceTranscode, version.toUInt(), audioCodecs) }
                     } catch (e: PlaivoException) {
                         Watch.failed(server, key)
                         if (advancing) upNextCancelled = true
@@ -286,6 +285,7 @@ class PlayerActivity : ComponentActivity() {
                     }
                 }
                 playback = p
+                quality = p.qualityKbps.toInt()
                 if (previous?.key != p.key) manualTracks = false
                 if (!manualTracks) {
                     autoTracks = true
@@ -324,7 +324,7 @@ class PlayerActivity : ComponentActivity() {
     fun changeQuality(kbps: Int) {
         if (kbps == quality) return
         quality = kbps
-        editSettings { it.copy(quality = kbps.toUInt()) }
+        editSettings { setPlaybackQuality(it, playback?.library ?: "", kbps.toUInt()) }
         val p = playback ?: return
         play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = fellBack)
     }

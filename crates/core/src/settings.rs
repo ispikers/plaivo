@@ -45,6 +45,7 @@ pub struct Settings {
     pub hide_spoilers: bool,
     pub watched_indicators: bool,
     pub language_rules: Vec<LanguageRule>,
+    pub playback_rules: Vec<PlaybackRule>,
     pub debug_logging: bool,
     pub audio_language: String,
     pub subtitle_language: String,
@@ -90,6 +91,7 @@ impl Default for Settings {
             hide_spoilers: false,
             watched_indicators: true,
             language_rules: Vec::new(),
+            playback_rules: Vec::new(),
             debug_logging: false,
             audio_language: String::new(),
             subtitle_language: String::new(),
@@ -105,6 +107,20 @@ impl Default for Settings {
             watch_relay: String::new(),
             watch_rooms: Vec::new(),
         }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
+#[serde(default)]
+pub struct PlaybackRule {
+    pub libraries: Vec<String>,
+    pub shader: Option<String>,
+    pub quality: Option<u32>,
+}
+
+impl PlaybackRule {
+    pub fn matches(&self, library: &str) -> bool {
+        self.libraries.iter().any(|l| l == library)
     }
 }
 
@@ -410,6 +426,35 @@ impl Settings {
             .iter()
             .position(|k| k == key)
             .unwrap_or(usize::MAX)
+    }
+
+    fn playback_rules_for(&self, library: &str) -> impl Iterator<Item = &PlaybackRule> {
+        self.playback_rules
+            .iter()
+            .filter(move |r| r.matches(library))
+    }
+
+    pub fn quality_for(&self, library: &str) -> u32 {
+        self.playback_rules_for(library)
+            .find_map(|r| r.quality)
+            .unwrap_or(self.quality)
+    }
+
+    pub fn shader_for(&self, library: &str) -> &str {
+        self.playback_rules_for(library)
+            .find_map(|r| r.shader.as_deref())
+            .unwrap_or(&self.shader)
+    }
+
+    pub fn set_quality_for(&mut self, library: &str, kbps: u32) {
+        match self
+            .playback_rules
+            .iter_mut()
+            .find(|r| r.matches(library) && r.quality.is_some())
+        {
+            Some(r) => r.quality = Some(kbps),
+            None => self.quality = kbps,
+        }
     }
 
     pub fn library_hidden(&self, key: &str) -> bool {
@@ -744,5 +789,39 @@ mod tests {
         s.set_library_hidden("b/1", false);
         assert!(!s.library_hidden("b/1"));
         assert_eq!(library_key("srv", "4"), "srv/4");
+    }
+
+    #[test]
+    fn playback_rules_override_each_setting_independently() {
+        let mut s = Settings {
+            quality: 8000,
+            shader: "fsr".into(),
+            playback_rules: vec![
+                PlaybackRule {
+                    libraries: vec!["a/1".into()],
+                    shader: Some("anime4k".into()),
+                    quality: None,
+                },
+                PlaybackRule {
+                    libraries: vec!["a/1".into(), "b/2".into()],
+                    shader: Some(String::new()),
+                    quality: Some(2000),
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            (s.shader_for("a/1"), s.quality_for("a/1")),
+            ("anime4k", 2000)
+        );
+        assert_eq!((s.shader_for("b/2"), s.quality_for("b/2")), ("", 2000));
+        assert_eq!((s.shader_for("c/3"), s.quality_for("c/3")), ("fsr", 8000));
+        s.set_quality_for("a/1", 0);
+        assert_eq!(
+            (s.quality_for("b/2"), s.playback_rules[0].quality),
+            (0, None)
+        );
+        s.set_quality_for("c/3", 4000);
+        assert_eq!((s.quality, s.quality_for("a/1")), (4000, 0));
     }
 }

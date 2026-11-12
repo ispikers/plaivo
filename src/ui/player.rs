@@ -1116,8 +1116,7 @@ impl Plaivo {
             .collect()
     }
 
-    pub fn quality_choices(&self, original: SharedString) -> Vec<Choice> {
-        let q = self.settings.quality;
+    pub fn quality_choices(&self, q: u32, original: SharedString) -> Vec<Choice> {
         let original = Choice {
             id: "0".into(),
             label: "Original".into(),
@@ -1151,11 +1150,11 @@ impl Plaivo {
         let body = match panel {
             Panel::Settings => {
                 let quality = match (
-                    plex::Quality::find(self.settings.quality),
+                    plex::Quality::find(self.player.quality),
                     self.player.media.bitrate,
                 ) {
                     (None, Some(b)) => format!("Original · {}", plex::fmt_bitrate(b)),
-                    _ => quality_label(self.settings.quality),
+                    _ => quality_label(self.player.quality),
                 };
                 let device = self.settings.audio_device.clone();
                 let output = if device.is_empty() {
@@ -1221,6 +1220,7 @@ impl Plaivo {
                     Panel::Quality => {
                         let m = &self.player.media;
                         self.quality_choices(
+                            self.player.quality,
                             crate::app::join(&[
                                 m.bitrate.map(plex::fmt_bitrate).unwrap_or_default(),
                                 fmt_resolution(&m.video_resolution),

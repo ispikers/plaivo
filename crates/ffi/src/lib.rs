@@ -6,8 +6,8 @@ use plaivo_core::plex::{
 };
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{
-    BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, SUBTITLE_COLORS, Scale, Settings, SkipMode,
-    Theme, ViewMode, library_key,
+    BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, PlaybackRule, SUBTITLE_COLORS, Scale,
+    Settings, SkipMode, Theme, ViewMode, library_key,
 };
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
 use plaivo_core::{Account, detail, first, jellyfin, join, store};
@@ -84,6 +84,7 @@ pub struct Settings {
     pub hide_spoilers: bool,
     pub watched_indicators: bool,
     pub language_rules: Vec<LanguageRule>,
+    pub playback_rules: Vec<PlaybackRule>,
     pub debug_logging: bool,
     pub audio_language: String,
     pub subtitle_language: String,
@@ -138,6 +139,13 @@ pub enum SkipMode {
     Off,
     Button,
     Auto,
+}
+
+#[uniffi::remote(Record)]
+pub struct PlaybackRule {
+    pub libraries: Vec<String>,
+    pub shader: Option<String>,
+    pub quality: Option<u32>,
 }
 
 #[uniffi::remote(Record)]
@@ -521,6 +529,8 @@ pub struct Playback {
     pub transcode_label: String,
     pub languages: LanguagePrefs,
     pub language_rule: Option<LanguageRule>,
+    pub library: String,
+    pub quality_kbps: u32,
 }
 
 #[uniffi::export(callback_interface)]
@@ -1293,7 +1303,6 @@ impl Plaivo {
         &self,
         server_id: String,
         key: String,
-        quality_kbps: u32,
         force_transcode: bool,
         version: u32,
         audio_codecs: String,
@@ -1315,6 +1324,11 @@ impl Plaivo {
             .and_then(|m| m.part.first())
             .ok_or("This item has no playable media")?;
         let media = &it.media[0];
+        let quality_kbps = self
+            .settings
+            .lock()
+            .unwrap()
+            .quality_for(&library_key(&srv.id, &it.library_section_id));
         let (url, transcode) = srv.stream_url(
             &self.client,
             &it.rating_key,
@@ -1360,6 +1374,7 @@ impl Plaivo {
             transcode_label,
             languages,
             rule,
+            quality_kbps,
         ))
     }
 
@@ -1627,6 +1642,12 @@ pub fn discover_id() -> String {
 }
 
 #[uniffi::export]
+pub fn set_playback_quality(mut settings: Settings, library: String, kbps: u32) -> Settings {
+    settings.set_quality_for(&library, kbps);
+    settings
+}
+
+#[uniffi::export]
 pub fn move_library(
     mut settings: Settings,
     arranged: Vec<String>,
@@ -1846,7 +1867,11 @@ impl Plaivo {
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
         log::info!("playing {key} from the downloaded file");
-        let rules = self.settings.lock().unwrap().language_rules.clone();
+        let (rules, quality_kbps) = {
+            let s = self.settings.lock().unwrap();
+            let library = library_key(server, &it.library_section_id);
+            (s.language_rules.clone(), s.quality_for(&library))
+        };
         let rule = prefs::language_rule(server, &it, &rules);
         Some(self.playback_for(
             server,
@@ -1858,6 +1883,7 @@ impl Plaivo {
             String::new(),
             languages,
             rule,
+            quality_kbps,
         ))
     }
 
@@ -1873,6 +1899,7 @@ impl Plaivo {
         transcode_label: String,
         languages: LanguagePrefs,
         language_rule: Option<LanguageRule>,
+        quality_kbps: u32,
     ) -> Playback {
         let (title, subtitle) = it.card_text();
         let start_ms = it
@@ -1940,6 +1967,8 @@ impl Plaivo {
             transcode_label,
             languages,
             language_rule,
+            library: library_key(server, &it.library_section_id),
+            quality_kbps,
         }
     }
 

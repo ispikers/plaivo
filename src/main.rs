@@ -58,7 +58,7 @@ fn main() {
                 window
                     .update(cx, |app, _, cx| {
                         if let Err(e) =
-                            app.launch(&target, "", &target, "", 0.0, None, Vec::new(), cx)
+                            app.launch(&target, "", &target, "", 0.0, None, Vec::new(), "", cx)
                         {
                             app.toast(e, cx);
                         }

@@ -86,7 +86,8 @@ impl Plaivo {
             | Category::Shaders
             | Category::AudioLanguage
             | Category::SubtitleLanguage
-            | Category::LanguageOverride => String::new(),
+            | Category::LanguageOverride
+            | Category::PlaybackOverride => String::new(),
             Category::Connections => {
                 let count = |n: usize| {
                     if n == 1 {
@@ -111,7 +112,7 @@ impl Plaivo {
 
     fn render_playback_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let s = &self.settings;
-        let quality = self.quality_choices("Direct play, no transcoding".into());
+        let quality = self.quality_choices(s.quality, "Direct play, no transcoding".into());
         let skip_row = |id: &'static str,
                         title: &'static str,
                         detail: &'static str,
@@ -203,29 +204,82 @@ impl Plaivo {
             .child(
                 section("Skip markers")
                     .child(note("Button shows a skip button. Auto skips on its own."))
-                    .child(skip_row("skip-intro", "Intro", "Opening titles and recaps", s.skip_intro, false, cx))
-                    .child(skip_row("skip-credits", "Credits", "End credits", s.skip_credits, true, cx)),
+                    .child(skip_row(
+                        "skip-intro",
+                        "Intro",
+                        "Opening titles and recaps",
+                        s.skip_intro,
+                        false,
+                        cx,
+                    ))
+                    .child(skip_row(
+                        "skip-credits",
+                        "Credits",
+                        "End credits",
+                        s.skip_credits,
+                        true,
+                        cx,
+                    )),
             )
             .child(
                 section("Seeking")
-                    .child(seek_row("seek-small", "Small step", "← and → keys, and the seek buttons", s.seek_small, false, cx))
-                    .child(seek_row("seek-large", "Large step", "Shift + ← and Shift + →", s.seek_large, true, cx)),
+                    .child(seek_row(
+                        "seek-small",
+                        "Small step",
+                        "← and → keys, and the seek buttons",
+                        s.seek_small,
+                        false,
+                        cx,
+                    ))
+                    .child(seek_row(
+                        "seek-large",
+                        "Large step",
+                        "Shift + ← and Shift + →",
+                        s.seek_large,
+                        true,
+                        cx,
+                    )),
             )
-            .child(section("Player").child(
-                toggle_row("stop-on-close", "Close stops playback", "The top-left button and Esc stop playback. Minimize moves to the bottom bar.", s.stop_on_close).on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.stop_on_close = !this.settings.stop_on_close;
-                    this.settings.save();
-                    cx.notify();
-                })),
-            ))
-            .child(section("Video").child(
-                nav_row("shader", Icon::Sparkle, "Default shader", shaders::name(&s.shader)).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(Some(Category::Shaders)), true, cx))),
-            ))
+            .child(
+                section("Player").child(
+                    toggle_row(
+                        "stop-on-close",
+                        "Close stops playback",
+                        "The top-left button and Esc stop playback. Minimize moves to the bottom bar.",
+                        s.stop_on_close,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.settings.stop_on_close = !this.settings.stop_on_close;
+                        this.settings.save();
+                        cx.notify();
+                    })),
+                ),
+            )
+            .child(
+                section("Video").child(
+                    nav_row(
+                        "shader",
+                        Icon::Sparkle,
+                        "Default shader",
+                        shaders::name(&s.shader),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.navigate(Nav::Settings(Some(Category::Shaders)), true, cx)
+                    })),
+                ),
+            )
             .child(
                 section("Default quality")
                     .child(note("Videos play at this quality unless the file is already smaller. Changing quality in the player updates it too."))
-                    .children(self.choice_list("quality", None, quality, |this, id, cx| this.set_quality(id.parse().unwrap_or(0), cx), cx)),
+                    .children(self.choice_list(
+                        "quality",
+                        None,
+                        quality,
+                        |this, id, cx| this.set_default_quality(id.parse().unwrap_or(0), cx),
+                        cx,
+                    )),
             )
+            .child(self.render_playback_rules(cx))
     }
 
     fn render_library_manager(&mut self, cx: &mut Context<Self>) -> Div {
@@ -361,27 +415,47 @@ impl Plaivo {
     ) -> AnyElement {
         let category = self.settings_page;
         let body = match category {
-            None => div().flex().flex_col().gap(px(8.)).children(CATEGORIES.map(|c| {
-                nav_row(c.title(), c.icon(), c.title(), self.summary(c)).on_click(cx.listener(move |this, _, _, cx| {
-                    if c == Category::Audio {
-                        this.sync_languages(cx);
-                    }
-                    this.navigate(Nav::Settings(Some(c)), true, cx)
-                }))
-            })),
+            None => div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .children(CATEGORIES.map(|c| {
+                    nav_row(c.title(), c.icon(), c.title(), self.summary(c)).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            if c == Category::Audio {
+                                this.sync_languages(cx);
+                            }
+                            this.navigate(Nav::Settings(Some(c)), true, cx)
+                        },
+                    ))
+                })),
             Some(Category::General) => div()
                 .flex()
                 .flex_col()
                 .gap(px(28.))
                 .child(
                     section("Home server")
-                        .child(note("Home shows Continue Watching and recommendations from this server. Libraries from every server stay in the sidebar."))
+                        .child(note(
+                            "Home shows Continue Watching and recommendations from this server. Libraries from every server stay in the sidebar.",
+                        ))
                         .children(self.server_rows(cx))
-                        .when(self.servers.is_empty(), |d| d.child(note("No servers found."))),
+                        .when(self.servers.is_empty(), |d| {
+                            d.child(note("No servers found."))
+                        }),
                 )
-                .child(section("Sidebar").child(
-                    nav_row("libraries", Icon::Sort, "Manage libraries", "Reorder and hide the libraries in the sidebar").on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(Some(Category::Libraries)), true, cx))),
-                )),
+                .child(
+                    section("Sidebar").child(
+                        nav_row(
+                            "libraries",
+                            Icon::Sort,
+                            "Manage libraries",
+                            "Reorder and hide the libraries in the sidebar",
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.navigate(Nav::Settings(Some(Category::Libraries)), true, cx)
+                        })),
+                    ),
+                ),
             Some(Category::Libraries) => self.render_library_manager(cx),
             Some(Category::Appearance) => self.render_appearance(cx),
             Some(Category::Playback) => self.render_playback_settings(cx),
@@ -389,26 +463,50 @@ impl Plaivo {
                 let choices = self.shader_choices(&self.settings.shader);
                 section("Default shader")
                     .child(note("Applied to every video. Change it for one video from the player's settings. NVScaler turns itself off for HDR video."))
-                    .children(self.choice_list("shader", None, choices, |this, id, _| {
-                        this.settings.shader = id.to_owned();
-                        this.settings.save();
-                    }, cx))
+                    .children(self.choice_list(
+                        "shader",
+                        None,
+                        choices,
+                        |this, id, _| {
+                            this.settings.shader = id.to_owned();
+                            this.settings.save();
+                        },
+                        cx,
+                    ))
             }
             Some(Category::Audio) => self.render_audio_settings(cx),
             Some(Category::AudioLanguage) => self.render_language_list(false, cx),
             Some(Category::SubtitleLanguage) => self.render_language_list(true, cx),
             Some(Category::LanguageOverride) => self.render_language_override(cx),
+            Some(Category::PlaybackOverride) => self.render_playback_override(cx),
             Some(Category::Downloads) => self.render_download_settings(cx),
             Some(Category::Services) => self.render_services(cx),
             Some(Category::WatchTogether) => self.render_watch_settings(window, cx),
             Some(Category::Advanced) => self.render_advanced_settings(cx),
             Some(Category::Connections) => self.render_connections(cx),
             Some(Category::About) => section("Plaivo")
-                .child(row("version", Some(Icon::PlayCircle), "Plaivo", format!("Version {VERSION}")))
-                .child(row("libmpv", Some(Icon::Movie), "libmpv", MPV_INFO).child(pill("mpv-source", "Source", Some(Icon::OpenInNew), false).on_click(|_, _, _| open_url(MPV_SOURCE))))
+                .child(row(
+                    "version",
+                    Some(Icon::PlayCircle),
+                    "Plaivo",
+                    format!("Version {VERSION}"),
+                ))
                 .child(
-                    nav_row("licenses", Icon::Info, "Open-source licenses", format!("libmpv, FFmpeg and {} more", LICENSES.len() - 2))
-                        .on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Licenses(None), true, cx))),
+                    row("libmpv", Some(Icon::Movie), "libmpv", MPV_INFO).child(
+                        pill("mpv-source", "Source", Some(Icon::OpenInNew), false)
+                            .on_click(|_, _, _| open_url(MPV_SOURCE)),
+                    ),
+                )
+                .child(
+                    nav_row(
+                        "licenses",
+                        Icon::Info,
+                        "Open-source licenses",
+                        format!("libmpv, FFmpeg and {} more", LICENSES.len() - 2),
+                    )
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.navigate(Nav::Licenses(None), true, cx)),
+                    ),
                 ),
         };
         let header = div()
@@ -437,6 +535,10 @@ impl Plaivo {
             )
             .when(category == Some(Category::LanguageOverride), |d| {
                 d.child(div().flex_1()).children(self.rule_actions(cx))
+            })
+            .when(category == Some(Category::PlaybackOverride), |d| {
+                d.child(div().flex_1())
+                    .children(self.playback_rule_actions(cx))
             });
         div()
             .size_full()
@@ -476,6 +578,7 @@ impl Category {
             Category::AudioLanguage => "Audio language",
             Category::SubtitleLanguage => "Subtitle language",
             Category::LanguageOverride => "Language override",
+            Category::PlaybackOverride => "Playback override",
             Category::Downloads => "Downloads",
             Category::Services => "Services",
             Category::WatchTogether => "Watch Together",
@@ -489,7 +592,7 @@ impl Category {
         match self {
             Category::General | Category::Libraries => Icon::Settings,
             Category::Appearance => Icon::Palette,
-            Category::Playback | Category::Shaders => Icon::PlayCircle,
+            Category::Playback | Category::Shaders | Category::PlaybackOverride => Icon::PlayCircle,
             Category::Audio
             | Category::AudioLanguage
             | Category::SubtitleLanguage

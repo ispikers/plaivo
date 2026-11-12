@@ -8,6 +8,7 @@ pub mod item_menu;
 pub mod language_rules;
 pub mod library;
 mod licenses;
+pub mod playback_rules;
 mod player;
 pub mod services;
 pub mod settings;

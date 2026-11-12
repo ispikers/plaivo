@@ -9,7 +9,7 @@ use gpui::{
     prelude::*, px,
 };
 
-const ADD_LIST_H: f32 = 260.;
+pub const ADD_LIST_H: f32 = 260.;
 
 pub struct RuleDraft {
     index: Option<usize>,
@@ -17,7 +17,7 @@ pub struct RuleDraft {
     adding: Option<bool>,
 }
 
-fn toggle(list: &mut Vec<String>, value: &str) {
+pub fn toggle(list: &mut Vec<String>, value: &str) {
     match list.iter().position(|v| v.eq_ignore_ascii_case(value)) {
         Some(i) => {
             list.remove(i);
@@ -26,7 +26,11 @@ fn toggle(list: &mut Vec<String>, value: &str) {
     }
 }
 
-fn check_row(id: impl Into<ElementId>, title: impl Into<SharedString>, on: bool) -> Stateful<Div> {
+pub fn check_row(
+    id: impl Into<ElementId>,
+    title: impl Into<SharedString>,
+    on: bool,
+) -> Stateful<Div> {
     div()
         .id(id.into())
         .h(px(40.))
@@ -54,7 +58,7 @@ fn check_row(id: impl Into<ElementId>, title: impl Into<SharedString>, on: bool)
         .when(on, |d| d.child(icon(Icon::Check, 18., theme::text())))
 }
 
-fn card(title: &'static str, hint: impl Into<SharedString>) -> Div {
+pub fn card(title: &'static str, hint: impl Into<SharedString>) -> Div {
     div()
         .w_full()
         .p(px(16.))
@@ -84,16 +88,6 @@ fn card(title: &'static str, hint: impl Into<SharedString>) -> Div {
 }
 
 impl Plaivo {
-    fn rule_targets(&self, r: &LanguageRule) -> String {
-        let libraries = r.libraries.iter().map(|id| {
-            self.sections
-                .iter()
-                .find(|s| &s.id == id)
-                .map_or_else(|| "Missing library".to_owned(), |s| s.title.to_string())
-        });
-        libraries.collect::<Vec<_>>().join(", ")
-    }
-
     fn rule_detail(r: &LanguageRule) -> String {
         let names = |codes: &[String]| {
             codes
@@ -127,7 +121,7 @@ impl Plaivo {
                 row(
                     ("language-rule", i),
                     Some(Icon::Sort),
-                    self.rule_targets(r),
+                    self.rule_targets(&r.libraries),
                     Self::rule_detail(r),
                 )
                 .cursor_pointer()
@@ -138,9 +132,19 @@ impl Plaivo {
             })
             .collect();
         section("Overrides")
-            .child(note("Use different languages for some libraries, like Japanese audio for an anime library. Saved on this device. The first matching override wins."))
+            .child(note(
+                "Use different languages for some libraries, like Japanese audio for an anime library. Saved on this device. The first matching override wins.",
+            ))
             .children(rows)
-            .child(nav_row("language-rule-add", Icon::Add, "Add override", "Pick libraries and the languages to use").on_click(cx.listener(|this, _, _, cx| this.open_language_rule(None, cx))))
+            .child(
+                nav_row(
+                    "language-rule-add",
+                    Icon::Add,
+                    "Add override",
+                    "Pick libraries and the languages to use",
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.open_language_rule(None, cx))),
+            )
     }
 
     fn open_language_rule(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
@@ -184,25 +188,12 @@ impl Plaivo {
 
     pub fn rule_actions(&self, cx: &mut Context<Self>) -> Option<Div> {
         let d = self.rule_draft.as_ref()?;
-        let targeted = !d.rule.libraries.is_empty();
-        Some(
-            div()
-                .flex()
-                .gap(px(12.))
-                .when(d.index.is_some(), |a| {
-                    a.child(
-                        pill("rule-delete", "Delete", Some(Icon::Delete), false)
-                            .on_click(cx.listener(|this, _, _, cx| this.save_rule(true, cx))),
-                    )
-                })
-                .child(
-                    pill("rule-save", "Save", Some(Icon::Check), true)
-                        .when(!targeted, |p| p.opacity(0.4))
-                        .when(targeted, |p| {
-                            p.on_click(cx.listener(|this, _, _, cx| this.save_rule(false, cx)))
-                        }),
-                ),
-        )
+        Some(rule_buttons(
+            d.index.is_some(),
+            !d.rule.libraries.is_empty(),
+            Self::save_rule,
+            cx,
+        ))
     }
 
     fn language_order(&self, d: &RuleDraft, subtitles: bool, cx: &mut Context<Self>) -> Div {
@@ -400,6 +391,36 @@ impl Plaivo {
             return div().child(note("Open an override from Audio & Subtitles to edit it."));
         };
         let r = &d.rule;
+        let libraries = self.library_card(
+            &r.libraries,
+            |this, id, cx| this.edit_rule(|d| toggle(&mut d.rule.libraries, &id), cx),
+            cx,
+        );
+        let modes = SubtitleMode::ALL.into_iter().map(|m| {
+            chip(("rule-mode", m as usize), m.label(), m == r.subtitle_mode).on_click(
+                cx.listener(move |this, _, _, cx| this.edit_rule(|d| d.rule.subtitle_mode = m, cx)),
+            )
+        });
+        let mode = card(
+            "Show subtitles",
+            "Forced subtitles for foreign dialogue show in every mode",
+        )
+        .child(div().flex().gap(px(6.)).children(modes));
+        rule_columns(
+            libraries,
+            column("Languages")
+                .child(self.language_order(d, false, cx))
+                .child(self.language_order(d, true, cx))
+                .child(mode),
+        )
+    }
+
+    pub fn library_card(
+        &self,
+        selected: &[String],
+        on_toggle: fn(&mut Self, String, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Div {
         let multi = self.servers.len() > 1;
         let mut libraries = card("Libraries", "every video in the library");
         for srv in &self.servers {
@@ -425,61 +446,73 @@ impl Plaivo {
             }
             for (i, s) in sections {
                 let id = library_key(&s.server, &s.key);
-                let on = r.libraries.contains(&id);
+                let on = selected.contains(&id);
                 libraries = libraries.child(
-                    check_row(("rule-library", i), s.title.clone(), on).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.edit_rule(|d| toggle(&mut d.rule.libraries, &id), cx)
-                        },
-                    )),
+                    check_row(("rule-library", i), s.title.clone(), on).on_click(
+                        cx.listener(move |this, _, _, cx| on_toggle(this, id.clone(), cx)),
+                    ),
                 );
             }
         }
-        let modes = SubtitleMode::ALL.into_iter().map(|m| {
-            chip(("rule-mode", m as usize), m.label(), m == r.subtitle_mode).on_click(
-                cx.listener(move |this, _, _, cx| this.edit_rule(|d| d.rule.subtitle_mode = m, cx)),
-            )
-        });
-        let mode = card(
-            "Show subtitles",
-            "Forced subtitles for foreign dialogue show in every mode",
-        )
-        .child(div().flex().gap(px(6.)).children(modes));
-        let left = div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(12.))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::muted())
-                    .child("Applies to"),
-            )
-            .child(libraries);
-        let right = div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(12.))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::muted())
-                    .child("Languages"),
-            )
-            .child(self.language_order(d, false, cx))
-            .child(self.language_order(d, true, cx))
-            .child(mode);
-        div()
-            .flex()
-            .items_start()
-            .gap(px(24.))
-            .child(left)
-            .child(right)
+        libraries
     }
+
+    pub fn rule_targets(&self, libraries: &[String]) -> String {
+        let names = libraries.iter().map(|id| {
+            self.sections
+                .iter()
+                .find(|s| &s.id == id)
+                .map_or_else(|| "Missing library".to_owned(), |s| s.title.to_string())
+        });
+        names.collect::<Vec<_>>().join(", ")
+    }
+}
+
+pub fn rule_buttons(
+    editing: bool,
+    targeted: bool,
+    save: fn(&mut Plaivo, bool, &mut Context<Plaivo>),
+    cx: &mut Context<Plaivo>,
+) -> Div {
+    div()
+        .flex()
+        .gap(px(12.))
+        .when(editing, |a| {
+            a.child(
+                pill("rule-delete", "Delete", Some(Icon::Delete), false)
+                    .on_click(cx.listener(move |this, _, _, cx| save(this, true, cx))),
+            )
+        })
+        .child(
+            pill("rule-save", "Save", Some(Icon::Check), true)
+                .when(!targeted, |p| p.opacity(0.4))
+                .when(targeted, |p| {
+                    p.on_click(cx.listener(move |this, _, _, cx| save(this, false, cx)))
+                }),
+        )
+}
+
+pub fn column(label: &'static str) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(
+            div()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::muted())
+                .child(label),
+        )
+}
+
+pub fn rule_columns(libraries: Div, right: Div) -> Div {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(24.))
+        .child(column("Applies to").child(libraries))
+        .child(right)
 }
