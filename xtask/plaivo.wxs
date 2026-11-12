@@ -35,6 +35,7 @@
       <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
 
       <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="ExitDialog" />
       <DialogRef Id="FatalError" />
       <DialogRef Id="FilesInUse" />
       <DialogRef Id="MsiRMFilesInUse" />
@@ -50,28 +51,10 @@
       <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
       <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
       <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
-      <Publish Dialog="PlaivoExitDialog" Control="Finish" Event="DoAction" Value="LaunchPlaivo" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
-      <Publish Dialog="PlaivoExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchPlaivo" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
 
-      <!-- WixUI's ExitDialog with the checkbox shrunk to its box: MSI paints checkboxes opaque, so the label is a separate transparent Text. -->
-      <Dialog Id="PlaivoExitDialog" Width="370" Height="270" Title="!(loc.ExitDialog_Title)">
-        <Control Id="Finish" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="!(loc.WixUIFinish)" />
-        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Disabled="yes" Text="!(loc.WixUICancel)" />
-        <Control Id="Bitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="234" TabSkip="no" Text="!(loc.ExitDialogBitmap)" />
-        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Disabled="yes" Text="!(loc.WixUIBack)" />
-        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="373" Height="0" />
-        <Control Id="Description" Type="Text" X="135" Y="70" Width="220" Height="40" Transparent="yes" NoPrefix="yes" Text="!(loc.ExitDialogDescription)" />
-        <Control Id="Title" Type="Text" X="135" Y="20" Width="220" Height="60" Transparent="yes" NoPrefix="yes" Text="!(loc.ExitDialogTitle)" />
-        <Control Id="LaunchCheckBox" Type="CheckBox" X="135" Y="200" Width="9" Height="9" Property="WIXUI_EXITDIALOGOPTIONALCHECKBOX" CheckBoxValue="1" Text="[WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT]" Hidden="yes" ShowCondition="NOT Installed" />
-        <Control Id="LaunchLabel" Type="Text" X="148" Y="200" Width="207" Height="10" Transparent="yes" NoPrefix="yes" Text="[WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT]" Hidden="yes" ShowCondition="NOT Installed" />
-      </Dialog>
     </UI>
-    <InstallUISequence>
-      <Show Dialog="PlaivoExitDialog" OnExit="success" />
-    </InstallUISequence>
-    <AdminUISequence>
-      <Show Dialog="PlaivoExitDialog" OnExit="success" />
-    </AdminUISequence>
     <UIRef Id="WixUI_Common" />
   </Package>
 </Wix>
