@@ -133,7 +133,7 @@ impl Plaivo {
             .collect();
         section("Overrides")
             .child(note(
-                "Use different languages for some libraries, like Japanese audio for an anime library. Saved on this device. The first matching override wins.",
+                "Use different languages for some libraries. The first match wins.",
             ))
             .children(rows)
             .child(
@@ -401,11 +401,8 @@ impl Plaivo {
                 cx.listener(move |this, _, _, cx| this.edit_rule(|d| d.rule.subtitle_mode = m, cx)),
             )
         });
-        let mode = card(
-            "Show subtitles",
-            "Forced subtitles for foreign dialogue show in every mode",
-        )
-        .child(div().flex().gap(px(6.)).children(modes));
+        let mode = card("Show subtitles", "Forced subtitles always show")
+            .child(div().flex().gap(px(6.)).children(modes));
         rule_columns(
             libraries,
             column("Languages")

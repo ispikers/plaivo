@@ -3,8 +3,8 @@ use crate::menu;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, shadow};
 use gpui::{
-    AnyElement, Context, ElementId, FontWeight, Hsla, KeyDownEvent, KeyUpEvent, SharedString, Window, div,
-    prelude::*, px, rgb,
+    AnyElement, Context, ElementId, FontWeight, Hsla, KeyDownEvent, KeyUpEvent, SharedString,
+    Window, div, prelude::*, px, rgb,
 };
 use std::time::{Duration, Instant};
 
@@ -658,10 +658,25 @@ impl Plaivo {
                     .flex()
                     .flex_col()
                     .gap(px(12.))
-                    .child(div().text_size(px(22.)).font_weight(FontWeight::BOLD).child("Home server"))
-                    .child(div().text_size(px(13.)).text_color(theme::muted()).child("Home shows Continue Watching and recommendations from this server. Libraries from every server stay in the sidebar."))
-                    .when_some(self.servers_error.clone(), |d, e| d.child(div().text_color(theme::error()).child(e)))
-                    .when(self.servers_loading && self.servers.is_empty(), |d| d.child(div().text_color(theme::muted()).child("Looking for servers…")))
+                    .child(
+                        div()
+                            .text_size(px(22.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Home server"),
+                    )
+                    .child(div().text_size(px(13.)).text_color(theme::muted()).child(
+                        "Home shows Continue Watching and recommendations from this server.",
+                    ))
+                    .when_some(self.servers_error.clone(), |d, e| {
+                        d.child(div().text_color(theme::error()).child(e))
+                    })
+                    .when(self.servers_loading && self.servers.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_color(theme::muted())
+                                .child("Looking for servers…"),
+                        )
+                    })
                     .children(self.server_rows(cx)),
             )
             .into_any_element()

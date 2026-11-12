@@ -83,20 +83,52 @@ impl Plaivo {
             .flex()
             .flex_col()
             .gap(px(28.))
-            .child(section("Start a room").child(
-                row("watch-create", Some(Icon::Group), "Create a room", "You get a code to share. Then open a movie or episode and choose Watch together.")
-                    .child(pill("watch-create-button", "Create", None, true).on_click(cx.listener(|this, _, _, cx| this.watch_create(cx)))),
-            ))
+            .child(
+                section("Start a room").child(
+                    row(
+                        "watch-create",
+                        Some(Icon::Group),
+                        "Create a room",
+                        "Get a code to share with friends",
+                    )
+                    .child(
+                        pill("watch-create-button", "Create", None, true)
+                            .on_click(cx.listener(|this, _, _, cx| this.watch_create(cx))),
+                    ),
+                ),
+            )
             .child(
                 section("Join a room")
-                    .child(div().flex().items_center().gap(px(12.)).child(div().flex_1().child(self.field("watch-code", &code, window, cx))).child(pill("watch-join", "Join", None, false).on_click(join_typed)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(div().flex_1().child(self.field(
+                                "watch-code",
+                                &code,
+                                window,
+                                cx,
+                            )))
+                            .child(pill("watch-join", "Join", None, false).on_click(join_typed)),
+                    )
                     .when_some(self.watch.error.clone(), |d, e| d.child(error_text(e))),
             )
             .when(!recent.is_empty(), |d| {
-                d.child(section("Recent rooms").children(recent.into_iter().enumerate().map(|(i, c)| {
-                    let label = code_of(&c);
-                    row(("watch-recent", i), Some(Icon::Group), label, "").child(pill(("watch-recent-join", i), "Join", None, false).on_click(cx.listener(move |this, _, _, cx| this.watch_join(c.clone(), cx))))
-                })))
+                d.child(
+                    section("Recent rooms").children(recent.into_iter().enumerate().map(
+                        |(i, c)| {
+                            let label = code_of(&c);
+                            row(("watch-recent", i), Some(Icon::Group), label, "").child(
+                                pill(("watch-recent-join", i), "Join", None, false).on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.watch_join(c.clone(), cx)
+                                    }),
+                                ),
+                            )
+                        },
+                    )),
+                )
             })
     }
 
@@ -313,19 +345,34 @@ impl Plaivo {
             .flex()
             .flex_col()
             .gap(px(28.))
-            .child(section("Display name").child(note("Shown to everyone in the room. Leave it empty to use your Plex or Jellyfin name.")).child(self.field("watch-name", &name, window, cx)))
+            .child(
+                section("Display name")
+                    .child(note("Leave empty to use your Plex or Jellyfin name."))
+                    .child(self.field("watch-name", &name, window, cx)),
+            )
             .child(
                 section("Relay")
-                    .child(note("Rooms run through a relay server. The public relays work with everyone, including Plezy users."))
+                    .child(note("Everyone in a room must use the same relay."))
                     .child(
                         div()
                             .flex()
                             .gap(px(6.))
-                            .child(chip("watch-relay-public", "Public", !custom).on_click(cx.listener(|this, _, _, cx| this.use_public_relay(true, cx))))
-                            .child(chip("watch-relay-custom", "Custom", custom).on_click(cx.listener(|this, _, _, cx| this.use_public_relay(false, cx)))),
+                            .child(chip("watch-relay-public", "Public", !custom).on_click(
+                                cx.listener(|this, _, _, cx| this.use_public_relay(true, cx)),
+                            ))
+                            .child(chip("watch-relay-custom", "Custom", custom).on_click(
+                                cx.listener(|this, _, _, cx| this.use_public_relay(false, cx)),
+                            )),
                     )
-                    .when(custom, |d| d.child(self.field("watch-relay", &relay, window, cx)).when_some(self.watch.relay_error.clone(), |d, e| d.child(error_text(e)))),
+                    .when(custom, |d| {
+                        d.child(self.field("watch-relay", &relay, window, cx))
+                            .when_some(self.watch.relay_error.clone(), |d, e| {
+                                d.child(error_text(e))
+                            })
+                    }),
             )
-            .child(note("Changes apply the next time you create or join a room."))
+            .child(note(
+                "Changes apply the next time you create or join a room.",
+            ))
     }
 }

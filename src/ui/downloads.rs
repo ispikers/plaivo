@@ -333,22 +333,48 @@ impl Plaivo {
             .gap(px(28.))
             .child(
                 section("Location")
-                    .child(note("New downloads go to this folder. Downloads already in another folder stay there, and show up again if you switch back to it."))
+                    .child(note("Only affects new downloads."))
                     .child(
-                        row("download-dir", Some(Icon::Folder), "Download folder", download_root(&self.settings.download_dir).display().to_string())
-                            .when(custom, |d| d.child(pill("download-dir-default", "Default", None, false).on_click(cx.listener(|this, _, _, cx| this.set_download_dir(String::new(), cx)))))
-                            .child(pill("download-dir-change", "Change", None, false).on_click(cx.listener(|this, _, _, cx| this.pick_download_dir(cx)))),
+                        row(
+                            "download-dir",
+                            Some(Icon::Folder),
+                            "Download folder",
+                            download_root(&self.settings.download_dir)
+                                .display()
+                                .to_string(),
+                        )
+                        .when(custom, |d| {
+                            d.child(
+                                pill("download-dir-default", "Default", None, false).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.set_download_dir(String::new(), cx)
+                                    }),
+                                ),
+                            )
+                        })
+                        .child(
+                            pill("download-dir-change", "Change", None, false)
+                                .on_click(cx.listener(|this, _, _, cx| this.pick_download_dir(cx))),
+                        ),
                     ),
             )
-            .child(section("Storage").child(toggle_row("auto-remove", "Remove watched downloads", "Deletes a download after you finish watching it", self.settings.auto_remove_watched).on_click(
-                cx.listener(|this, _, _, cx| {
-                    this.settings.auto_remove_watched = !this.settings.auto_remove_watched;
-                    this.settings.save();
-                    let on = this.settings.auto_remove_watched;
-                    this.with_downloads(cx, move |d| d.set_auto_remove_watched(on));
-                    cx.notify();
-                }),
-            )))
+            .child(
+                section("Storage").child(
+                    toggle_row(
+                        "auto-remove",
+                        "Remove watched downloads",
+                        "Deletes a download after you finish watching it",
+                        self.settings.auto_remove_watched,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.settings.auto_remove_watched = !this.settings.auto_remove_watched;
+                        this.settings.save();
+                        let on = this.settings.auto_remove_watched;
+                        this.with_downloads(cx, move |d| d.set_auto_remove_watched(on));
+                        cx.notify();
+                    })),
+                ),
+            )
     }
 
     fn confirm_remove(
@@ -541,12 +567,31 @@ impl Plaivo {
             .gap(px(20.))
             .child(header)
             .when(!rows.is_empty(), |d| {
-                d.child(div().id("download-queue").flex_none().max_h(gpui::relative(0.4)).overflow_y_scroll().px(px(16.)).child(section("Queue").children(rows)))
+                d.child(
+                    div()
+                        .id("download-queue")
+                        .flex_none()
+                        .max_h(gpui::relative(0.4))
+                        .overflow_y_scroll()
+                        .px(px(16.))
+                        .child(section("Queue").children(rows)),
+                )
             })
             .when_some(grid, |d, grid| {
-                d.child(div().flex_none().px(px(16.)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(theme::muted()).child("Downloaded")).child(grid)
+                d.child(
+                    div()
+                        .flex_none()
+                        .px(px(16.))
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::muted())
+                        .child("Downloaded"),
+                )
+                .child(grid)
             })
-            .when(queue.is_empty() && empty, |d| d.child(div().px(px(16.)).child(note("Nothing downloaded yet. Download a movie, show, season or episode from its page to watch it offline."))))
+            .when(queue.is_empty() && empty, |d| {
+                d.child(div().px(px(16.)).child(note("Nothing downloaded yet.")))
+            })
             .into_any_element()
     }
 

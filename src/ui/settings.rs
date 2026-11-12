@@ -176,7 +176,7 @@ impl Plaivo {
                         "countdown",
                         None,
                         "Countdown",
-                        "Seconds the Up next card waits before playing. 0 plays at once.",
+                        "Seconds before the next video plays",
                     )
                     .child(stepper(
                         "countdown",
@@ -245,7 +245,7 @@ impl Plaivo {
                     toggle_row(
                         "stop-on-close",
                         "Close stops playback",
-                        "The top-left button and Esc stop playback. Minimize moves to the bottom bar.",
+                        "Close and Esc stop playback instead of minimizing",
                         s.stop_on_close,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -270,7 +270,7 @@ impl Plaivo {
             )
             .child(
                 section("Default quality")
-                    .child(note("Videos play at this quality unless the file is already smaller. Changing quality in the player updates it too."))
+                    .child(note("Used unless the file is already smaller."))
                     .children(self.choice_list(
                         "quality",
                         None,
@@ -365,7 +365,7 @@ impl Plaivo {
                         "clear-cache",
                         Some(Icon::Refresh),
                         "Clear image cache",
-                        "Removes cached artwork and library data. It downloads again when needed.",
+                        "Removes cached artwork and library data",
                     )
                     .child(
                         pill("clear-cache-button", "Clear", None, false)
@@ -379,7 +379,7 @@ impl Plaivo {
                         toggle_row(
                             "debug-logging",
                             "Debug logging",
-                            "Writes more detail to the log. Turn it on when reporting a problem.",
+                            "Useful when reporting a problem",
                             self.settings.debug_logging,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -436,7 +436,7 @@ impl Plaivo {
                 .child(
                     section("Home server")
                         .child(note(
-                            "Home shows Continue Watching and recommendations from this server. Libraries from every server stay in the sidebar.",
+                            "Home shows Continue Watching and recommendations from this server.",
                         ))
                         .children(self.server_rows(cx))
                         .when(self.servers.is_empty(), |d| {
@@ -462,7 +462,7 @@ impl Plaivo {
             Some(Category::Shaders) => {
                 let choices = self.shader_choices(&self.settings.shader);
                 section("Default shader")
-                    .child(note("Applied to every video. Change it for one video from the player's settings. NVScaler turns itself off for HDR video."))
+                    .child(note("NVScaler turns itself off for HDR video."))
                     .children(self.choice_list(
                         "shader",
                         None,

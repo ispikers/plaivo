@@ -117,14 +117,36 @@ impl Plaivo {
             })
             .collect::<Vec<_>>();
         let languages = section("Languages")
-            .child(note("Saved to your Plex account and Jellyfin users, so other apps follow them too. This device keeps a copy for offline playback."))
-            .child(nav_row("audio-language", Icon::Volume, "Audio language", audio).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(Some(Category::AudioLanguage)), true, cx))))
-            .child(nav_row("subtitle-language", Icon::Subtitles, "Subtitle language", subtitles).on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(Some(Category::SubtitleLanguage)), true, cx))))
-            .child(row("subtitle-mode", None, "Show subtitles", "Forced subtitles for foreign dialogue show in every mode").child(div().flex().gap(px(6.)).children(modes)));
+            .child(note("Saved to your Plex and Jellyfin accounts."))
+            .child(
+                nav_row("audio-language", Icon::Volume, "Audio language", audio).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.navigate(Nav::Settings(Some(Category::AudioLanguage)), true, cx)
+                    }),
+                ),
+            )
+            .child(
+                nav_row(
+                    "subtitle-language",
+                    Icon::Subtitles,
+                    "Subtitle language",
+                    subtitles,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.navigate(Nav::Settings(Some(Category::SubtitleLanguage)), true, cx)
+                })),
+            )
+            .child(
+                row(
+                    "subtitle-mode",
+                    None,
+                    "Show subtitles",
+                    "Forced subtitles always show",
+                )
+                .child(div().flex().gap(px(6.)).children(modes)),
+            );
         let style = section("Subtitle style")
-            .child(note(
-                "Applies to text subtitles. Styled ASS subtitles keep their own colours.",
-            ))
+            .child(note("Styled ASS subtitles keep their own look."))
             .child(self.style_row(
                 "subtitle-size",
                 "Size",
