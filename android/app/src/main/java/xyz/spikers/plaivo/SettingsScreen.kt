@@ -1196,6 +1196,7 @@ fun SettingsScreen(
                         "Version $version",
                         modifier = Modifier.takeFocus(!fromLicenses),
                     )
+                    SettingsRow(Glyph.Check, "Trakt", "Plaivo uses Trakt but is not endorsed or certified by Trakt")
                     SettingsRow(
                         Glyph.Info,
                         "Open-source licenses",

@@ -497,6 +497,12 @@ impl Plaivo {
                             .on_click(|_, _, _| open_url(MPV_SOURCE)),
                     ),
                 )
+                .child(row(
+                    "trakt",
+                    Some(Icon::Check),
+                    "Trakt",
+                    "Plaivo uses Trakt but is not endorsed or certified by Trakt",
+                ))
                 .child(
                     nav_row(
                         "licenses",
