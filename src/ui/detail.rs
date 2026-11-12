@@ -88,8 +88,14 @@ impl Plaivo {
     ) -> AnyElement {
         let key = ShelfKey::Detail(n);
         self.shelf_offset(key, window);
-        self.shelf(key, id, arrow_y, div().mx(px(-3.)).flex().children(children), cx)
-            .into_any_element()
+        self.shelf(
+            key,
+            id,
+            arrow_y,
+            div().mx(px(-3.)).flex().children(children),
+            cx,
+        )
+        .into_any_element()
     }
 
     pub fn render_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

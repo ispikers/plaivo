@@ -3,9 +3,9 @@ use crate::ui::shell::{ease_out, progress};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, overlay_button, pill, scrollbar, skeleton};
 use gpui::{
-    AnyElement, Context, Div, ElementId, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
-    ScrollEvent, ScrollHandle, SharedString, Stateful, Window, div, img, linear_color_stop, linear_gradient, point,
-    prelude::*, px, rgb,
+    AnyElement, Context, Div, ElementId, FontWeight, MouseButton, MouseDownEvent, MouseUpEvent,
+    ObjectFit, ScrollEvent, ScrollHandle, SharedString, Stateful, Window, div, img,
+    linear_color_stop, linear_gradient, point, prelude::*, px, rgb,
 };
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -422,7 +422,8 @@ impl Plaivo {
         let base = target.unwrap_or(offset);
         let max = f32::from(scroll.max_offset().x);
         let page = f32::from(scroll.bounds().size.width) * 0.8;
-        let hovered = self.view.shelf_hover == Some(key) || self.view.shelf_arrow_hover == Some(key);
+        let hovered =
+            self.view.shelf_hover == Some(key) || self.view.shelf_arrow_hover == Some(key);
         let arrows: Vec<AnyElement> = [(true, offset < -1.), (false, -offset < max - 1.)]
             .into_iter()
             .filter(|&(_, show)| hovered && show)
@@ -435,11 +436,21 @@ impl Plaivo {
                 div()
                     .absolute()
                     .top(px(arrow_y))
-                    .map(|d| if left { d.left(px(8.)) } else { d.right(px(8.)) })
+                    .map(|d| {
+                        if left {
+                            d.left(px(8.))
+                        } else {
+                            d.right(px(8.))
+                        }
+                    })
                     .child(
                         overlay_button(
                             if left { "shelf-left" } else { "shelf-right" },
-                            if left { Icon::ChevronLeft } else { Icon::ChevronRight },
+                            if left {
+                                Icon::ChevronLeft
+                            } else {
+                                Icon::ChevronRight
+                            },
                             48.,
                             32.,
                             theme::black(0.7),
