@@ -133,6 +133,7 @@ class PlayerActivity : ComponentActivity() {
     private var version = 0
     private var manualTracks = false
     private var autoTracks = false
+    private var pendingAudio: Int? = null
     private var firstFrame = false
     private var watchAttached = false
     private var watchFedAt = 0L
@@ -181,9 +182,15 @@ class PlayerActivity : ComponentActivity() {
                 override fun onTracksChanged(tracks: Tracks) {
                     tracksVersion++
                     val p = playback
-                    if (autoTracks && p != null && !tracks.isEmpty) {
-                        autoTracks = false
-                        autoSelectTracks(p.languages, p.languageRule)
+                    if (p != null && !tracks.isEmpty) {
+                        if (autoTracks) {
+                            autoTracks = false
+                            autoSelectTracks(p.languages, p.languageRule)
+                        }
+                        pendingAudio?.let {
+                            pendingAudio = null
+                            selectAudioAt(it)
+                        }
                     }
                     val unsupported =
                         listOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO).filter {
@@ -251,19 +258,22 @@ class PlayerActivity : ComponentActivity() {
         android.util.Log.i("Plaivo", "direct play failed ($reason), transcoding ${p.key}")
         Toast.makeText(this, "This device can't play the file directly. Transcoding…", Toast.LENGTH_SHORT).show()
         val at = exo.currentPosition.coerceAtLeast(0)
+        val audio = currentAudio()
         exo.stop()
-        play(p.server, p.key, at, forceTranscode = true)
+        play(p.server, p.key, at, forceTranscode = true, audio = audio)
         return true
     }
 
-    fun play(server: String, key: String, startAt: Long? = null, forceTranscode: Boolean = false) {
+    fun play(server: String, key: String, startAt: Long? = null, forceTranscode: Boolean = false, audio: Int? = null) {
         if (playback != null && playback?.key != key) version = 0
         loading?.cancel()
         loading =
             lifecycleScope.launch {
                 val p =
                     try {
-                        io { core.playback(server, key, forceTranscode, version.toUInt(), audioCodecs) }
+                        io {
+                            core.playback(server, key, forceTranscode, version.toUInt(), audioCodecs, audio?.toUInt())
+                        }
                     } catch (e: PlaivoException) {
                         Watch.failed(server, key)
                         if (advancing) upNextCancelled = true
@@ -288,6 +298,7 @@ class PlayerActivity : ComponentActivity() {
                 playback = p
                 quality = p.qualityKbps.toInt()
                 if (previous?.key != p.key) manualTracks = false
+                pendingAudio = audio.takeIf { manualTracks && p.transcodeSession == null }
                 if (!manualTracks) {
                     autoTracks = true
                     val l = p.languages
@@ -327,7 +338,32 @@ class PlayerActivity : ComponentActivity() {
         quality = kbps
         editSettings { setPlaybackQuality(it, playback?.library ?: "", kbps.toUInt()) }
         val p = playback ?: return
-        play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = fellBack)
+        play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = fellBack, audio = currentAudio())
+    }
+
+    fun selectSourceAudio(i: Int) {
+        val p = playback ?: return
+        if (p.transcodeAudio?.toInt() == i) return
+        manualTracks = true
+        play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = fellBack, audio = i)
+    }
+
+    private fun audioGroups() = exo.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+
+    private fun currentAudio(): Int? {
+        val p = playback ?: return null
+        if (p.transcodeSession != null) return p.transcodeAudio?.toInt()
+        return audioGroups().indexOfFirst { it.isSelected }.takeIf { it >= 0 }
+    }
+
+    private fun selectAudioAt(i: Int) {
+        val group = audioGroups().getOrNull(i) ?: return
+        exo.trackSelectionParameters =
+            exo.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+                .build()
     }
 
     private fun stopTranscode(p: Playback) {

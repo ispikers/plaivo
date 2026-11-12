@@ -1024,30 +1024,46 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
                 val audio = remember(player.tracksVersion) { player.tracks(C.TRACK_TYPE_AUDIO) }
                 val text = remember(player.tracksVersion) { player.tracks(C.TRACK_TYPE_TEXT) }
                 val textOff = player.textDisabled() || text.none { it.selected }
+                val sourceAudio = player.playback?.takeIf { it.transcodeAudio != null }
                 Row(Modifier.heightIn(max = 380.dp)) {
                     LazyColumn(Modifier.weight(1f)) {
                         item { ColumnTitle("Audio") }
-                        if (audio.isEmpty())
-                            item {
-                                Text(
-                                    "No audio tracks",
-                                    fontSize = 13.sp,
-                                    color = Palette.muted,
-                                    modifier = Modifier.padding(horizontal = 18.dp),
-                                )
+                        if (sourceAudio != null) {
+                            val playing = sourceAudio.transcodeAudio?.toInt()
+                            itemsIndexed(sourceAudio.audioStreams) { i, label ->
+                                PanelRow(
+                                    null,
+                                    label,
+                                    "",
+                                    selected = i == playing,
+                                    modifier = if (i == playing) Modifier.focusRequester(first) else Modifier,
+                                ) {
+                                    player.selectSourceAudio(i)
+                                }
                             }
-                        itemsIndexed(audio) { i, t ->
-                            PanelRow(
-                                null,
-                                t.label,
-                                t.detail,
-                                selected = t.selected,
-                                modifier =
-                                    if (t.selected || (i == 0 && audio.none { it.selected }))
-                                        Modifier.focusRequester(first)
-                                    else Modifier,
-                            ) {
-                                player.select(C.TRACK_TYPE_AUDIO, t)
+                        } else {
+                            if (audio.isEmpty())
+                                item {
+                                    Text(
+                                        "No audio tracks",
+                                        fontSize = 13.sp,
+                                        color = Palette.muted,
+                                        modifier = Modifier.padding(horizontal = 18.dp),
+                                    )
+                                }
+                            itemsIndexed(audio) { i, t ->
+                                PanelRow(
+                                    null,
+                                    t.label,
+                                    t.detail,
+                                    selected = t.selected,
+                                    modifier =
+                                        if (t.selected || (i == 0 && audio.none { it.selected }))
+                                            Modifier.focusRequester(first)
+                                        else Modifier,
+                                ) {
+                                    player.select(C.TRACK_TYPE_AUDIO, t)
+                                }
                             }
                         }
                     }

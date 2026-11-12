@@ -385,17 +385,53 @@ pub struct Part {
 #[serde(rename_all = "camelCase", default)]
 pub struct Stream {
     pub stream_type: u8,
+    pub index: Option<u32>,
     pub key: String,
     pub codec: String,
     pub language_code: String,
     pub display_title: String,
     pub forced: bool,
     pub selected: bool,
+    pub extract_key: String,
 }
 
 impl Stream {
     pub fn is_external_subtitle(&self) -> bool {
         self.stream_type == 3 && !self.key.is_empty()
+    }
+
+    pub fn track_label(&self, position: usize) -> String {
+        match crate::first(&[&self.display_title, &self.language_code]) {
+            "" => format!("Track {}", position + 1),
+            l => l.to_owned(),
+        }
+    }
+
+    pub fn subtitle_file(&self, transcoding: bool) -> Option<(&str, &str)> {
+        match self.stream_type {
+            3 if !self.key.is_empty() => Some((&self.key, &self.codec)),
+            3 if transcoding && !self.extract_key.is_empty() => {
+                let format = self.extract_key.rsplit_once('.').map_or("", |(_, ext)| ext);
+                Some((&self.extract_key, format))
+            }
+            _ => None,
+        }
+    }
+}
+
+pub struct Transcode {
+    pub quality: &'static Quality,
+    pub session: String,
+    pub audio: Option<usize>,
+}
+
+impl Media {
+    pub fn audio_streams(&self) -> impl Iterator<Item = &Stream> {
+        self.part
+            .first()
+            .into_iter()
+            .flat_map(|p| &p.stream)
+            .filter(|s| s.stream_type == 2)
     }
 }
 
@@ -1758,6 +1794,7 @@ impl Server {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn stream_url(
         &self,
         c: &Client,
@@ -1766,7 +1803,8 @@ impl Server {
         kbps: u32,
         force_transcode: bool,
         audio_codecs: &str,
-    ) -> (String, Option<(&'static Quality, String)>) {
+        audio: Option<usize>,
+    ) -> (String, Option<Transcode>) {
         let transcode = if force_transcode {
             Some(Quality::find(kbps).unwrap_or(&QUALITIES[0]))
         } else {
@@ -1788,11 +1826,16 @@ impl Server {
         let session = format!("plaivo-{nanos:x}");
         log::info!("transcoding {key} at {} kbps", q.kbps);
         (
-            self.transcode_url(c, key, media, q, &session, audio_codecs),
-            Some((q, session)),
+            self.transcode_url(c, key, media, q, &session, audio_codecs, audio),
+            Some(Transcode {
+                quality: q,
+                session,
+                audio: audio.filter(|_| self.is_jellyfin()),
+            }),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn transcode_url(
         &self,
         c: &Client,
@@ -1801,8 +1844,10 @@ impl Server {
         q: &Quality,
         session: &str,
         audio_codecs: &str,
+        audio: Option<usize>,
     ) -> String {
         if self.is_jellyfin() {
+            let audio_index = audio.and_then(|i| media.audio_streams().nth(i)?.index);
             return jellyfin::transcode_url(
                 self,
                 c,
@@ -1811,6 +1856,7 @@ impl Server {
                 q,
                 session,
                 audio_codecs,
+                audio_index,
             );
         }
         let extra = format!(
@@ -2396,6 +2442,7 @@ mod tests {
             &QUALITIES[0],
             "s1",
             "aac,mp3",
+            None,
         );
         assert!(url.starts_with(
             "http://h/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F7&"

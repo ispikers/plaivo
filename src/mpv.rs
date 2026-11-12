@@ -55,6 +55,7 @@ const FORMAT_FLAG: c_int = 3;
 const FORMAT_DOUBLE: c_int = 5;
 const EVENT_SHUTDOWN: c_int = 1;
 const EVENT_LOG_MESSAGE: c_int = 2;
+const EVENT_COMMAND_REPLY: c_int = 5;
 const EVENT_END_FILE: c_int = 7;
 const EVENT_FILE_LOADED: c_int = 8;
 const EVENT_PLAYBACK_RESTART: c_int = 21;
@@ -130,6 +131,7 @@ pub enum Event {
     Volume(f64),
     Mute(bool),
     Tracks,
+    CommandDone(u64),
     Loaded,
     Started,
     Ended { eof: bool, error: Option<String> },
@@ -269,10 +271,14 @@ impl Mpv {
     }
 
     pub fn command(&self, args: &[&str]) {
+        self.command_with_reply(args, 0);
+    }
+
+    pub fn command_with_reply(&self, args: &[&str], reply: u64) {
         let owned: Vec<CString> = args.iter().map(|a| cstr(a)).collect();
         let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(std::ptr::null());
-        unsafe { (self.0.api.command_async)(self.0.h, 0, ptrs.as_ptr()) };
+        unsafe { (self.0.api.command_async)(self.0.h, reply, ptrs.as_ptr()) };
     }
 
     pub fn set(&self, name: &str, value: &str) {
@@ -329,6 +335,10 @@ fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
                     )
                 };
                 log::log!(target: "mpv", level, "[{prefix}] {}", text.trim_end());
+            }
+            EVENT_COMMAND_REPLY if e.reply != 0 => {
+                ctx.fetch("track-list");
+                on_event(Event::CommandDone(e.reply));
             }
             EVENT_FILE_LOADED => {
                 ctx.fetch("track-list");

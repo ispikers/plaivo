@@ -1,5 +1,6 @@
 use crate::app::{Nav, Page, Plaivo, join, poll_until};
 use crate::plex::{R, Server};
+use crate::prefs;
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::settings::note;
 use crate::ui::theme::{self, Icon};
@@ -225,6 +226,22 @@ impl Plaivo {
         };
         log::info!("jellyfin: signed in to {} as {}", srv.name, srv.user);
         let name = srv.name.clone();
+        let (c, token, jellyfin, added) = (
+            self.client.clone(),
+            self.account.token.clone(),
+            self.account.jellyfin.clone(),
+            srv.clone(),
+        );
+        let failed = format!("Could not copy your language preferences to {name}");
+        Self::bg(
+            cx,
+            move || prefs::share_with_new_server(&c, token.as_deref(), &jellyfin, &added),
+            move |this, r, cx| {
+                if let Err(e) = r {
+                    this.toast(format!("{failed}: {e}"), cx);
+                }
+            },
+        );
         self.account.add_jellyfin(srv);
         self.account.save();
         self.add_server.leave(cx);

@@ -1,5 +1,5 @@
 use crate::jellyfin;
-use crate::plex::{Client, Item, R, Server, drain, encode, err};
+use crate::plex::{Client, Item, Media, R, Server, drain, encode, err};
 use crate::settings::library_key;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -255,6 +255,22 @@ pub fn pick_with(
     }
 }
 
+pub fn pick_source_audio(
+    media: &Media,
+    p: &LanguagePrefs,
+    rule: Option<&LanguageRule>,
+) -> Option<usize> {
+    let audio: Vec<TrackInfo> = media
+        .audio_streams()
+        .map(|s| TrackInfo {
+            language: s.language_code.clone(),
+            forced: s.forced,
+            is_default: s.selected,
+        })
+        .collect();
+    pick_with(&audio, &[], p, rule).0
+}
+
 pub fn pick(
     audio: &[TrackInfo],
     subtitles: &[TrackInfo],
@@ -310,16 +326,28 @@ fn profile_query(p: &LanguagePrefs) -> String {
 
 impl From<jellyfin::LanguagePrefs> for LanguagePrefs {
     fn from(j: jellyfin::LanguagePrefs) -> Self {
-        let mode = match j.subtitle_mode {
+        let unset = LanguagePrefs {
+            mode: SubtitleMode::Off,
+            ..Default::default()
+        };
+        jellyfin_or(&j, &unset)
+    }
+}
+
+fn jellyfin_or(j: &jellyfin::LanguagePrefs, unset: &LanguagePrefs) -> LanguagePrefs {
+    let or = |code: &str, fallback: &str| match canonical(code) {
+        c if c.is_empty() => fallback.to_owned(),
+        c => c,
+    };
+    LanguagePrefs {
+        audio: or(&j.audio, &unset.audio),
+        subtitles: or(&j.subtitles, &unset.subtitles),
+        mode: match j.subtitle_mode {
             jellyfin::SubtitleMode::Always => SubtitleMode::Always,
             jellyfin::SubtitleMode::Smart => SubtitleMode::ForeignAudio,
-            _ => SubtitleMode::Off,
-        };
-        LanguagePrefs {
-            audio: canonical(&j.audio),
-            subtitles: canonical(&j.subtitles),
-            mode,
-        }
+            jellyfin::SubtitleMode::Default => unset.mode,
+            jellyfin::SubtitleMode::OnlyForced | jellyfin::SubtitleMode::None => SubtitleMode::Off,
+        },
     }
 }
 
@@ -362,12 +390,21 @@ fn set_plex_account(c: &Client, token: &str, p: &LanguagePrefs) -> R<()> {
     Ok(())
 }
 
-static CACHE: Mutex<BTreeMap<String, Result<LanguagePrefs, Instant>>> = Mutex::new(BTreeMap::new());
+enum Cached {
+    Prefs(LanguagePrefs),
+    Jellyfin(jellyfin::LanguagePrefs),
+    RetryAt(Instant),
+}
+
+static CACHE: Mutex<BTreeMap<String, Cached>> = Mutex::new(BTreeMap::new());
 static WRITES: Mutex<u64> = Mutex::new(0);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn remember(key: &str, p: &LanguagePrefs) {
-    CACHE.lock().unwrap().insert(key.to_owned(), Ok(p.clone()));
+    CACHE
+        .lock()
+        .unwrap()
+        .insert(key.to_owned(), Cached::Prefs(p.clone()));
 }
 
 pub fn forget() {
@@ -390,29 +427,27 @@ pub fn for_server(
         PLEX_KEY
     };
     match CACHE.lock().unwrap().get(key) {
-        Some(Ok(p)) => return p.clone(),
-        Some(Err(until)) if Instant::now() < *until => return local.clone(),
+        Some(Cached::Prefs(p)) => return p.clone(),
+        Some(Cached::Jellyfin(j)) => return jellyfin_or(j, local),
+        Some(Cached::RetryAt(until)) if Instant::now() < *until => return local.clone(),
         _ => {}
     }
     let fetched = match (srv.is_jellyfin(), plex_token) {
-        (true, _) => jellyfin::language_prefs(srv, c).map(LanguagePrefs::from),
-        (false, Some(token)) => plex_account(c, token),
+        (true, _) => jellyfin::language_prefs(srv, c).map(Cached::Jellyfin),
+        (false, Some(token)) => plex_account(c, token).map(Cached::Prefs),
         (false, None) => return local.clone(),
     };
-    match fetched {
-        Ok(p) => {
-            remember(key, &p);
-            p
-        }
-        Err(e) => {
-            log::warn!("language preferences from {}: {e}", srv.name);
-            CACHE
-                .lock()
-                .unwrap()
-                .insert(key.to_owned(), Err(Instant::now() + RETRY_AFTER));
-            local.clone()
-        }
-    }
+    let cached = fetched.unwrap_or_else(|e| {
+        log::warn!("language preferences from {}: {e}", srv.name);
+        Cached::RetryAt(Instant::now() + RETRY_AFTER)
+    });
+    let p = match &cached {
+        Cached::Prefs(p) => p.clone(),
+        Cached::Jellyfin(j) => jellyfin_or(j, local),
+        Cached::RetryAt(_) => local.clone(),
+    };
+    CACHE.lock().unwrap().insert(key.to_owned(), cached);
+    p
 }
 
 pub fn account(
@@ -426,6 +461,24 @@ pub fn account(
         (None, Some(srv)) => jellyfin::language_prefs(srv, c)?.into(),
         (None, None) => return Ok(None),
     }))
+}
+
+pub fn share_with_new_server(
+    c: &Client,
+    plex_token: Option<&str>,
+    jellyfin: &[Server],
+    added: &Server,
+) -> R<()> {
+    let generation = next_generation();
+    let others: Vec<Server> = jellyfin
+        .iter()
+        .filter(|s| s.id != added.id)
+        .cloned()
+        .collect();
+    match account(c, plex_token, &others)? {
+        Some(p) => save(c, None, std::slice::from_ref(added), &p, generation),
+        None => Ok(()),
+    }
 }
 
 pub fn save(
@@ -463,6 +516,58 @@ pub fn save(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unset_jellyfin_prefs_inherit_the_app_ones() {
+        let app = LanguagePrefs {
+            audio: "eng".into(),
+            subtitles: "eng".into(),
+            mode: SubtitleMode::Always,
+        };
+        let unset = jellyfin::LanguagePrefs::default();
+        assert_eq!(jellyfin_or(&unset, &app), app);
+        let own = jellyfin::LanguagePrefs {
+            audio: "ita".into(),
+            subtitles: String::new(),
+            subtitle_mode: jellyfin::SubtitleMode::OnlyForced,
+        };
+        assert_eq!(
+            jellyfin_or(&own, &app),
+            LanguagePrefs {
+                audio: canonical("ita"),
+                subtitles: "eng".into(),
+                mode: SubtitleMode::Off,
+            }
+        );
+        assert_eq!(LanguagePrefs::from(unset).mode, SubtitleMode::Off);
+    }
+
+    #[test]
+    fn picks_source_audio_by_language_then_default() {
+        let stream = |lang: &str, selected| crate::plex::Stream {
+            stream_type: 2,
+            language_code: lang.into(),
+            selected,
+            ..Default::default()
+        };
+        let media = Media {
+            part: vec![crate::plex::Part {
+                stream: vec![stream("ita", true), stream("eng", false)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let prefs = |audio: &str| LanguagePrefs {
+            audio: audio.into(),
+            ..Default::default()
+        };
+        assert_eq!(pick_source_audio(&media, &prefs("en"), None), Some(1));
+        assert_eq!(pick_source_audio(&media, &prefs(""), None), Some(0));
+        assert_eq!(
+            pick_source_audio(&Media::default(), &prefs("en"), None),
+            None
+        );
+    }
 
     #[test]
     fn language_rules_match_and_resolve() {
@@ -749,9 +854,15 @@ mod tests {
         };
         assert_eq!(for_server(&c, &down, None, &local), local);
         assert!(
-            matches!(CACHE.lock().unwrap().get("j-down"), Some(Err(until)) if *until > Instant::now())
+            matches!(CACHE.lock().unwrap().get("j-down"), Some(Cached::RetryAt(until)) if *until > Instant::now())
         );
         let other = prefs("jpn", "", SubtitleMode::Off);
+        assert_eq!(for_server(&c, &down, None, &other), other);
+        CACHE.lock().unwrap().insert(
+            "j-down".into(),
+            Cached::Jellyfin(jellyfin::LanguagePrefs::default()),
+        );
+        assert_eq!(for_server(&c, &down, None, &local), local);
         assert_eq!(for_server(&c, &down, None, &other), other);
         forget();
         assert!(CACHE.lock().unwrap().get("j-down").is_none());

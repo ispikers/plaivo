@@ -158,6 +158,8 @@ struct MediaStream {
     is_external: bool,
     is_default: bool,
     is_forced: bool,
+    supports_external_stream: bool,
+    is_text_subtitle_stream: bool,
     width: Option<u64>,
     height: Option<u64>,
     channels: Option<u32>,
@@ -225,23 +227,40 @@ impl Source {
                     "Subtitle" => 3,
                     _ => return None,
                 };
-                let format = if s.codec == "subrip" { "srt" } else { &s.codec };
-                let key = if stream_type == 3 && s.is_external {
+                let url = |format: &str| {
                     format!(
                         "/Videos/{item_id}/{}/Subtitles/{}/Stream.{format}",
                         self.id, s.index
                     )
+                };
+                let key = if stream_type == 3 && s.is_external {
+                    url(if s.codec == "subrip" { "srt" } else { &s.codec })
+                } else {
+                    String::new()
+                };
+                let extract_key = if stream_type == 3
+                    && !s.is_external
+                    && s.supports_external_stream
+                    && s.is_text_subtitle_stream
+                {
+                    url(if matches!(s.codec.as_str(), "ass" | "ssa") {
+                        "ass"
+                    } else {
+                        "srt"
+                    })
                 } else {
                     String::new()
                 };
                 Some(Stream {
                     stream_type,
+                    index: u32::try_from(s.index).ok(),
                     key,
                     codec: s.codec.clone(),
                     language_code: s.language.clone(),
                     display_title: s.display_title.clone(),
                     forced: s.is_forced,
                     selected: s.is_default,
+                    extract_key,
                 })
             })
             .collect();
@@ -959,6 +978,7 @@ pub fn media_url(srv: &Server, key: &str) -> String {
     format!("{}{key}{}ApiKey={}", srv.uri, sep(key), encode(&srv.token))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn transcode_url(
     srv: &Server,
     c: &Client,
@@ -967,9 +987,11 @@ pub fn transcode_url(
     q: &Quality,
     session: &str,
     audio_codecs: &str,
+    audio_index: Option<u32>,
 ) -> String {
     let (bps, height) = ((q.kbps as u64 * 1000).to_string(), q.height.to_string());
     let width = q.resolution.split('x').next().unwrap_or_default();
+    let audio_index = audio_index.map(|i| i.to_string());
     let params = [
         ("MediaSourceId", first(&[source_id, key])),
         ("DeviceId", &c.client_id),
@@ -986,6 +1008,8 @@ pub fn transcode_url(
     ];
     let query: Vec<String> = params
         .iter()
+        .copied()
+        .chain(audio_index.as_deref().map(|i| ("AudioStreamIndex", i)))
         .map(|(k, v)| format!("{k}={}", encode(v)))
         .collect();
     format!("{}/Videos/{key}/master.m3u8?{}", srv.uri, query.join("&"))
@@ -1371,6 +1395,43 @@ mod tests {
             part.stream[4].key.is_empty(),
             "embedded subtitles stay in the file"
         );
+        assert!(
+            part.stream[4].extract_key.is_empty(),
+            "image subtitles can't be extracted"
+        );
+        let embedded: Source = serde_json::from_value(serde_json::json!({
+            "Id": "s",
+            "MediaStreams": [
+                {"Type": "Audio", "Index": 1, "Codec": "dts"},
+                {"Type": "Audio", "Index": 2, "Codec": "ac3"},
+                {"Type": "Subtitle", "Index": 4, "Codec": "ass", "SupportsExternalStream": true, "IsTextSubtitleStream": true},
+                {"Type": "Subtitle", "Index": 5, "Codec": "PGSSUB", "SupportsExternalStream": true}
+            ]
+        }))
+        .unwrap();
+        let media = embedded.into_media("i");
+        let st = &media.part[0].stream[2];
+        assert_eq!(st.subtitle_file(false), None);
+        assert_eq!(
+            st.subtitle_file(true),
+            Some(("/Videos/i/s/Subtitles/4/Stream.ass", "ass"))
+        );
+        assert_eq!(ext.subtitle_file(false), Some((ext.key.as_str(), "subrip")));
+        assert_eq!(media.part[0].stream[3].subtitle_file(true), None);
+        let transcode = |audio| {
+            server().transcode_url(
+                &Client::new("d".into()),
+                "i",
+                &media,
+                Quality::find(4000).unwrap(),
+                "s1",
+                "aac",
+                audio,
+            )
+        };
+        assert!(transcode(Some(1)).ends_with("&AudioStreamIndex=2"));
+        assert!(!transcode(None).contains("AudioStreamIndex"));
+        assert!(!transcode(Some(5)).contains("AudioStreamIndex"));
     }
 
     #[test]
@@ -1598,11 +1659,21 @@ mod tests {
             Quality::find(4000).unwrap(),
             "s1",
             "aac,ac3,eac3,mp3",
+            None,
         );
         assert!(url.starts_with("http://nas:8096/Videos/i/master.m3u8?MediaSourceId=v2&DeviceId=dev%201&PlaySessionId=s1&"), "{url}");
         assert!(
-            transcode_url(&srv, &c, "i", "", Quality::find(4000).unwrap(), "s1", "aac")
-                .contains("MediaSourceId=i&")
+            transcode_url(
+                &srv,
+                &c,
+                "i",
+                "",
+                Quality::find(4000).unwrap(),
+                "s1",
+                "aac",
+                None
+            )
+            .contains("MediaSourceId=i&")
         );
         for p in [
             "MaxStreamingBitrate=4000000",

@@ -527,6 +527,8 @@ pub struct Playback {
     pub source: String,
     pub transcode_session: Option<String>,
     pub transcode_label: String,
+    pub audio_streams: Vec<String>,
+    pub transcode_audio: Option<u32>,
     pub languages: LanguagePrefs,
     pub language_rule: Option<LanguageRule>,
     pub library: String,
@@ -1378,6 +1380,7 @@ impl Plaivo {
         force_transcode: bool,
         version: u32,
         audio_codecs: String,
+        audio: Option<u32>,
     ) -> R<Playback> {
         if !force_transcode
             && version == 0
@@ -1401,6 +1404,14 @@ impl Plaivo {
             .lock()
             .unwrap()
             .quality_for(&library_key(&srv.id, &it.library_section_id));
+        let local = self.settings.lock().unwrap().languages();
+        let token = self.account.lock().unwrap().token.clone();
+        let languages = prefs::for_server(&self.client, &srv, token.as_deref(), &local);
+        let rules = self.settings.lock().unwrap().language_rules.clone();
+        let rule = prefs::language_rule(&srv.id, &it, &rules);
+        let audio = audio
+            .map(|i| i as usize)
+            .or_else(|| prefs::pick_source_audio(media, &languages, rule.as_ref()));
         let (url, transcode) = srv.stream_url(
             &self.client,
             &it.rating_key,
@@ -1408,25 +1419,31 @@ impl Plaivo {
             quality_kbps,
             force_transcode,
             &audio_codecs,
+            audio,
         );
         let subtitles = part
             .stream
             .iter()
-            .filter(|st| st.is_external_subtitle())
-            .map(|st| Subtitle {
-                url: srv.media_url(&st.key),
-                codec: st.codec.clone(),
-                title: st.display_title.clone(),
-                language: st.language_code.clone(),
-                forced: st.forced,
+            .filter_map(|st| {
+                let (key, codec) = st.subtitle_file(transcode.is_some())?;
+                Some(Subtitle {
+                    url: srv.media_url(key),
+                    codec: codec.to_owned(),
+                    title: st.display_title.clone(),
+                    language: st.language_code.clone(),
+                    forced: st.forced,
+                })
             })
             .collect();
-        let local = self.settings.lock().unwrap().languages();
-        let token = self.account.lock().unwrap().token.clone();
-        let languages = prefs::for_server(&self.client, &srv, token.as_deref(), &local);
         let transcode_label = transcode
             .as_ref()
-            .map(|(q, _)| format!("{} · {}", q.label, fmt_bitrate(q.kbps as u64)))
+            .map(|t| {
+                format!(
+                    "{} · {}",
+                    t.quality.label,
+                    fmt_bitrate(t.quality.kbps as u64)
+                )
+            })
             .unwrap_or_default();
         let file = part
             .file
@@ -1434,20 +1451,22 @@ impl Plaivo {
             .next()
             .unwrap_or_default()
             .to_owned();
-        let rules = self.settings.lock().unwrap().language_rules.clone();
-        let rule = prefs::language_rule(&srv.id, &it, &rules);
-        Ok(self.playback_for(
-            &srv.id,
-            &it,
-            url,
-            file,
-            subtitles,
-            transcode.map(|(_, s)| s),
-            transcode_label,
-            languages,
-            rule,
-            quality_kbps,
-        ))
+        let transcode_audio = transcode.as_ref().and_then(|t| t.audio).map(|i| i as u32);
+        Ok(Playback {
+            transcode_audio,
+            ..self.playback_for(
+                &srv.id,
+                &it,
+                url,
+                file,
+                subtitles,
+                transcode.map(|t| t.session),
+                transcode_label,
+                languages,
+                rule,
+                quality_kbps,
+            )
+        })
     }
 
     pub fn account_languages(&self) -> R<Option<LanguagePrefs>> {
@@ -1866,10 +1885,21 @@ impl Plaivo {
     fn add_jellyfin(&self, srv: Server) {
         log::info!("jellyfin: signed in to {} as {}", srv.name, srv.user);
         let mut account = self.account.lock().unwrap();
+        let (c, token, jellyfin, added) = (
+            self.client.clone(),
+            account.token.clone(),
+            account.jellyfin.clone(),
+            srv.clone(),
+        );
         account.add_jellyfin(srv);
         account.save();
         drop(account);
         self.sync_download_servers();
+        std::thread::spawn(move || {
+            if let Err(e) = prefs::share_with_new_server(&c, token.as_deref(), &jellyfin, &added) {
+                log::warn!("language preferences to {}: {e}", added.name);
+            }
+        });
     }
 
     fn scrobble(&self, server: &str, key: &str, state: PlayState, time_ms: u64, duration_ms: u64) {
@@ -2038,6 +2068,15 @@ impl Plaivo {
             ]),
             transcode_session,
             transcode_label,
+            audio_streams: media
+                .map(|m| {
+                    m.audio_streams()
+                        .enumerate()
+                        .map(|(i, s)| s.track_label(i))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            transcode_audio: None,
             languages,
             language_rule,
             library: library_key(server, &it.library_section_id),

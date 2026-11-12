@@ -1514,7 +1514,7 @@ impl Plaivo {
                         d.child(icon(Icon::Check, 20., theme::text()))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_track(kind, &id);
+                        this.select_track(kind, &id, cx);
                         cx.notify();
                     }))
             }))

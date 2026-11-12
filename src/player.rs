@@ -105,11 +105,14 @@ pub struct Player {
     pub shader_applied: &'static str,
     shader_failed: &'static str,
     transcode: Option<String>,
+    transcode_audio: Option<usize>,
     local: bool,
     pub paused: bool,
     last_report: Option<Instant>,
     stop_sent: bool,
     reloads: u64,
+    sub_batch: u64,
+    subs_pending: usize,
     pub tracker: Option<trackers::Media>,
     external_subs: Vec<([String; 3], bool)>,
     pub title: SharedString,
@@ -139,6 +142,23 @@ pub struct Player {
     pub hint: Option<(Icon, SharedString)>,
     hint_task: Option<Task<()>>,
     clock_task: Option<Task<()>>,
+}
+
+fn remote_subs(srv: &Server, part: &plex::Part, transcoding: bool) -> Vec<([String; 3], bool)> {
+    part.stream
+        .iter()
+        .filter_map(|st| {
+            let (key, _) = st.subtitle_file(transcoding)?;
+            Some((
+                [
+                    srv.media_url(key),
+                    st.display_title.clone(),
+                    st.language_code.clone(),
+                ],
+                st.forced,
+            ))
+        })
+        .collect()
 }
 
 fn heading(it: &Item) -> (String, String) {
@@ -389,6 +409,19 @@ impl Plaivo {
             .and_then(|m| m.part.first())
             .ok_or("This item has no playable media")?;
         let resume = it.resume_ms().filter(|_| !from_start);
+        let (title, subtitle) = heading(&it);
+        let media = it.media[0].clone();
+        let library = library_key(&srv.id, &it.library_section_id);
+        let (url, session, transcode_audio) = match &local {
+            Some(l) => (l.file.to_string_lossy().into_owned(), None, None),
+            None => self.stream_url(
+                &srv,
+                &it.rating_key,
+                &media,
+                self.settings.quality_for(&library),
+                prefs::pick_source_audio(&media, &self.player.languages, self.player.rule.as_ref()),
+            ),
+        };
         let subs = match &local {
             Some(l) => l
                 .subtitles
@@ -404,33 +437,7 @@ impl Plaivo {
                     )
                 })
                 .collect(),
-            None => part
-                .stream
-                .iter()
-                .filter(|st| st.is_external_subtitle())
-                .map(|st| {
-                    (
-                        [
-                            srv.media_url(&st.key),
-                            st.display_title.clone(),
-                            st.language_code.clone(),
-                        ],
-                        st.forced,
-                    )
-                })
-                .collect(),
-        };
-        let (title, subtitle) = heading(&it);
-        let media = it.media[0].clone();
-        let library = library_key(&srv.id, &it.library_section_id);
-        let (url, session) = match &local {
-            Some(l) => (l.file.to_string_lossy().into_owned(), None),
-            None => self.stream_url(
-                &srv,
-                &it.rating_key,
-                &media,
-                self.settings.quality_for(&library),
-            ),
+            None => remote_subs(&srv, part, session.is_some()),
         };
         if self.playing() {
             self.report("stopped", cx);
@@ -522,6 +529,7 @@ impl Plaivo {
         p.title_link = title_link;
         p.crumbs = crumbs;
         p.transcode = session;
+        p.transcode_audio = transcode_audio;
         p.media = media;
         p.credits = it
             .marker
@@ -791,10 +799,33 @@ impl Plaivo {
         key: &str,
         media: &Media,
         kbps: u32,
-    ) -> (String, Option<String>) {
-        let (url, transcode) =
-            srv.stream_url(&self.client, key, media, kbps, false, "aac,ac3,eac3,mp3");
-        (url, transcode.map(|(_, session)| session))
+        audio: Option<usize>,
+    ) -> (String, Option<String>, Option<usize>) {
+        let (url, transcode) = srv.stream_url(
+            &self.client,
+            key,
+            media,
+            kbps,
+            false,
+            "aac,ac3,eac3,mp3",
+            audio,
+        );
+        match transcode {
+            Some(t) => (url, Some(t.session), t.audio),
+            None => (url, None, None),
+        }
+    }
+
+    fn source_audio(&self) -> Option<usize> {
+        match (&self.player.transcode, self.player.transcode_audio) {
+            (_, Some(i)) => Some(i),
+            (Some(_), None) => None,
+            (None, None) => self
+                .mpv_tracks()
+                .iter()
+                .filter(|t| t.kind == "audio" && !t.external)
+                .position(|t| t.selected),
+        }
     }
 
     fn end_transcode(&mut self, cx: &mut Context<Self>) {
@@ -825,6 +856,10 @@ impl Plaivo {
             return;
         }
         self.player.quality = kbps;
+        self.reload_stream(self.source_audio(), cx);
+    }
+
+    fn reload_stream(&mut self, audio: Option<usize>, cx: &mut Context<Self>) {
         let Some(srv) =
             self.player.server.clone().filter(|_| {
                 self.playing() && !self.player.local && !self.player.media.part.is_empty()
@@ -832,12 +867,17 @@ impl Plaivo {
         else {
             return;
         };
-        let (url, session) = self.stream_url(
+        let (url, session, transcode_audio) = self.stream_url(
             &srv,
             &self.player.key.clone(),
             &self.player.media.clone(),
-            kbps,
+            self.player.quality,
+            audio,
         );
+        // mpv numbers a file's audio tracks from 1 in the order the server lists them
+        let aid = audio
+            .filter(|_| session.is_none())
+            .map_or("auto".to_owned(), |i| (i + 1).to_string());
         let report = self
             .player
             .transcode
@@ -846,8 +886,12 @@ impl Plaivo {
             .flatten();
         let old = self.player.transcode.take();
         let p = &mut self.player;
+        if let Some(part) = p.media.part.first() {
+            p.external_subs = remote_subs(&srv, part, session.is_some());
+        }
         p.stop_sent = false;
         p.transcode = session;
+        p.transcode_audio = transcode_audio;
         p.buffering = true;
         p.cached = 0.0;
         p.reloads += 1;
@@ -858,6 +902,7 @@ impl Plaivo {
             }
             this.mpv(|m| {
                 m.set("start", &at);
+                m.set("aid", &aid);
                 m.command(&["loadfile", &url, "replace"]);
             });
         };
@@ -1435,14 +1480,27 @@ impl Plaivo {
                 true
             }
             mpv::Event::Loaded => {
-                self.player.buffering = false;
-                if let Some(mpv) = &self.player.mpv {
-                    for ([url, title, lang], _) in &self.player.external_subs {
-                        mpv.command(&["sub-add", url, "auto", title, lang]);
+                let p = &mut self.player;
+                p.buffering = false;
+                p.sub_batch += 1;
+                p.subs_pending = p.external_subs.len();
+                if let Some(mpv) = &p.mpv {
+                    for ([url, title, lang], _) in &p.external_subs {
+                        mpv.command_with_reply(&["sub-add", url, "auto", title, lang], p.sub_batch);
                     }
                 }
                 self.auto_tracks();
                 true
+            }
+            mpv::Event::CommandDone(batch) => {
+                let p = &mut self.player;
+                if batch == p.sub_batch && p.subs_pending > 0 {
+                    p.subs_pending -= 1;
+                    if p.subs_pending == 0 {
+                        self.auto_tracks();
+                    }
+                }
+                false
             }
             mpv::Event::Tracks => {
                 self.refresh_tracks();
@@ -1477,12 +1535,20 @@ impl Plaivo {
         }
     }
 
-    fn refresh_tracks(&mut self) {
-        let Some(mpv) = &self.player.mpv else { return };
-        let tracks: Vec<MpvTrack> = mpv
-            .get("track-list")
+    fn mpv_tracks(&self) -> Vec<MpvTrack> {
+        self.player
+            .mpv
+            .as_ref()
+            .and_then(|m| m.get("track-list"))
             .and_then(|j| serde_json::from_str(&j).ok())
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn refresh_tracks(&mut self) {
+        if self.player.mpv.is_none() {
+            return;
+        }
+        let tracks = self.mpv_tracks();
         let describe = |t: &MpvTrack| Choice {
             id: t.id.to_string().into(),
             label: t
@@ -1516,11 +1582,25 @@ impl Plaivo {
             .into(),
             selected: t.selected,
         };
-        self.player.audio_tracks = tracks
-            .iter()
-            .filter(|t| t.kind == "audio")
-            .map(describe)
-            .collect();
+        self.player.audio_tracks = match self.player.transcode_audio {
+            Some(playing) => self
+                .player
+                .media
+                .audio_streams()
+                .enumerate()
+                .map(|(i, s)| Choice {
+                    id: i.to_string().into(),
+                    label: s.track_label(i).into(),
+                    sub: "".into(),
+                    selected: i == playing,
+                })
+                .collect(),
+            None => tracks
+                .iter()
+                .filter(|t| t.kind == "audio")
+                .map(describe)
+                .collect(),
+        };
         let subs: Vec<Choice> = tracks
             .iter()
             .filter(|t| t.kind == "sub")
@@ -1703,9 +1783,23 @@ impl Plaivo {
         &self.player.languages.subtitles
     }
 
-    pub fn select_track(&mut self, kind: &str, id: &str) {
+    pub fn select_track(&mut self, kind: &str, id: &str, cx: &mut Context<Self>) {
         self.player.tracks_picked = true;
-        self.mpv(|m| m.set(kind, id));
+        match self.player.transcode_audio {
+            Some(playing) if kind == "aid" => {
+                if let Ok(i) = id.parse::<usize>()
+                    && i != playing
+                {
+                    self.reload_stream(Some(i), cx);
+                    if self.player.transcode_audio == Some(i) {
+                        for c in &mut self.player.audio_tracks {
+                            c.selected = c.id == id;
+                        }
+                    }
+                }
+            }
+            _ => self.mpv(|m| m.set(kind, id)),
+        }
     }
 
     fn auto_tracks(&self) {
@@ -1717,10 +1811,7 @@ impl Plaivo {
         else {
             return;
         };
-        let tracks: Vec<MpvTrack> = mpv
-            .get("track-list")
-            .and_then(|j| serde_json::from_str(&j).ok())
-            .unwrap_or_default();
+        let tracks = self.mpv_tracks();
         let of = |kind: &str| tracks.iter().filter(|t| t.kind == kind).collect::<Vec<_>>();
         let (audio, subs) = (of("audio"), of("sub"));
         let external_forced = |t: &MpvTrack| {
@@ -1748,10 +1839,14 @@ impl Plaivo {
             "auto tracks for {:?}: audio {a:?}, subtitles {s:?}",
             self.player.languages
         );
-        if let Some(i) = a {
-            mpv.set("aid", &audio[i].id.to_string());
+        if let Some(t) = a.map(|i| audio[i]).filter(|t| !t.selected) {
+            mpv.set("aid", &t.id.to_string());
         }
-        mpv.set("sid", &s.map_or("no".into(), |i| subs[i].id.to_string()));
+        match s.map(|i| subs[i]) {
+            Some(t) if !t.selected => mpv.set("sid", &t.id.to_string()),
+            None if subs.iter().any(|t| t.selected) => mpv.set("sid", "no"),
+            _ => {}
+        }
     }
 
     pub fn apply_sub_style(&self) {
