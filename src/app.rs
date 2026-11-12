@@ -333,6 +333,8 @@ pub struct Plaivo {
     pub hero_index: usize,
     hero_task: Option<Task<()>>,
     pub hubs: Vec<Hub>,
+    home_continue: Vec<Item>,
+    remote_continue: HashMap<String, Vec<Item>>,
     pub home_error: Option<SharedString>,
     pub home_ready: bool,
     pub suggestions: Vec<Card>,
@@ -718,6 +720,8 @@ impl Plaivo {
             hero_index: 0,
             hero_task: None,
             hubs: Vec::new(),
+            home_continue: Vec::new(),
+            remote_continue: HashMap::new(),
             home_error: None,
             home_ready: false,
             suggestions: Vec::new(),
@@ -1778,6 +1782,7 @@ impl Plaivo {
             self.hubs.clear();
         }
         let id = srv.id.clone();
+        let home = id.clone();
         self.load(
             cx,
             move |c| srv.hubs(c),
@@ -1796,6 +1801,75 @@ impl Plaivo {
                 }
             },
         );
+        for other in self.servers.iter().filter(|s| s.id != home).cloned() {
+            let sid = other.id.clone();
+            self.load(
+                cx,
+                move |c| other.continue_items(c),
+                move |this, r, _| {
+                    match r {
+                        Ok(items) => this.remote_continue.insert(sid.clone(), items),
+                        Err(_) => this.remote_continue.remove(&sid),
+                    };
+                    if this.home_ready {
+                        this.apply_continue();
+                    }
+                },
+            );
+        }
+    }
+
+    fn apply_continue(&mut self) {
+        let Some(home) = self.home_server() else {
+            return;
+        };
+        let lists: Vec<(&str, &[Item])> =
+            std::iter::once((home.id.as_str(), &self.home_continue[..]))
+                .chain(
+                    self.servers
+                        .iter()
+                        .filter(|s| s.id != home.id)
+                        .filter_map(|s| {
+                            Some((s.id.as_str(), &self.remote_continue.get(&s.id)?[..]))
+                        }),
+                )
+                .collect();
+        let merged = plex::merge_continue(&lists);
+        let has_row = self.hubs.first().is_some_and(|h| h.resume);
+        let wide = !has_row || self.hubs[0].wide;
+        let items: Vec<Card> = merged
+            .iter()
+            .map(|&(s, it)| Card {
+                resume: true,
+                ..card_for(it, wide, s)
+            })
+            .collect();
+        let local = merged.iter().all(|&(s, _)| s == home.id);
+        if items.is_empty() {
+            if has_row {
+                self.hubs.remove(0);
+            }
+        } else if has_row {
+            let row = &mut self.hubs[0];
+            row.items = items;
+            if !local {
+                row.key = SharedString::default();
+            }
+        } else {
+            self.hubs.insert(
+                0,
+                Hub {
+                    title: "Continue Watching".into(),
+                    key: SharedString::default(),
+                    server: home.id.into(),
+                    resume: true,
+                    wide,
+                    items,
+                    scroll: Default::default(),
+                    slide: None,
+                },
+            );
+        }
     }
 
     fn build_home(&mut self, server: &str, hubs: Vec<plex::Hub>, cx: &mut Context<Self>) {
@@ -1816,6 +1890,12 @@ impl Plaivo {
             .take(SUGGESTIONS)
             .map(|it| card_for(it, false, server))
             .collect();
+        self.home_continue = hubs
+            .into_iter()
+            .find(plex::Hub::is_continue)
+            .map(|h| h.metadata)
+            .unwrap_or_default();
+        self.apply_continue();
         self.home_ready = true;
         for c in self.hero.clone().iter().take(2) {
             self.image(&c.thumb, Shape::Backdrop);

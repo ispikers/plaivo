@@ -1,11 +1,12 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use crate::{first, jellyfin, join, store};
+use crate::{first, jellyfin, join, store, watch_together};
 
 pub type R<T> = Result<T, String>;
 
@@ -193,6 +194,7 @@ pub struct Item {
     pub studio: String,
     pub originally_available_at: String,
     pub added_at: Option<i64>,
+    pub last_viewed_at: Option<i64>,
     pub user_rating: Option<f64>,
     #[serde(rename = "librarySectionID", deserialize_with = "flex_string")]
     pub library_section_id: String,
@@ -678,6 +680,92 @@ pub fn pick_hero(hubs: &[Hub]) -> Vec<&Item> {
         .collect()
 }
 
+struct Resume<'a> {
+    at: i64,
+    server: &'a str,
+    it: &'a Item,
+    ids: BTreeMap<String, String>,
+    title: String,
+}
+
+type Rank = (Option<(Option<i64>, Option<i64>)>, bool, Reverse<usize>);
+
+impl<'a> Resume<'a> {
+    fn new(at: i64, server: &'a str, it: &'a Item) -> Self {
+        let episode = it.kind == "episode";
+        Resume {
+            at,
+            server,
+            it,
+            ids: watch_together::item_ids(it),
+            title: watch_together::title_key(if episode {
+                &it.grandparent_title
+            } else {
+                &it.title
+            }),
+        }
+    }
+
+    fn same(&self, o: &Self) -> bool {
+        if self.it.kind != o.it.kind {
+            return false;
+        }
+        let mut common = false;
+        for (ns, v) in &self.ids {
+            if let Some(w) = o.ids.get(ns) {
+                if v.eq_ignore_ascii_case(w) {
+                    return true;
+                }
+                common = true;
+            }
+        }
+        let fallback = if self.it.kind == "episode" {
+            self.server != o.server
+        } else {
+            !common && self.it.year.is_some() && self.it.year == o.it.year
+        };
+        fallback && !self.title.is_empty() && self.title == o.title
+    }
+
+    // Furthest episode beats recency: Jellyfin's next-up entries carry no watch date to compare.
+    fn rank(&self, pos: usize) -> Rank {
+        let it = self.it;
+        (
+            (it.kind == "episode").then_some((it.parent_index, it.index)),
+            it.view_offset.is_some_and(|o| o > 0),
+            Reverse(pos),
+        )
+    }
+}
+
+// Keys are clamped to a running minimum so each server keeps its own order (untimed next-up episodes stay
+// behind the item before them) while the servers interleave by recency. One server's own list is never
+// collapsed; across servers the same title keeps one card, placed at the latest activity among its copies.
+pub fn merge_continue<'a>(lists: &[(&'a str, &'a [Item])]) -> Vec<(&'a str, &'a Item)> {
+    let mut seen = HashSet::new();
+    let mut all = Vec::new();
+    for &(server, items) in lists {
+        let mut at = items.iter().find_map(|i| i.last_viewed_at).unwrap_or(0);
+        for it in items {
+            at = it.last_viewed_at.map_or(at, |t| t.min(at));
+            if seen.insert((server, it.rating_key.as_str())) {
+                all.push(Resume::new(at, server, it));
+            }
+        }
+    }
+    all.sort_by_key(|r| Reverse(r.at));
+    let all = &all[..];
+    let matches = |i: usize| (0..all.len()).filter(move |&j| j != i && all[i].same(&all[j]));
+    let mut kept: Vec<(i64, usize)> = (0..all.len())
+        .filter(|&i| matches(i).all(|j| all[j].rank(j) < all[i].rank(i)))
+        .map(|i| (matches(i).map(|j| all[j].at).fold(all[i].at, i64::max), i))
+        .collect();
+    kept.sort_by_key(|&(at, i)| (Reverse(at), i));
+    kept.into_iter()
+        .map(|(_, i)| (all[i].server, all[i].it))
+        .collect()
+}
+
 const TMDB_WIDTHS: [u32; 7] = [92, 154, 185, 342, 500, 780, 1280];
 
 pub fn direct_image_url(path: &str, w: u32) -> String {
@@ -1143,9 +1231,14 @@ impl Server {
         if self.is_jellyfin() {
             return jellyfin::hubs(self, c);
         }
-        let mut hubs = self
-            .get::<Container>(c, "/hubs?count=20&includeLibraryPlaylists=0")?
-            .hub;
+        let (hubs, cont) = std::thread::scope(|s| {
+            let cont = s.spawn(|| self.continue_hub(c));
+            (
+                self.get::<Container>(c, "/hubs?count=20&includeLibraryPlaylists=0"),
+                cont.join(),
+            )
+        });
+        let mut hubs = hubs?.hub;
         hubs.retain(|h| {
             !h.metadata.is_empty()
                 && !h.is_continue()
@@ -1154,12 +1247,28 @@ impl Server {
                     "movie" | "show" | "season" | "episode" | "mixed" | "clip"
                 )
         });
-        if let Ok(cw) = self.get::<Container>(c, "/hubs/continueWatching?count=20")
-            && let Some(h) = cw.hub.into_iter().find(|h| !h.metadata.is_empty())
-        {
+        if let Ok(Ok(Some(h))) = cont {
             hubs.insert(0, h);
         }
         Ok(hubs)
+    }
+
+    fn continue_hub(&self, c: &Ctx) -> R<Option<Hub>> {
+        Ok(self
+            .get::<Container>(c, "/hubs/continueWatching?count=20&includeGuids=1")?
+            .hub
+            .into_iter()
+            .find(|h| !h.metadata.is_empty()))
+    }
+
+    pub fn continue_items(&self, c: &Ctx) -> R<Vec<Item>> {
+        if self.is_jellyfin() {
+            return jellyfin::continue_items(self, c);
+        }
+        Ok(self
+            .continue_hub(c)?
+            .map(|h| h.metadata)
+            .unwrap_or_default())
     }
 
     pub fn sections(&self, c: &Ctx) -> R<Vec<Directory>> {
@@ -1896,6 +2005,117 @@ mod tests {
             escape_uri("/library/sections/1/all?sort=a:desc&originallyAvailableAt>=-1y&t=a b%20"),
             "/library/sections/1/all?sort=a:desc&originallyAvailableAt%3E=-1y&t=a%20b%20"
         );
+    }
+
+    #[test]
+    fn merge_continue_interleaves_servers_by_recency() {
+        let it = |key: &str, guid: &str, at: Option<i64>| Item {
+            rating_key: key.into(),
+            guid: guid.into(),
+            last_viewed_at: at,
+            ..Default::default()
+        };
+        let a = [
+            it("1", "plex://movie/x", Some(300)),
+            it("2", "", None),
+            it("3", "", Some(100)),
+        ];
+        let b = [
+            it("1", "", Some(400)),
+            it("9", "plex://movie/x", Some(250)),
+            it("8", "", Some(200)),
+        ];
+        let merged: Vec<_> = merge_continue(&[("a", &a[..]), ("b", &b[..])])
+            .into_iter()
+            .map(|(s, it)| format!("{s}{}", it.rating_key))
+            .collect();
+        assert_eq!(merged, ["b1", "a1", "a2", "b8", "a3"]);
+        assert!(merge_continue(&[("a", &[][..])]).is_empty());
+    }
+
+    fn movie(key: &str, title: &str, year: i64, guids: &[&str], at: i64) -> Item {
+        Item {
+            rating_key: key.into(),
+            kind: "movie".into(),
+            title: title.into(),
+            year: Some(year),
+            guids: guids.iter().map(|g| Guid { id: (*g).into() }).collect(),
+            view_offset: Some(1),
+            last_viewed_at: Some(at),
+            ..Default::default()
+        }
+    }
+
+    fn episode(key: &str, show: &str, s: i64, e: i64, at: Option<i64>) -> Item {
+        Item {
+            rating_key: key.into(),
+            kind: "episode".into(),
+            grandparent_title: show.into(),
+            parent_index: Some(s),
+            index: Some(e),
+            view_offset: at.map(|_| 1),
+            last_viewed_at: at,
+            ..Default::default()
+        }
+    }
+
+    fn merged(lists: &[(&str, &[Item])]) -> Vec<String> {
+        merge_continue(lists)
+            .into_iter()
+            .map(|(s, it)| format!("{s}{}", it.rating_key))
+            .collect()
+    }
+
+    #[test]
+    fn merge_continue_matches_movies_across_backends() {
+        let plex = [
+            movie("1", "Arrival", 2016, &["imdb://tt2543164"], 100),
+            movie("2", "Heat", 1995, &[], 90),
+            movie("3", "Dune", 2021, &["tmdb://438631"], 80),
+        ];
+        let jf = [
+            movie("a", "Arrival (2016)", 2016, &["imdb://tt2543164"], 200),
+            movie("b", "Heat", 1995, &["tmdb://949"], 50),
+            movie("c", "Dune", 2021, &["tmdb://1"], 40),
+            movie("d", "Heat", 1986, &[], 30),
+        ];
+        assert_eq!(
+            merged(&[("p", &plex[..]), ("j", &jf[..])]),
+            ["ja", "p2", "p3", "jc", "jd"]
+        );
+    }
+
+    #[test]
+    fn merge_continue_keeps_the_furthest_episode_of_a_show() {
+        let jf = [
+            episode("j3", "Severance", 1, 3, Some(300)),
+            movie("m", "Heat", 1995, &[], 250),
+            episode("j9", "Other Show", 1, 9, None),
+        ];
+        let plex = [
+            episode("p7", "Severance", 1, 7, Some(100)),
+            episode("p2", "Other Show", 2, 1, Some(90)),
+        ];
+        assert_eq!(
+            merged(&[("j", &jf[..]), ("p", &plex[..])]),
+            ["pp7", "jm", "pp2"]
+        );
+        let same = [episode("p4", "Severance", 1, 4, Some(100))];
+        let next = [
+            episode("j4", "Severance", 1, 4, None),
+            movie("x", "Heat", 1995, &[], 500),
+        ];
+        assert_eq!(merged(&[("j", &next[..]), ("p", &same[..])]), ["jx", "pp4"]);
+    }
+
+    #[test]
+    fn merge_continue_never_collapses_one_servers_list() {
+        let jf = [
+            episode("1", "Severance", 1, 3, Some(300)),
+            episode("2", "Severance", 1, 5, Some(200)),
+            episode("2", "Severance", 1, 5, Some(200)),
+        ];
+        assert_eq!(merged(&[("j", &jf[..])]), ["j1", "j2"]);
     }
 
     #[test]

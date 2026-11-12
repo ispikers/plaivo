@@ -36,14 +36,16 @@ pub fn shares_id(ids: &BTreeMap<String, String>, it: &Item) -> Option<bool> {
     (!common.is_empty()).then(|| common.contains(&true))
 }
 
+pub fn title_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 pub fn same_title(a: &str, b: &str) -> bool {
-    let key = |s: &str| {
-        s.chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect::<String>()
-    };
-    !key(a).is_empty() && key(a) == key(b)
+    let a = title_key(a);
+    !a.is_empty() && a == title_key(b)
 }
 
 pub fn describe(server: &str, it: &Item, show: Option<&Item>) -> Result<Media, &'static str> {

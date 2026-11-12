@@ -26,7 +26,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,6 +49,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
@@ -96,12 +96,28 @@ fun HomeScreen(
 
 class HomeRows {
     var rows by mutableStateOf<List<MediaRow>>(emptyList())
+        private set
+
     var hero by mutableStateOf<List<MediaCard>>(emptyList())
+        private set
+
     var error by mutableStateOf<String?>(null)
+    private var base: List<MediaRow>? = null
+    private var resume: MediaRow? = null
 
     fun show(home: Home) {
-        rows = home.rows
+        base = home.rows
         hero = home.hero
+        publish()
+    }
+
+    fun showResume(row: MediaRow?) {
+        resume = row
+        publish()
+    }
+
+    private fun publish() {
+        rows = base?.let { listOfNotNull(resume) + it } ?: emptyList()
     }
 }
 
@@ -111,16 +127,37 @@ fun rememberHomeRows(server: ServerInfo?, refresh: Int, onLoaded: () -> Unit = {
     LaunchedEffect(server?.id, refresh) {
         if (server != null) {
             val id = server.id
-            if (home.rows.isEmpty())
-                io { runCatching { core.home(id, true) } }.onSuccess { if (it.rows.isNotEmpty()) home.show(it) }
+            val others = io { core.servers() }.map { it.id }.filter { it != id }
+            if (home.rows.isEmpty()) {
+                val cached = coroutineScope {
+                    others.forEach { launch { io { core.refreshContinue(it, true) } } }
+                    io { runCatching { core.home(id, true) } }
+                }
+                cached.onSuccess {
+                    if (it.rows.isNotEmpty()) {
+                        home.showResume(core.continueRow(id))
+                        home.show(it)
+                    }
+                }
+            }
+            others.forEach {
+                launch {
+                    io { core.refreshContinue(it, false) }
+                    home.showResume(core.continueRow(id))
+                }
+            }
             io { runCatching { core.home(id, false) } }
                 .onSuccess {
+                    home.showResume(core.continueRow(id))
                     home.show(it)
                     home.error = null
                 }
                 .onFailure {
                     val offline = core.serverOffline(id)
-                    if (offline) home.show(Home(emptyList(), emptyList()))
+                    if (offline) {
+                        home.showResume(core.continueRow(id))
+                        home.show(Home(emptyList(), emptyList()))
+                    }
                     if (home.rows.isEmpty())
                         home.error = if (offline) "Can't reach ${server.name} right now." else it.message
                 }
@@ -269,7 +306,7 @@ private fun Rails(
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val playNow = LocalPlay.current
-    var active by remember { mutableIntStateOf(0) }
+    var active by remember { mutableStateOf(rows.firstOrNull()?.title) }
     val first = remember { FocusRequester() }
     LaunchedEffect(takeFocus) {
         if (takeFocus) {
@@ -287,18 +324,18 @@ private fun Rails(
             itemsIndexed(rows, key = { _, row -> row.title }) { index, row ->
                 Column(
                     Modifier.onFocusChanged {
-                        if (it.hasFocus && active != index) {
-                            active = index
+                        if (it.hasFocus && active != row.title) {
+                            active = row.title
                             scope.launch { list.animateScrollToItem(index) }
                         }
                     }
                 ) {
+                    val isActive = row.title == active
                     Row(
                         Modifier.padding(start = Dims.edge).height(30.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        val isActive = index == active
                         GlyphIcon(
                             if (row.resume) Glyph.PlayCircle else Glyph.Sparkle,
                             18.dp,
@@ -322,14 +359,14 @@ private fun Rails(
                                     card,
                                     row.wide,
                                     modifier = if (index == 0 && i == 0) Modifier.focusRequester(first) else Modifier,
-                                    dim = index != active,
+                                    dim = !isActive,
                                     onFocus = { onFocus(card) },
                                 ) {
                                     if (row.resume) playNow(card) else play(card)
                                 }
                             }
                             if (row.key.isNotEmpty())
-                                item(key = "see-all") { SeeAll(row.wide, dim = index != active) { openRow(row) } }
+                                item(key = "see-all") { SeeAll(row.wide, dim = !isActive) { openRow(row) } }
                         }
                     }
                 }

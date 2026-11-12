@@ -123,6 +123,17 @@ struct UserData {
     play_count: u64,
     played: bool,
     unplayed_item_count: Option<u64>,
+    last_played_date: String,
+}
+
+fn unix_secs(iso: &str) -> Option<i64> {
+    let n = |r: std::ops::Range<usize>| iso.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
+    let y = if m <= 2 { y - 1 } else { y };
+    let (era, yoe) = (y.div_euclid(400), y.rem_euclid(400));
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(days * 86_400 + n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)?)
 }
 
 #[derive(Deserialize, Default)]
@@ -405,6 +416,7 @@ impl Dto {
             duration: self.run_time_ticks.map(ticks_to_ms),
             view_offset: Some(ticks_to_ms(ud.playback_position_ticks)).filter(|&o| o > 0),
             view_count: Some(if ud.played { ud.play_count.max(1) } else { 0 }),
+            last_viewed_at: unix_secs(&ud.last_played_date),
             leaf_count,
             viewed_leaf_count,
             child_count: self.child_count,
@@ -499,25 +511,32 @@ pub fn sections(srv: &Server, c: &Ctx) -> R<Vec<Directory>> {
         .collect())
 }
 
-pub fn hubs(srv: &Server, c: &Ctx) -> R<Vec<Hub>> {
+pub fn continue_items(srv: &Server, c: &Ctx) -> R<Vec<Item>> {
     let u = &srv.user_id;
-    let (views, resume, next_up, latest) = std::thread::scope(|s| {
-        let resume = s.spawn(|| {
-            items(
-                srv,
-                c,
-                &format!(
-                    "/UserItems/Resume?userId={u}&Limit=20&MediaTypes=Video&Fields={LIST_FIELDS}"
-                ),
-            )
-        });
+    let (resume, next_up) = std::thread::scope(|s| {
         let next_up = s.spawn(|| {
             items(
                 srv,
                 c,
-                &format!("/Shows/NextUp?UserId={u}&Limit=20&Fields={LIST_FIELDS}"),
+                &format!("/Shows/NextUp?UserId={u}&Limit=20&Fields={LIST_FIELDS},ProviderIds"),
             )
         });
+        let resume = items(
+            srv,
+            c,
+            &format!(
+                "/UserItems/Resume?userId={u}&Limit=20&MediaTypes=Video&Fields={LIST_FIELDS},ProviderIds"
+            ),
+        );
+        (resume, next_up.join().ok().and_then(Result::ok))
+    });
+    Ok(continue_hub(resume?, next_up.unwrap_or_default(), "").metadata)
+}
+
+pub fn hubs(srv: &Server, c: &Ctx) -> R<Vec<Hub>> {
+    let u = &srv.user_id;
+    let (views, cont, latest) = std::thread::scope(|s| {
+        let cont = s.spawn(|| continue_items(srv, c));
         let views = sections(srv, c);
         let latest: Vec<_> = views
             .iter()
@@ -531,8 +550,7 @@ pub fn hubs(srv: &Server, c: &Ctx) -> R<Vec<Hub>> {
             |r: std::thread::Result<R<Vec<Item>>>| r.ok().and_then(Result::ok).unwrap_or_default();
         (
             views,
-            ok(resume.join()),
-            ok(next_up.join()),
+            ok(cont.join()),
             latest
                 .into_iter()
                 .map(|j| j.join().ok().and_then(Result::ok).unwrap_or_default())
@@ -540,7 +558,7 @@ pub fn hubs(srv: &Server, c: &Ctx) -> R<Vec<Hub>> {
         )
     });
     let views = views?;
-    let mut hubs = vec![continue_hub(resume, next_up, "")];
+    let mut hubs = vec![continue_hub(cont, Vec::new(), "")];
     hubs.extend(views.into_iter().zip(latest).map(|(v, dtos)| Hub {
         title: format!("Recently Added in {}", v.title),
         key: format!("latest:{}", v.key),
@@ -1197,6 +1215,17 @@ mod tests {
             env!("CARGO_MANIFEST_DIR")
         );
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn last_played_date_parses_to_unix_seconds() {
+        assert_eq!(unix_secs("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            unix_secs("2024-05-01T12:34:56.1234567Z"),
+            Some(1_714_566_896)
+        );
+        assert_eq!(unix_secs("2000-02-29T00:00:00Z"), Some(951_782_400));
+        assert_eq!(unix_secs(""), None);
     }
 
     fn page(name: &str) -> Vec<Item> {

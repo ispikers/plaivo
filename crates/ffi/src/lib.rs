@@ -579,6 +579,7 @@ pub struct Plaivo {
     tracked: Mutex<HashMap<ItemKey, (Media, Option<String>)>>,
     watch: Mutex<Option<watch::Session>>,
     watch_listener: OnceLock<Arc<dyn watch::WatchListener>>,
+    continuing: Mutex<HashMap<String, Hub>>,
 }
 
 impl Plaivo {
@@ -673,6 +674,7 @@ impl Plaivo {
             tracked: Mutex::new(HashMap::new()),
             watch: Mutex::new(None),
             watch_listener: OnceLock::new(),
+            continuing: Mutex::new(HashMap::new()),
         })
     }
 
@@ -929,14 +931,88 @@ impl Plaivo {
                 Source::Network
             },
         );
-        let hubs = srv.hubs(&ctx)?;
+        let mut hubs = srv.hubs(&ctx).inspect_err(|_| {
+            if !cached && plex::is_down(&srv.id) {
+                self.continuing.lock().unwrap().remove(&srv.id);
+            }
+        })?;
         let prefs = self.card_prefs();
+        let hero = plex::pick_hero(&hubs)
+            .into_iter()
+            .map(|it| card(&srv, it, false, &prefs))
+            .collect();
+        let resume = hubs
+            .iter()
+            .position(Hub::is_continue)
+            .map(|i| hubs.remove(i))
+            .unwrap_or_default();
+        self.continuing
+            .lock()
+            .unwrap()
+            .insert(srv.id.clone(), resume);
         Ok(Home {
-            hero: plex::pick_hero(&hubs)
-                .into_iter()
-                .map(|it| card(&srv, it, false, &prefs))
-                .collect(),
+            hero,
             rows: rows(&srv, &hubs, &prefs),
+        })
+    }
+
+    pub fn refresh_continue(&self, server_id: String, cached: bool) {
+        let Ok(srv) = self.server(&server_id) else {
+            return;
+        };
+        let source = if cached {
+            Source::Cache
+        } else {
+            Source::Network
+        };
+        match srv.continue_items(&Ctx::new(self.client.clone(), source)) {
+            Ok(metadata) => {
+                let hub = Hub {
+                    metadata,
+                    ..Default::default()
+                };
+                self.continuing.lock().unwrap().insert(server_id, hub);
+            }
+            Err(_) if !cached && plex::is_down(&server_id) => {
+                self.continuing.lock().unwrap().remove(&server_id);
+            }
+            Err(_) => {}
+        }
+    }
+
+    pub fn continue_row(&self, home_id: String) -> Option<Row> {
+        let mut servers = self.account.lock().unwrap().all_servers();
+        servers.sort_by_key(|s| s.id != home_id);
+        let continuing = self.continuing.lock().unwrap();
+        let lists: Vec<(&str, &[Item])> = servers
+            .iter()
+            .filter_map(|s| Some((s.id.as_str(), &continuing.get(&s.id)?.metadata[..])))
+            .collect();
+        let merged = plex::merge_continue(&lists);
+        if merged.is_empty() {
+            return None;
+        }
+        let prefs = self.card_prefs();
+        let home = continuing.get(&home_id).filter(|h| !h.id.is_empty());
+        let wide = home.is_none_or(|h| prefs.wide_hub(h));
+        let local = merged.iter().all(|&(id, _)| id == home_id);
+        Some(Row {
+            key: home
+                .filter(|_| local)
+                .map(|h| h.key.clone())
+                .unwrap_or_default(),
+            title: home
+                .map_or("Continue Watching", |h| h.title.as_str())
+                .to_owned(),
+            resume: true,
+            wide,
+            cards: merged
+                .iter()
+                .filter_map(|&(id, it)| {
+                    let srv = servers.iter().find(|s| s.id == id)?;
+                    Some(card(srv, it, wide, &prefs))
+                })
+                .collect(),
         })
     }
 
