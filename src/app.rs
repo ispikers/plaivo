@@ -1048,6 +1048,10 @@ impl Plaivo {
         }
         let url = match &local {
             Some(file) => file.to_string_lossy().into_owned(),
+            // Plex's transcoder flattens alpha to black unless the path says clearLogo.
+            None if shape == Shape::Logo && t.path.starts_with("http") => {
+                plex::direct_image_url(&t.path, size.0)
+            }
             None => {
                 self.image_url(&t.server, &t.path, size)? + if t.blur { BLUR_PARAM } else { "" }
             }
