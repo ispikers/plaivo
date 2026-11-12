@@ -1025,6 +1025,8 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
                 val text = remember(player.tracksVersion) { player.tracks(C.TRACK_TYPE_TEXT) }
                 val textOff = player.textDisabled() || text.none { it.selected }
                 val sourceAudio = player.playback?.takeIf { it.transcodeAudio != null }
+                val transcode = player.playback?.takeIf { it.transcodeSession != null }
+                val showing = remember(player.tracksVersion, transcode) { player.currentSubtitle() }
                 Row(Modifier.heightIn(max = 380.dp)) {
                     LazyColumn(Modifier.weight(1f)) {
                         item { ColumnTitle("Audio") }
@@ -1069,12 +1071,25 @@ private fun PanelView(panel: Panel, player: PlayerActivity, onOpen: (Panel?) -> 
                     }
                     LazyColumn(Modifier.weight(1f)) {
                         item { ColumnTitle("Subtitles") }
-                        item {
-                            PanelRow(null, "Off", "", selected = textOff) { player.select(C.TRACK_TYPE_TEXT, null) }
-                        }
-                        itemsIndexed(text) { _, t ->
-                            PanelRow(null, t.label, t.detail, selected = t.selected && !textOff) {
-                                player.select(C.TRACK_TYPE_TEXT, t)
+                        if (transcode != null) {
+                            item {
+                                PanelRow(null, "Off", "", selected = showing == null) {
+                                    player.selectSourceSubtitle(null)
+                                }
+                            }
+                            itemsIndexed(transcode.subtitleStreams) { i, s ->
+                                PanelRow(null, s.label, if (s.burns) "Burned in" else "", selected = i == showing) {
+                                    player.selectSourceSubtitle(i)
+                                }
+                            }
+                        } else {
+                            item {
+                                PanelRow(null, "Off", "", selected = textOff) { player.select(C.TRACK_TYPE_TEXT, null) }
+                            }
+                            itemsIndexed(text) { _, t ->
+                                PanelRow(null, t.label, t.detail, selected = t.selected && !textOff) {
+                                    player.select(C.TRACK_TYPE_TEXT, t)
+                                }
                             }
                         }
                     }

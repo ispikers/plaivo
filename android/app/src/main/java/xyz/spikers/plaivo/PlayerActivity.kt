@@ -55,6 +55,7 @@ import uniffi.plaivo_ffi.Settings
 import uniffi.plaivo_ffi.SkipMode
 import uniffi.plaivo_ffi.SubtitleMode
 import uniffi.plaivo_ffi.TrackInfo
+import uniffi.plaivo_ffi.TrackRequest
 import uniffi.plaivo_ffi.WatchCommand
 import uniffi.plaivo_ffi.WatchFeed
 import uniffi.plaivo_ffi.pickTracks
@@ -71,6 +72,7 @@ enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
 private const val UP_NEXT_LEAD_MS = 30_000L
 private const val WATCH_FEED_MS = 500L
 private const val WATCH_SEEK_MS = 2000L
+private const val SUBTITLE_TAG = "plaivo-sub-"
 private val reports = Dispatchers.IO.limitedParallelism(1)
 
 val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
@@ -132,8 +134,8 @@ class PlayerActivity : ComponentActivity() {
     }
     private var version = 0
     private var manualTracks = false
-    private var autoTracks = false
-    private var pendingAudio: Int? = null
+    private var tracksPending = false
+    private var requestedTracks: TrackRequest? = null
     private var firstFrame = false
     private var watchAttached = false
     private var watchFedAt = 0L
@@ -182,15 +184,9 @@ class PlayerActivity : ComponentActivity() {
                 override fun onTracksChanged(tracks: Tracks) {
                     tracksVersion++
                     val p = playback
-                    if (p != null && !tracks.isEmpty) {
-                        if (autoTracks) {
-                            autoTracks = false
-                            autoSelectTracks(p.languages, p.languageRule)
-                        }
-                        pendingAudio?.let {
-                            pendingAudio = null
-                            selectAudioAt(it)
-                        }
+                    if (p != null && !tracks.isEmpty && tracksPending) {
+                        tracksPending = false
+                        applyTracks(p, requestedTracks)
                     }
                     val unsupported =
                         listOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO).filter {
@@ -258,22 +254,26 @@ class PlayerActivity : ComponentActivity() {
         android.util.Log.i("Plaivo", "direct play failed ($reason), transcoding ${p.key}")
         Toast.makeText(this, "This device can't play the file directly. Transcoding…", Toast.LENGTH_SHORT).show()
         val at = exo.currentPosition.coerceAtLeast(0)
-        val audio = currentAudio()
+        val tracks = carriedTracks()
         exo.stop()
-        play(p.server, p.key, at, forceTranscode = true, audio = audio)
+        play(p.server, p.key, at, forceTranscode = true, tracks = tracks)
         return true
     }
 
-    fun play(server: String, key: String, startAt: Long? = null, forceTranscode: Boolean = false, audio: Int? = null) {
+    fun play(
+        server: String,
+        key: String,
+        startAt: Long? = null,
+        forceTranscode: Boolean = false,
+        tracks: TrackRequest? = null,
+    ) {
         if (playback != null && playback?.key != key) version = 0
         loading?.cancel()
         loading =
             lifecycleScope.launch {
                 val p =
                     try {
-                        io {
-                            core.playback(server, key, forceTranscode, version.toUInt(), audioCodecs, audio?.toUInt())
-                        }
+                        io { core.playback(server, key, forceTranscode, version.toUInt(), audioCodecs, tracks) }
                     } catch (e: PlaivoException) {
                         Watch.failed(server, key)
                         if (advancing) upNextCancelled = true
@@ -298,9 +298,9 @@ class PlayerActivity : ComponentActivity() {
                 playback = p
                 quality = p.qualityKbps.toInt()
                 if (previous?.key != p.key) manualTracks = false
-                pendingAudio = audio.takeIf { manualTracks && p.transcodeSession == null }
+                requestedTracks = tracks.takeIf { manualTracks }
+                tracksPending = true
                 if (!manualTracks) {
-                    autoTracks = true
                     val l = p.languages
                     exo.trackSelectionParameters =
                         exo.trackSelectionParameters
@@ -337,23 +337,75 @@ class PlayerActivity : ComponentActivity() {
         if (kbps == quality) return
         quality = kbps
         editSettings { setPlaybackQuality(it, playback?.library ?: "", kbps.toUInt()) }
+        reload(carriedTracks())
+    }
+
+    private fun reload(tracks: TrackRequest?) {
         val p = playback ?: return
-        play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = fellBack, audio = currentAudio())
+        play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = fellBack, tracks = tracks)
     }
 
     fun selectSourceAudio(i: Int) {
-        val p = playback ?: return
-        if (p.transcodeAudio?.toInt() == i) return
+        if (playback?.transcodeAudio?.toInt() == i) return
         manualTracks = true
-        play(p.server, p.key, exo.currentPosition.coerceAtLeast(0), forceTranscode = fellBack, audio = i)
+        reload(currentTracks().copy(audio = i.toUInt()))
     }
 
+    fun selectSourceSubtitle(i: Int?) {
+        val p = playback ?: return
+        if (i == currentSubtitle()) return
+        manualTracks = true
+        val burns = i != null && p.subtitleStreams.getOrNull(i)?.burns == true
+        if (burns || p.burnedSubtitle != null) reload(currentTracks().copy(subtitle = i?.toUInt()))
+        else showSubtitle(p, i)
+    }
+
+    fun currentSubtitle(): Int? {
+        val p = playback ?: return null
+        p.burnedSubtitle?.let {
+            return it.toInt()
+        }
+        if (textDisabled()) return null
+        val group = textGroups().firstOrNull { it.isSelected } ?: return null
+        val id = group.getTrackFormat(0).id
+        p.subtitleStreams.indices
+            .firstOrNull { isSubtitleTag(id, it) }
+            ?.let {
+                return it
+            }
+        if (p.transcodeSession != null) return null
+        val k = textGroups().filterNot { it.sideLoaded() }.indexOf(group)
+        return p.subtitleStreams.indices.filter { p.subtitleStreams[it].embedded }.getOrNull(k)
+    }
+
+    private fun carriedTracks() = currentTracks().takeIf { manualTracks }
+
+    private fun currentTracks() = TrackRequest(currentAudio()?.toUInt(), currentSubtitle()?.toUInt())
+
     private fun audioGroups() = exo.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+
+    private fun textGroups() = exo.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+
+    private fun Tracks.Group.sideLoaded() = getTrackFormat(0).id?.let { SUBTITLE_TAG in it } == true
+
+    private fun isSubtitleTag(id: String?, stream: Int) =
+        id != null && (id == "$SUBTITLE_TAG$stream" || id.endsWith(":$SUBTITLE_TAG$stream"))
 
     private fun currentAudio(): Int? {
         val p = playback ?: return null
         if (p.transcodeSession != null) return p.transcodeAudio?.toInt()
         return audioGroups().indexOfFirst { it.isSelected }.takeIf { it >= 0 }
+    }
+
+    private fun applyTracks(p: Playback, request: TrackRequest?) {
+        when {
+            p.transcodeSession != null -> showSubtitle(p, p.subtitlePick?.toInt())
+            request == null -> autoSelectTracks(p.languages, p.languageRule)
+            else -> {
+                request.audio?.let { selectAudioAt(it.toInt()) }
+                showSubtitle(p, request.subtitle?.toInt())
+            }
+        }
     }
 
     private fun selectAudioAt(i: Int) {
@@ -364,6 +416,24 @@ class PlayerActivity : ComponentActivity() {
                 .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
                 .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
                 .build()
+    }
+
+    private fun subtitleGroup(p: Playback, i: Int): Tracks.Group? {
+        textGroups()
+            .firstOrNull { isSubtitleTag(it.getTrackFormat(0).id, i) }
+            ?.let {
+                return it
+            }
+        if (p.transcodeSession != null || p.subtitleStreams.getOrNull(i)?.embedded != true) return null
+        val k = p.subtitleStreams.take(i).count { it.embedded }
+        return textGroups().filterNot { it.sideLoaded() }.getOrNull(k)
+    }
+
+    private fun showSubtitle(p: Playback, i: Int?) {
+        val group = i?.takeIf { p.burnedSubtitle == null }?.let { subtitleGroup(p, it) }
+        val params = exo.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, group == null)
+        group?.let { params.setOverrideForType(TrackSelectionOverride(it.mediaTrackGroup, 0)) }
+        exo.trackSelectionParameters = params.build()
     }
 
     private fun stopTranscode(p: Playback) {
@@ -650,6 +720,7 @@ class PlayerActivity : ComponentActivity() {
                         else -> return@mapNotNull null
                     }
                 MediaItem.SubtitleConfiguration.Builder(s.url.toUri())
+                    .setId("$SUBTITLE_TAG${s.stream}")
                     .setMimeType(mime)
                     .setLanguage(s.language)
                     .setLabel(s.title)

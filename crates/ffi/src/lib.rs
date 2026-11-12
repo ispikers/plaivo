@@ -1,7 +1,7 @@
 use plaivo_core::downloads::{Downloads, State};
 use plaivo_core::menu::{self, Action};
 use plaivo_core::plex::{
-    self, Client, Ctx, DISCOVER_ID, Hub, Item, PlexUser, QUALITIES, SORTS, Server, Source,
+    self, Client, Ctx, DISCOVER_ID, Hub, Item, Picks, PlexUser, QUALITIES, SORTS, Server, Source,
     fmt_bitrate, resolve_playable,
 };
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
@@ -479,6 +479,20 @@ pub struct Subtitle {
     pub title: String,
     pub language: String,
     pub forced: bool,
+    pub stream: u32,
+}
+
+#[derive(uniffi::Record)]
+pub struct SourceSubtitle {
+    pub label: String,
+    pub embedded: bool,
+    pub burns: bool,
+}
+
+#[derive(uniffi::Record)]
+pub struct TrackRequest {
+    pub audio: Option<u32>,
+    pub subtitle: Option<u32>,
 }
 
 #[derive(uniffi::Record)]
@@ -529,6 +543,9 @@ pub struct Playback {
     pub transcode_label: String,
     pub audio_streams: Vec<String>,
     pub transcode_audio: Option<u32>,
+    pub subtitle_streams: Vec<SourceSubtitle>,
+    pub burned_subtitle: Option<u32>,
+    pub subtitle_pick: Option<u32>,
     pub languages: LanguagePrefs,
     pub language_rule: Option<LanguageRule>,
     pub library: String,
@@ -1380,7 +1397,7 @@ impl Plaivo {
         force_transcode: bool,
         version: u32,
         audio_codecs: String,
-        audio: Option<u32>,
+        tracks: Option<TrackRequest>,
     ) -> R<Playback> {
         if !force_transcode
             && version == 0
@@ -1409,9 +1426,13 @@ impl Plaivo {
         let languages = prefs::for_server(&self.client, &srv, token.as_deref(), &local);
         let rules = self.settings.lock().unwrap().language_rules.clone();
         let rule = prefs::language_rule(&srv.id, &it, &rules);
-        let audio = audio
-            .map(|i| i as usize)
-            .or_else(|| prefs::pick_source_audio(media, &languages, rule.as_ref()));
+        let picks = match tracks {
+            Some(t) => Picks {
+                audio: t.audio.map(|i| i as usize),
+                subtitle: t.subtitle.map(|i| i as usize),
+            },
+            None => prefs::pick_source(media, &languages, rule.as_ref()),
+        };
         let (url, transcode) = srv.stream_url(
             &self.client,
             &it.rating_key,
@@ -1419,20 +1440,31 @@ impl Plaivo {
             quality_kbps,
             force_transcode,
             &audio_codecs,
-            audio,
+            picks,
         );
-        let subtitles = part
-            .stream
-            .iter()
-            .filter_map(|st| {
-                let (key, codec) = st.subtitle_file(transcode.is_some())?;
+        let transcoding = transcode.is_some();
+        let subtitles = media
+            .subtitle_streams()
+            .enumerate()
+            .filter_map(|(i, st)| {
+                let (key, codec) = st.subtitle_file(transcoding)?;
                 Some(Subtitle {
                     url: srv.media_url(key),
                     codec: codec.to_owned(),
                     title: st.display_title.clone(),
                     language: st.language_code.clone(),
                     forced: st.forced,
+                    stream: i as u32,
                 })
+            })
+            .collect();
+        let subtitle_streams = media
+            .subtitle_streams()
+            .enumerate()
+            .map(|(i, st)| SourceSubtitle {
+                label: st.track_label(i),
+                embedded: st.key.is_empty(),
+                burns: st.subtitle_file(true).is_none(),
             })
             .collect();
         let transcode_label = transcode
@@ -1451,9 +1483,12 @@ impl Plaivo {
             .next()
             .unwrap_or_default()
             .to_owned();
-        let transcode_audio = transcode.as_ref().and_then(|t| t.audio).map(|i| i as u32);
+        let as_u32 = |i: Option<usize>| i.map(|i| i as u32);
         Ok(Playback {
-            transcode_audio,
+            transcode_audio: as_u32(transcode.as_ref().and_then(|t| t.audio)),
+            burned_subtitle: as_u32(transcode.as_ref().and_then(|t| t.burn)),
+            subtitle_pick: as_u32(picks.subtitle),
+            subtitle_streams,
             ..self.playback_for(
                 &srv.id,
                 &it,
@@ -1958,12 +1993,14 @@ impl Plaivo {
         let subtitles = local
             .subtitles
             .iter()
-            .map(|(path, st)| Subtitle {
+            .enumerate()
+            .map(|(i, (path, st))| Subtitle {
                 url: file_url(path),
                 codec: st.codec.clone(),
                 title: st.display_title.clone(),
                 language: st.language_code.clone(),
                 forced: st.forced,
+                stream: i as u32,
             })
             .collect();
         let languages = self.settings.lock().unwrap().languages();
@@ -2077,6 +2114,9 @@ impl Plaivo {
                 })
                 .unwrap_or_default(),
             transcode_audio: None,
+            subtitle_streams: Vec::new(),
+            burned_subtitle: None,
+            subtitle_pick: None,
             languages,
             language_rule,
             library: library_key(server, &it.library_section_id),

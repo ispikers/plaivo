@@ -1,5 +1,5 @@
 use crate::jellyfin;
-use crate::plex::{Client, Item, Media, R, Server, drain, encode, err};
+use crate::plex::{Client, Item, Media, Picks, R, Server, Stream, drain, encode, err};
 use crate::settings::library_key;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -255,20 +255,16 @@ pub fn pick_with(
     }
 }
 
-pub fn pick_source_audio(
-    media: &Media,
-    p: &LanguagePrefs,
-    rule: Option<&LanguageRule>,
-) -> Option<usize> {
-    let audio: Vec<TrackInfo> = media
-        .audio_streams()
-        .map(|s| TrackInfo {
-            language: s.language_code.clone(),
-            forced: s.forced,
-            is_default: s.selected,
-        })
-        .collect();
-    pick_with(&audio, &[], p, rule).0
+pub fn pick_source(media: &Media, p: &LanguagePrefs, rule: Option<&LanguageRule>) -> Picks {
+    let info = |s: &Stream| TrackInfo {
+        language: s.language_code.clone(),
+        forced: s.forced,
+        is_default: s.selected,
+    };
+    let audio: Vec<TrackInfo> = media.audio_streams().map(info).collect();
+    let subtitles: Vec<TrackInfo> = media.subtitle_streams().map(info).collect();
+    let (audio, subtitle) = pick_with(&audio, &subtitles, p, rule);
+    Picks { audio, subtitle }
 }
 
 pub fn pick(
@@ -543,29 +539,34 @@ mod tests {
     }
 
     #[test]
-    fn picks_source_audio_by_language_then_default() {
-        let stream = |lang: &str, selected| crate::plex::Stream {
-            stream_type: 2,
+    fn picks_source_tracks_from_prefs() {
+        let stream = |stream_type, lang: &str, selected, forced| Stream {
+            stream_type,
             language_code: lang.into(),
             selected,
+            forced,
             ..Default::default()
         };
         let media = Media {
             part: vec![crate::plex::Part {
-                stream: vec![stream("ita", true), stream("eng", false)],
+                stream: vec![
+                    stream(2, "ita", true, false),
+                    stream(2, "eng", false, false),
+                    stream(3, "ita", false, true),
+                    stream(3, "eng", false, false),
+                ],
                 ..Default::default()
             }],
             ..Default::default()
         };
-        let prefs = |audio: &str| LanguagePrefs {
-            audio: audio.into(),
-            ..Default::default()
-        };
-        assert_eq!(pick_source_audio(&media, &prefs("en"), None), Some(1));
-        assert_eq!(pick_source_audio(&media, &prefs(""), None), Some(0));
+        let english = prefs("en", "en", SubtitleMode::Always);
+        let picks = |audio, subtitle| Picks { audio, subtitle };
+        assert_eq!(pick_source(&media, &english, None), picks(Some(1), Some(1)));
+        let off = prefs("", "", SubtitleMode::Off);
+        assert_eq!(pick_source(&media, &off, None), picks(Some(0), Some(0)));
         assert_eq!(
-            pick_source_audio(&Media::default(), &prefs("en"), None),
-            None
+            pick_source(&Media::default(), &english, None),
+            Picks::default()
         );
     }
 

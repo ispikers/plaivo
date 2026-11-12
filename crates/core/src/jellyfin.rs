@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::first;
 use crate::plex::{
     Backend, Client, Ctx, Directory, Extras, Guid, Hub, Image, Item, Marker, Media, OnDeck,
-    PRODUCT, Part, Person, Quality, R, Rating, Server, Stream, Tag, drain, encode, err,
+    PRODUCT, Part, Person, R, Rating, Server, Stream, Tag, Transcode, drain, encode, err,
 };
 
 const TICKS_PER_MS: u64 = 10_000;
@@ -252,6 +252,7 @@ impl Source {
                     String::new()
                 };
                 Some(Stream {
+                    id: None,
                     stream_type,
                     index: u32::try_from(s.index).ok(),
                     key,
@@ -277,6 +278,7 @@ impl Source {
             audio_channels: audio.and_then(|a| a.channels),
             source_id: self.id.clone(),
             part: vec![Part {
+                id: None,
                 key: format!(
                     "/Videos/{item_id}/stream?Static=true&MediaSourceId={}",
                     self.id
@@ -978,24 +980,24 @@ pub fn media_url(srv: &Server, key: &str) -> String {
     format!("{}{key}{}ApiKey={}", srv.uri, sep(key), encode(&srv.token))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn transcode_url(
     srv: &Server,
     c: &Client,
     key: &str,
-    source_id: &str,
-    q: &Quality,
-    session: &str,
+    media: &Media,
     audio_codecs: &str,
-    audio_index: Option<u32>,
+    t: &Transcode,
 ) -> String {
+    let q = t.quality;
     let (bps, height) = ((q.kbps as u64 * 1000).to_string(), q.height.to_string());
     let width = q.resolution.split('x').next().unwrap_or_default();
-    let audio_index = audio_index.map(|i| i.to_string());
+    let index = |s: Option<&Stream>| s.and_then(|s| s.index).map(|i| i.to_string());
+    let audio = index(t.audio.and_then(|i| media.audio_streams().nth(i)));
+    let burn = index(t.burn.and_then(|i| media.subtitle_streams().nth(i)));
     let params = [
-        ("MediaSourceId", first(&[source_id, key])),
+        ("MediaSourceId", first(&[&media.source_id, key])),
         ("DeviceId", &c.client_id),
-        ("PlaySessionId", session),
+        ("PlaySessionId", &t.session),
         ("VideoCodec", "h264"),
         ("AudioCodec", audio_codecs),
         ("MaxStreamingBitrate", &bps),
@@ -1009,7 +1011,12 @@ pub fn transcode_url(
     let query: Vec<String> = params
         .iter()
         .copied()
-        .chain(audio_index.as_deref().map(|i| ("AudioStreamIndex", i)))
+        .chain(audio.as_deref().map(|i| ("AudioStreamIndex", i)))
+        .chain(
+            burn.as_deref()
+                .into_iter()
+                .flat_map(|i| [("SubtitleStreamIndex", i), ("SubtitleMethod", "Encode")]),
+        )
         .map(|(k, v)| format!("{k}={}", encode(v)))
         .collect();
     format!("{}/Videos/{key}/master.m3u8?{}", srv.uri, query.join("&"))
@@ -1271,6 +1278,7 @@ pub fn set_language_prefs(srv: &Server, c: &Client, prefs: &LanguagePrefs) -> R<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plex::Quality;
 
     fn fixture<T: DeserializeOwned>(name: &str) -> T {
         let path = format!(
@@ -1418,20 +1426,31 @@ mod tests {
         );
         assert_eq!(ext.subtitle_file(false), Some((ext.key.as_str(), "subrip")));
         assert_eq!(media.part[0].stream[3].subtitle_file(true), None);
-        let transcode = |audio| {
-            server().transcode_url(
+        let transcode = |audio, subtitle| {
+            let (url, t) = server().stream_url(
                 &Client::new("d".into()),
                 "i",
                 &media,
-                Quality::find(4000).unwrap(),
-                "s1",
+                4000,
+                true,
                 "aac",
-                audio,
-            )
+                crate::plex::Picks { audio, subtitle },
+            );
+            let t = t.unwrap();
+            (url, t.audio, t.burn)
         };
-        assert!(transcode(Some(1)).ends_with("&AudioStreamIndex=2"));
-        assert!(!transcode(None).contains("AudioStreamIndex"));
-        assert!(!transcode(Some(5)).contains("AudioStreamIndex"));
+        let (url, audio, burn) = transcode(Some(1), Some(1));
+        assert!(
+            url.ends_with("&AudioStreamIndex=2&SubtitleStreamIndex=5&SubtitleMethod=Encode"),
+            "{url}"
+        );
+        assert_eq!((audio, burn), (Some(1), Some(1)));
+        let (url, _, burn) = transcode(None, Some(0));
+        assert!(!url.contains("AudioStreamIndex") && !url.contains("SubtitleStreamIndex"));
+        assert_eq!(burn, None, "text subtitles are loaded by the player");
+        let (url, audio, burn) = transcode(Some(5), Some(9));
+        assert!(!url.contains("StreamIndex"));
+        assert_eq!((audio, burn), (None, None));
     }
 
     #[test]
@@ -1651,30 +1670,19 @@ mod tests {
             image_url(&srv, "/Items/i/Images/Primary?tag=t", 300, 450),
             "http://nas:8096/Items/i/Images/Primary?tag=t&fillWidth=300&fillHeight=450&quality=90"
         );
-        let url = transcode_url(
-            &srv,
-            &c,
-            "i",
-            "v2",
-            Quality::find(4000).unwrap(),
-            "s1",
-            "aac,ac3,eac3,mp3",
-            None,
-        );
+        let t = Transcode {
+            quality: Quality::find(4000).unwrap(),
+            session: "s1".into(),
+            audio: None,
+            burn: None,
+        };
+        let media = |source_id: &str| Media {
+            source_id: source_id.into(),
+            ..Default::default()
+        };
+        let url = transcode_url(&srv, &c, "i", &media("v2"), "aac,ac3,eac3,mp3", &t);
         assert!(url.starts_with("http://nas:8096/Videos/i/master.m3u8?MediaSourceId=v2&DeviceId=dev%201&PlaySessionId=s1&"), "{url}");
-        assert!(
-            transcode_url(
-                &srv,
-                &c,
-                "i",
-                "",
-                Quality::find(4000).unwrap(),
-                "s1",
-                "aac",
-                None
-            )
-            .contains("MediaSourceId=i&")
-        );
+        assert!(transcode_url(&srv, &c, "i", &media(""), "aac", &t).contains("MediaSourceId=i&"));
         for p in [
             "MaxStreamingBitrate=4000000",
             "VideoBitrate=4000000",

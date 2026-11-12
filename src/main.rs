@@ -61,9 +61,18 @@ fn main() {
                 window
                     .update(cx, |root, _, cx| {
                         root.app.update(cx, |app, cx| {
-                            if let Err(e) =
-                                app.launch(&target, "", &target, "", 0.0, None, Vec::new(), "", cx)
-                            {
+                            if let Err(e) = app.launch(
+                                &target,
+                                "",
+                                &target,
+                                "",
+                                0.0,
+                                None,
+                                Vec::new(),
+                                &player::StartTracks::auto(),
+                                "",
+                                cx,
+                            ) {
                                 app.toast(e, cx);
                             }
                         })

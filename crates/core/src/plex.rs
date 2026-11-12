@@ -375,6 +375,7 @@ pub struct Media {
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct Part {
+    pub id: Option<u64>,
     pub key: String,
     pub file: String,
     #[serde(rename = "Stream")]
@@ -384,6 +385,7 @@ pub struct Part {
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Stream {
+    pub id: Option<u64>,
     pub stream_type: u8,
     pub index: Option<u32>,
     pub key: String,
@@ -419,19 +421,34 @@ impl Stream {
     }
 }
 
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Picks {
+    pub audio: Option<usize>,
+    pub subtitle: Option<usize>,
+}
+
 pub struct Transcode {
     pub quality: &'static Quality,
     pub session: String,
     pub audio: Option<usize>,
+    pub burn: Option<usize>,
 }
 
 impl Media {
-    pub fn audio_streams(&self) -> impl Iterator<Item = &Stream> {
+    fn streams_of(&self, stream_type: u8) -> impl Iterator<Item = &Stream> {
         self.part
             .first()
             .into_iter()
             .flat_map(|p| &p.stream)
-            .filter(|s| s.stream_type == 2)
+            .filter(move |s| s.stream_type == stream_type)
+    }
+
+    pub fn audio_streams(&self) -> impl Iterator<Item = &Stream> {
+        self.streams_of(2)
+    }
+
+    pub fn subtitle_streams(&self) -> impl Iterator<Item = &Stream> {
+        self.streams_of(3)
     }
 }
 
@@ -1803,7 +1820,7 @@ impl Server {
         kbps: u32,
         force_transcode: bool,
         audio_codecs: &str,
-        audio: Option<usize>,
+        picks: Picks,
     ) -> (String, Option<Transcode>) {
         let transcode = if force_transcode {
             Some(Quality::find(kbps).unwrap_or(&QUALITIES[0]))
@@ -1823,42 +1840,82 @@ impl Server {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let session = format!("plaivo-{nanos:x}");
-        log::info!("transcoding {key} at {} kbps", q.kbps);
-        (
-            self.transcode_url(c, key, media, q, &session, audio_codecs, audio),
-            Some(Transcode {
-                quality: q,
-                session,
-                audio: audio.filter(|_| self.is_jellyfin()),
+        let addressable = |s: &Stream| {
+            if self.is_jellyfin() {
+                s.index.is_some()
+            } else {
+                s.id.is_some()
+            }
+        };
+        let t = Transcode {
+            quality: q,
+            session: format!("plaivo-{nanos:x}"),
+            audio: picks
+                .audio
+                .filter(|&i| media.audio_streams().nth(i).is_some_and(addressable)),
+            burn: picks.subtitle.filter(|&i| {
+                media
+                    .subtitle_streams()
+                    .nth(i)
+                    .is_some_and(|s| addressable(s) && s.subtitle_file(true).is_none())
             }),
-        )
+        };
+        log::info!(
+            "transcoding {key} at {} kbps, audio {:?}, burning {:?}",
+            q.kbps,
+            t.audio,
+            t.burn
+        );
+        if !self.is_jellyfin()
+            && let Err(e) = self.select_streams(c, media, &t)
+        {
+            log::warn!("{} could not select the streams for {key}: {e}", self.name);
+        }
+        (self.transcode_url(c, key, media, audio_codecs, &t), Some(t))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    fn select_streams(&self, c: &Client, media: &Media, t: &Transcode) -> R<()> {
+        let Some(part) = media.part.first().and_then(|p| p.id) else {
+            return Ok(());
+        };
+        let id = |s: Option<&Stream>| s.and_then(|s| s.id);
+        let audio = id(t.audio.and_then(|i| media.audio_streams().nth(i)));
+        let subtitle = id(t.burn.and_then(|i| media.subtitle_streams().nth(i)));
+        let query: Vec<String> = [("audioStreamID", audio), ("subtitleStreamID", subtitle)]
+            .into_iter()
+            .filter_map(|(k, v)| Some(format!("{k}={}", v?)))
+            .collect();
+        if query.is_empty() {
+            return Ok(());
+        }
+        let url = format!(
+            "{}/library/parts/{part}?{}&allParts=1",
+            self.uri,
+            query.join("&")
+        );
+        c.headers(c.agent.put(&url), Some(&self.token))
+            .send_empty()
+            .map(drain)
+            .map_err(err)?;
+        Ok(())
+    }
+
     pub fn transcode_url(
         &self,
         c: &Client,
         key: &str,
         media: &Media,
-        q: &Quality,
-        session: &str,
         audio_codecs: &str,
-        audio: Option<usize>,
+        t: &Transcode,
     ) -> String {
         if self.is_jellyfin() {
-            let audio_index = audio.and_then(|i| media.audio_streams().nth(i)?.index);
-            return jellyfin::transcode_url(
-                self,
-                c,
-                key,
-                &media.source_id,
-                q,
-                session,
-                audio_codecs,
-                audio_index,
-            );
+            return jellyfin::transcode_url(self, c, key, media, audio_codecs, t);
         }
+        let (q, session) = (t.quality, t.session.as_str());
+        let audio_id = t
+            .audio
+            .and_then(|i| media.audio_streams().nth(i)?.id)
+            .map(|id| id.to_string());
         let extra = format!(
             "add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitrate&value={}&replace=true)+add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec={})",
             q.kbps,
@@ -1881,7 +1938,7 @@ impl Server {
             ("videoResolution", q.resolution),
             ("videoQuality", &quality),
             ("maxVideoBitrate", &kbps),
-            ("subtitles", "none"),
+            ("subtitles", if t.burn.is_some() { "burn" } else { "none" }),
             ("location", "lan"),
             ("autoAdjustQuality", "0"),
             ("mediaBufferSize", "102400"),
@@ -1896,6 +1953,8 @@ impl Server {
         ];
         let query: Vec<String> = params
             .iter()
+            .copied()
+            .chain(audio_id.as_deref().map(|id| ("audioStreamID", id)))
             .map(|(k, v)| format!("{k}={}", encode(v)))
             .collect();
         format!(
@@ -2427,27 +2486,58 @@ mod tests {
             (fmt_bitrate(3100), fmt_bitrate(20000), fmt_bitrate(720)),
             ("3.1 Mbps".into(), "20 Mbps".into(), "720 kbps".into())
         );
-        let url = Server {
+        let srv = Server {
             name: "s".into(),
             id: "i".into(),
             uri: "http://h".into(),
             token: "t".into(),
             owned: true,
             ..Default::default()
-        }
-        .transcode_url(
-            &Client::new("c".into()),
-            "7",
-            &Media::default(),
-            &QUALITIES[0],
-            "s1",
-            "aac,mp3",
-            None,
-        );
+        };
+        let stream = |stream_type, id, key: &str| Stream {
+            stream_type,
+            id: Some(id),
+            key: key.into(),
+            ..Default::default()
+        };
+        let media = Media {
+            part: vec![Part {
+                stream: vec![
+                    stream(2, 11, ""),
+                    stream(2, 12, ""),
+                    stream(3, 21, "/library/streams/21"),
+                    stream(3, 22, ""),
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let transcode = |subtitle| {
+            let picks = Picks {
+                audio: Some(1),
+                subtitle,
+            };
+            let (url, t) = srv.stream_url(
+                &Client::new("c".into()),
+                "7",
+                &media,
+                QUALITIES[0].kbps,
+                true,
+                "aac,mp3",
+                picks,
+            );
+            (url, t.unwrap().burn)
+        };
+        let (url, burn) = transcode(Some(1));
         assert!(url.starts_with(
             "http://h/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F7&"
         ));
         assert!(url.contains("scopeName%3D%2A") && url.contains("audioCodec%3Daac%252Cmp3%29"));
+        assert!(url.contains("&subtitles=burn&") && url.ends_with("&audioStreamID=12"));
+        assert_eq!(burn, Some(1));
+        let (url, burn) = transcode(Some(0));
+        assert!(url.contains("&subtitles=none&"));
+        assert_eq!(burn, None, "sidecar subtitles are loaded by the player");
     }
 
     #[test]
