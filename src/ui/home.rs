@@ -1,4 +1,5 @@
 use crate::app::{Hub, Plaivo, Shape, ShelfKey, Slide};
+use crate::clock;
 use crate::ui::shell::{ease_out, progress};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, overlay_button, pill, scrollbar, skeleton};
@@ -119,23 +120,49 @@ impl Plaivo {
                     .children(hero)
                     .children(hubs),
             );
+        let fullscreen = window.is_fullscreen();
+        if fullscreen {
+            self.tick_clock(cx);
+        }
         div()
             .size_full()
             .relative()
             .child(page)
             .child(
-                div().absolute().top(px(12.)).right(px(12.)).child(
-                    overlay_button(
-                        "refresh",
-                        Icon::Refresh,
-                        40.,
-                        20.,
-                        theme::black(0.3),
-                        theme::black(0.5),
-                        rgb(0xFFFFFF),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))),
-                ),
+                div()
+                    .absolute()
+                    .top(px(12.))
+                    .right(px(12.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .when(fullscreen, |d| {
+                        d.child(
+                            div()
+                                .h(px(40.))
+                                .px(px(14.))
+                                .flex()
+                                .items_center()
+                                .rounded_full()
+                                .bg(theme::black(0.3))
+                                .text_size(px(15.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(rgb(0xFFFFFF))
+                                .child(clock::local_time_in(0.)),
+                        )
+                    })
+                    .child(
+                        overlay_button(
+                            "refresh",
+                            Icon::Refresh,
+                            40.,
+                            20.,
+                            theme::black(0.3),
+                            theme::black(0.5),
+                            rgb(0xFFFFFF),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_home(cx))),
+                    ),
             )
             .child(scrollbar(&self.home_scroll))
             .into_any_element()
