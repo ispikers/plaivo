@@ -1,5 +1,6 @@
 package xyz.spikers.plaivo
 
+import android.text.format.DateFormat
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -26,6 +27,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -41,6 +43,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +52,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
+import java.util.Date
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -246,8 +250,33 @@ fun Spotlight(
                 openRow,
                 Modifier.align(Alignment.BottomStart).fillMaxWidth().height(railHeight),
             )
+            Clock(Modifier.align(Alignment.TopEnd).padding(end = Dims.edge, top = top))
         }
     }
+}
+
+@Composable
+private fun Clock(modifier: Modifier) {
+    val context = LocalContext.current
+    val timeFormat = remember(context) { DateFormat.getTimeFormat(context) }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(MINUTE_MS - now % MINUTE_MS)
+        }
+    }
+    Text(
+        timeFormat.format(Date(now)),
+        modifier = modifier,
+        style =
+            TextStyle(
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Palette.text,
+                shadow = Shadow(Color.Black.copy(alpha = 0.5f), blurRadius = 12f),
+            ),
+    )
 }
 
 @Composable

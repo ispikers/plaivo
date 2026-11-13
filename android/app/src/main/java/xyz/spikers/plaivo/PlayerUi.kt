@@ -108,7 +108,7 @@ import uniffi.plaivo_ffi.WatchConnection
 private const val CONTROLS_FOR_MS = 3000L
 private const val HOLD_EVERY = 5
 private const val HINT_MS = 1200L
-private const val MINUTE_MS = 60_000L
+const val MINUTE_MS = 60_000L
 
 private enum class Panel(val title: String, val parent: Panel? = null) {
     Settings("Playback settings"),
