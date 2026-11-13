@@ -18,7 +18,6 @@
   {"name": "HarfBuzz", "version": "", "license": "MIT-Modern-Variant", "files": ["libmpv/harfbuzz.txt"]},
   {"name": "libass", "version": "", "license": "ISC", "files": ["libmpv/libass.txt"]},
   {"name": "libiconv (Windows)", "version": "", "license": "LGPL-2.1-or-later", "files": ["libmpv/libiconv-notice.txt", "LGPL-2.1.txt"]},
-  {"name": "libjpeg-turbo", "version": "", "license": "IJG AND BSD-3-Clause AND Zlib", "files": ["libmpv/libjpeg-turbo.txt"]},
   {"name": "libpng", "version": "", "license": "libpng-2.0", "files": ["libmpv/libpng.txt"]},
   {"name": "libunibreak", "version": "", "license": "Zlib", "files": ["libmpv/libunibreak.txt"]},
   {"name": "Little CMS", "version": "", "license": "MIT", "files": ["libmpv/lcms2.txt"]},

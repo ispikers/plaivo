@@ -297,6 +297,8 @@ impl Plaivo {
             ("cache-secs", "60"),
             ("demuxer-max-bytes", "150MiB"),
             ("demuxer-max-back-bytes", "32MiB"),
+            // Reuses the connection for a seek that leaves at most this much of a reply unread, such as reading a file's index and seeking back.
+            ("stream-lavf-o", "multiple_requests=1,short_seek_size=262144"),
             ("user-agent", "Plaivo"),
             ("audio-client-name", "Plaivo"),
             ("config-dir", conf_dir.as_str()),

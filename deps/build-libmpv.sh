@@ -26,6 +26,7 @@ esac
 
 cd "$work"
 git clone -q --depth 1 --branch "$FFMPEG" https://github.com/FFmpeg/FFmpeg ffmpeg
+git -C ffmpeg apply "$deps/ffmpeg-http-backport.patch" "$deps/ffmpeg-http-keepalive.patch"
 git clone -q --depth 1 --branch "$MPV" https://github.com/mpv-player/mpv mpv
 git -C mpv apply "$deps/mpv-macos-embed.patch"
 git clone -q --depth 1 --branch "$LIBPLACEBO" --recurse-submodules=3rdparty --shallow-submodules \
@@ -34,7 +35,8 @@ git clone -q --depth 1 --branch "$LIBPLACEBO" --recurse-submodules=3rdparty --sh
 (
   cd ffmpeg
   ./configure --prefix="$prefix" --enable-shared --disable-static --disable-programs --disable-doc \
-    --disable-debug --disable-indevs --disable-outdevs --enable-zlib --enable-libdav1d "${ffmpeg_os[@]}"
+    --disable-debug --disable-indevs --disable-outdevs --disable-encoders --disable-muxers --enable-muxer=spdif \
+    --enable-zlib --enable-libdav1d "${ffmpeg_os[@]}"
   grep -q 'FFMPEG_LICENSE "LGPL version 2.1 or later"' config.h
   make -j"$jobs" install
 )
@@ -47,7 +49,7 @@ meson install -C libplacebo/build
 meson setup mpv/build mpv --prefix="$prefix" --buildtype=release \
   -Dgpl=false -Dlibmpv=true -Dcplayer=false -Dtests=false \
   -Dlua=disabled -Djavascript=disabled -Dlibarchive=disabled -Dlibbluray=disabled -Ddvdnav=disabled \
-  -Dcdda=disabled -Dmanpage-build=disabled -Duchardet=enabled -Dlcms2=enabled "${mpv_os[@]}"
+  -Dcdda=disabled -Dmanpage-build=disabled -Djpeg=disabled -Duchardet=enabled -Dlcms2=enabled "${mpv_os[@]}"
 meson install -C mpv/build
 
 case "$(uname -s)" in
