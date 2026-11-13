@@ -53,7 +53,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           source deps/libmpv.env
-          gh release create "$TAG" libmpv-*.tar.gz --title "$TAG" \
+          gh release create "$TAG" libmpv-*.tar.gz --title "$TAG" --prerelease \
             --notes "LGPL libmpv: mpv $MPV, FFmpeg $FFMPEG, libplacebo $LIBPLACEBO, built by deps/build-libmpv.sh at $GITHUB_SHA."
           {
             echo "Paste into deps/libmpv.env:"
