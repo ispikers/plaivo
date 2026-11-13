@@ -176,8 +176,8 @@ fn confirm(question: &str) -> anyhow::Result<bool> {
 fn release(wanted: &str) -> anyhow::Result<()> {
     let (next, current) = (wanted.to_owned(), version()?);
     ensure!(
-        parse_version(&next)? > parse_version(&current)?,
-        "{next} is not newer than the current {current}"
+        parse_version(&next)? >= parse_version(&current)?,
+        "{next} is older than the current {current}"
     );
     let tag = format!("v{next}");
     let git = |args: &[&str]| capture(Command::new("git").args(args).current_dir(root()));
@@ -199,20 +199,22 @@ fn release(wanted: &str) -> anyhow::Result<()> {
         "{tag} already exists"
     );
 
-    let manifest_path = root().join("Cargo.toml");
-    let manifest = std::fs::read_to_string(&manifest_path)?;
-    let line = format!("version = \"{current}\"");
-    ensure!(manifest.contains(&line), "no `{line}` in Cargo.toml");
-    std::fs::write(
-        &manifest_path,
-        manifest.replacen(&line, &format!("version = \"{next}\""), 1),
-    )?;
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    run(Command::new(cargo)
-        .args(["update", "-p", "plaivo", "--offline"])
-        .current_dir(root()))?;
-    git(&["add", "Cargo.toml", "Cargo.lock"])?;
-    git(&["commit", "-m", &format!("chore: release {tag}")])?;
+    if next != current {
+        let manifest_path = root().join("Cargo.toml");
+        let manifest = std::fs::read_to_string(&manifest_path)?;
+        let line = format!("version = \"{current}\"");
+        ensure!(manifest.contains(&line), "no `{line}` in Cargo.toml");
+        std::fs::write(
+            &manifest_path,
+            manifest.replacen(&line, &format!("version = \"{next}\""), 1),
+        )?;
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        run(Command::new(cargo)
+            .args(["update", "-p", "plaivo", "--offline"])
+            .current_dir(root()))?;
+        git(&["add", "Cargo.toml", "Cargo.lock"])?;
+        git(&["commit", "-m", &format!("chore: release {tag}")])?;
+    }
     git(&["tag", "-a", &tag, "-m", &format!("Plaivo {tag}")])?;
     if !confirm(&format!(
         "Committed and tagged {tag} locally. Push main and {tag} to start the release build?"
