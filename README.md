@@ -6,11 +6,11 @@ Video plays through mpv on desktop and ExoPlayer on Android, with hardware decod
 
 ## Download
 
-There are no releases yet. When there are, they'll be on the [Releases](https://github.com/ispikers/plaivo/releases) page:
+Get the [latest release](https://github.com/ispikers/plaivo/releases/latest):
 
-- **Windows 10 or 11 (x64):** `Plaivo-win-Setup.exe`. Installs in one click for your account, no admin prompt, and keeps itself up to date.
-- **macOS 15 or later (Apple Silicon):** `Plaivo-osx-Setup.pkg`. Also updates itself.
-- **Android 7.0 or later, including Android TV:** the APK.
+- **Windows 10 or 11 (x64):** [`Plaivo-win-Setup.exe`](https://github.com/ispikers/plaivo/releases/latest/download/Plaivo-win-Setup.exe). Installs in one click for your account, no admin prompt, and keeps itself up to date. [`Plaivo-win-Portable.zip`](https://github.com/ispikers/plaivo/releases/latest/download/Plaivo-win-Portable.zip) runs without installing.
+- **macOS 15 or later (Apple Silicon):** [`Plaivo-osx-Setup.pkg`](https://github.com/ispikers/plaivo/releases/latest/download/Plaivo-osx-Setup.pkg). Also updates itself. [`Plaivo-osx-Portable.zip`](https://github.com/ispikers/plaivo/releases/latest/download/Plaivo-osx-Portable.zip) runs without installing.
+- **Android 7.0 or later (phones, tablets and Android TV):** no APK is published yet; build it from source (see [BUILDING.md](BUILDING.md)).
 
 ## Features
 
