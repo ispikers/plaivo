@@ -55,6 +55,10 @@ An `mpv.conf` in the settings folder is passed to mpv.
 
 Uninstalling keeps your sign-ins, settings and downloads, so reinstalling picks up where you left off. To remove them, use Settings → Advanced → Delete all data before uninstalling, or delete the settings folder above.
 
+## Credits
+
+Plaivo's layout and look are modelled on [Plezy](https://github.com/edde746/plezy) by edde746, and so is its set of upscaling shader presets. Watch Together uses the same protocol as Plezy, so the two apps can share a room. MyAnimeList scrobbling uses edde746's [anime-mappings](https://github.com/edde746/anime-mappings).
+
 ## Legal
 
 Plaivo is released under the [MIT License](LICENSE). The libmpv it ships is LGPL-2.1-or-later, built from source by `deps/build-libmpv.sh`.
