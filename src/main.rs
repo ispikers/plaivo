@@ -14,7 +14,10 @@ mod update;
 mod video_host;
 mod watch;
 
-use gpui::{App, AppContext, TitlebarOptions, WindowBackgroundAppearance, WindowOptions, px, size};
+use gpui::{
+    App, AppContext, KeyBinding, TitlebarOptions, WindowBackgroundAppearance, WindowOptions, px,
+    size,
+};
 use plaivo_core::{downloads, plex, prefs, settings, store};
 use std::sync::Arc;
 
@@ -36,6 +39,7 @@ fn main() {
         .with_assets(ui::theme::Assets)
         .run(move |cx: &mut App| {
             ui::input::bind_keys(cx);
+            cx.bind_keys([KeyBinding::new("f11", menu::ToggleFullScreen, None)]);
             if cfg!(target_os = "macos") {
                 menu::install(cx);
             }
