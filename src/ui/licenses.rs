@@ -76,7 +76,7 @@ impl Plaivo {
     }
 }
 
-fn header(title: &'static str, detail: SharedString, cx: &mut Context<Plaivo>) -> Div {
+pub fn header(title: &'static str, detail: SharedString, cx: &mut Context<Plaivo>) -> Div {
     div()
         .flex()
         .items_center()

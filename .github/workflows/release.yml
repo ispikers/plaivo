@@ -19,16 +19,19 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - uses: Swatinem/rust-cache@v2
-      - run: dotnet tool install --global wix --version 7.0.1
+      - run: dotnet tool install --global vpk --version 1.2.161
       - run: cargo run -p xtask -- libmpv
         env:
           GITHUB_TOKEN: ${{ github.token }}
       - run: cargo fetch
+      - name: Fetch the previous release for delta updates
+        shell: bash
+        run: vpk download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --channel win --outputDir target/velopack --token "${{ github.token }}" || echo "No published release to diff against"
       - run: cargo run -p xtask -- installer
       - uses: actions/upload-artifact@v7
         with:
           name: windows
-          path: target/release/Plaivo-*.msi
+          path: target/velopack
 
   macos:
     runs-on: macos-15
@@ -41,6 +44,7 @@ jobs:
       - run: cargo run -p xtask -- libmpv
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      - run: dotnet tool install --global vpk --version 1.2.161
       - run: cargo fetch
       - name: Import Developer ID certificate
         if: env.SIGN == 'true'
@@ -57,19 +61,22 @@ jobs:
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
           echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/productsign
           rm "$RUNNER_TEMP/cert.p12"
           security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" > /dev/null
           security list-keychains -d user -s "$keychain"
           security default-keychain -d user -s "$keychain"
           xcrun notarytool store-credentials plaivo --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
           echo "PLAIVO_SIGN_IDENTITY=Developer ID Application" >> "$GITHUB_ENV"
+          echo "PLAIVO_SIGN_INSTALL_IDENTITY=Developer ID Installer" >> "$GITHUB_ENV"
           echo "PLAIVO_NOTARY_PROFILE=plaivo" >> "$GITHUB_ENV"
+      - name: Fetch the previous release for delta updates
+        run: vpk download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --channel osx --outputDir target/velopack --token "${{ github.token }}" || echo "No published release to diff against"
       - run: cargo run -p xtask -- installer
       - uses: actions/upload-artifact@v7
         with:
           name: macos
-          path: target/release/Plaivo-*.dmg
+          path: target/velopack
 
   release:
     if: github.ref_type == 'tag'
@@ -80,12 +87,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
-        with:
-          merge-multiple: true
+      - run: dotnet tool install --global vpk --version 1.2.161
       - name: Check the tag matches Cargo.toml
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version"; exit 1; }
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" Plaivo-*.msi Plaivo-*.dmg --draft --title "Plaivo $GITHUB_REF_NAME" --generate-notes
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --title "Plaivo $GITHUB_REF_NAME" --generate-notes
+          for channel in win osx; do
+            dir=windows; [ "$channel" = osx ] && dir=macos
+            vpk upload github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$GH_TOKEN" --channel "$channel" --outputDir "$dir" --tag "$GITHUB_REF_NAME" --releaseName "Plaivo $GITHUB_REF_NAME" --merge
+          done

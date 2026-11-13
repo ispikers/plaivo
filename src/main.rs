@@ -10,6 +10,7 @@ mod placement;
 mod player;
 mod shaders;
 mod ui;
+mod update;
 mod video_host;
 mod watch;
 
@@ -18,6 +19,8 @@ use plaivo_core::{downloads, plex, prefs, settings, store};
 use std::sync::Arc;
 
 fn main() {
+    update::run_installer_hooks();
+    store::apply_pending_reset();
     let settings = settings::Settings::load();
     logging::init(settings.debug_logging);
     let account = plaivo_core::Account::load();

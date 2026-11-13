@@ -2,7 +2,7 @@
 mod pin;
 
 use std::ffi::OsStr;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -10,7 +10,6 @@ use anyhow::{Context, bail, ensure};
 use sha2::{Digest, Sha256};
 
 const REPO: &str = "ispikers/plaivo";
-const WIX_UI: &str = "WixToolset.UI.wixext/7.0.1";
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -18,9 +17,11 @@ fn main() -> anyhow::Result<()> {
     match args.first().map(String::as_str) {
         Some("libmpv") => libmpv(),
         Some("bundle") => bundle(flag("--release"), flag("--open")).map(drop),
-        Some("installer") if cfg!(windows) => msi(),
-        Some("installer") => dmg(),
-        _ => bail!("usage: cargo run -p xtask -- libmpv | bundle [--release] [--open] | installer"),
+        Some("installer") => installer(),
+        Some("release") => release(args.get(1).context("usage: release <version>")?),
+        _ => bail!(
+            "usage: cargo run -p xtask -- libmpv | bundle [--release] [--open] | installer | release <version>"
+        ),
     }
 }
 
@@ -61,6 +62,17 @@ fn build(release: bool) -> anyhow::Result<PathBuf> {
         .join(if release { "release" } else { "debug" }))
 }
 
+fn parse_version(v: &str) -> anyhow::Result<[u64; 3]> {
+    let parts: Vec<u64> = v
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .with_context(|| format!("{v} is not a version like 1.2.3"))?;
+    parts
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{v} is not a version like 1.2.3"))
+}
+
 fn ensure_libmpv(os: &str) -> anyhow::Result<PathBuf> {
     let deps = root().join("deps");
     let dir = deps.join(os);
@@ -73,92 +85,176 @@ fn ensure_libmpv(os: &str) -> anyhow::Result<PathBuf> {
     Ok(dir)
 }
 
-fn msi() -> anyhow::Result<()> {
-    let deps = ensure_libmpv("windows")?;
-    let target = build(true)?;
+// Delta packages need the previous release in target/velopack first (`vpk download github`, as CI does).
+fn installer() -> anyhow::Result<()> {
     let version = version()?;
-    let msi = target.join(format!("Plaivo-{version}-x64.msi"));
-    let cert = std::env::var("PLAIVO_SIGN_CERT").ok();
-    if let Some(cert) = &cert {
-        signtool(cert, &target.join("plaivo.exe"))?;
+    let resources = root().join("xtask/resources");
+    let mut vpk = Command::new("vpk");
+    vpk.args([
+        "pack",
+        "--packId",
+        "Plaivo",
+        "--packTitle",
+        "Plaivo",
+        "--packAuthors",
+        "Plaivo",
+    ])
+    .args(["--packVersion", &version])
+    .arg("--outputDir")
+    .arg(root().join("target/velopack"));
+    if cfg!(windows) {
+        let deps = ensure_libmpv("windows")?;
+        let target = build(true)?;
+        let stage = target.join("velopack-stage");
+        if stage.exists() {
+            std::fs::remove_dir_all(&stage)?;
+        }
+        std::fs::create_dir_all(stage.join("shaders"))?;
+        std::fs::copy(target.join("plaivo.exe"), stage.join("plaivo.exe"))?;
+        copy_files(&deps, &stage)?;
+        copy_files(&root().join("shaders"), &stage.join("shaders"))?;
+        vpk.args([
+            "--mainExe",
+            "plaivo.exe",
+            "--runtime",
+            "win-x64",
+            "--shortcuts",
+            "StartMenuRoot",
+        ])
+        .arg("--packDir")
+        .arg(&stage)
+        .arg("--icon")
+        .arg(root().join("resources/app.ico"))
+        .arg("--splashImage")
+        .arg(resources.join("splash.png"))
+        .args(["--splashProgressColor", "#E6E6E6"]);
+        if let Ok(cert) = std::env::var("PLAIVO_SIGN_CERT") {
+            vpk.args([
+                "--signParams",
+                &format!("/sha1 {cert} /fd sha256 /td sha256 /tr http://timestamp.digicert.com"),
+            ]);
+        }
+    } else {
+        ensure_libmpv("macos")?;
+        vpk.args(["--mainExe", "plaivo", "--runtime", "osx-arm64"])
+            .arg("--packDir")
+            .arg(bundle(true, false)?);
+        for (var, flag) in [
+            ("PLAIVO_SIGN_IDENTITY", "--signAppIdentity"),
+            ("PLAIVO_SIGN_INSTALL_IDENTITY", "--signInstallIdentity"),
+            ("PLAIVO_NOTARY_PROFILE", "--notaryProfile"),
+        ] {
+            if let Ok(value) = std::env::var(var) {
+                vpk.args([flag, &value]);
+            }
+        }
     }
-    run(Command::new("wix").args(["eula", "accept", "wix7"]))?;
-    run(Command::new("wix").args(["extension", "add", "-g", WIX_UI]))?;
-    run(Command::new("wix")
-        .arg("build")
-        .arg(root().join("xtask/plaivo.wxs"))
-        .args(["-arch", "x64", "-ext", WIX_UI])
-        .arg("-d")
-        .arg(format!("Version={version}"))
-        .arg("-d")
-        .arg(format!("BinDir={}", target.display()))
-        .arg("-d")
-        .arg(format!("DepsDir={}", deps.display()))
-        .arg("-d")
-        .arg(format!("ShadersDir={}", root().join("shaders").display()))
-        .arg("-o")
-        .arg(&msi))?;
-    run(Command::new("wix").args(["msi", "validate"]).arg(&msi))?;
-    if let Some(cert) = &cert {
-        signtool(cert, &msi)?;
-    }
-    println!("{}", msi.display());
+    run(&mut vpk)?;
+    println!("{}", root().join("target/velopack").display());
     Ok(())
 }
 
-fn signtool(cert_sha1: &str, file: &Path) -> anyhow::Result<()> {
-    run(Command::new("signtool")
-        .args(["sign", "/sha1", cert_sha1, "/fd", "sha256", "/td", "sha256"])
-        .args(["/tr", "http://timestamp.digicert.com"])
-        .arg(file))
+fn capture(cmd: &mut Command) -> anyhow::Result<String> {
+    let name = cmd.get_program().to_string_lossy().into_owned();
+    let out = cmd
+        .stderr(Stdio::inherit())
+        .output()
+        .with_context(|| format!("running {name}"))?;
+    ensure!(out.status.success(), "{name} failed");
+    Ok(String::from_utf8(out.stdout)?.trim().to_owned())
 }
 
-fn dmg() -> anyhow::Result<()> {
-    ensure_libmpv("macos")?;
-    let app = bundle(true, false)?;
-    let target = app.parent().unwrap();
-    let stage = target.join("dmg");
-    if stage.exists() {
-        std::fs::remove_dir_all(&stage)?;
+fn confirm(question: &str) -> anyhow::Result<bool> {
+    print!("{question} [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+
+// Bumps the version, tags and pushes it, waits for the release workflow, then publishes the draft it made.
+fn release(wanted: &str) -> anyhow::Result<()> {
+    let (next, current) = (wanted.to_owned(), version()?);
+    ensure!(
+        parse_version(&next)? > parse_version(&current)?,
+        "{next} is not newer than the current {current}"
+    );
+    let tag = format!("v{next}");
+    let git = |args: &[&str]| capture(Command::new("git").args(args).current_dir(root()));
+    ensure!(
+        git(&["rev-parse", "--abbrev-ref", "HEAD"])? == "main",
+        "releases are cut from main"
+    );
+    ensure!(
+        git(&["status", "--porcelain"])?.is_empty(),
+        "commit or stash your changes first"
+    );
+    git(&["fetch", "origin", "main", "--tags"])?;
+    ensure!(
+        git(&["rev-list", "--count", "HEAD..origin/main"])? == "0",
+        "main is behind origin/main; pull first"
+    );
+    ensure!(
+        git(&["tag", "--list", &tag])?.is_empty(),
+        "{tag} already exists"
+    );
+
+    let manifest_path = root().join("Cargo.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)?;
+    let line = format!("version = \"{current}\"");
+    ensure!(manifest.contains(&line), "no `{line}` in Cargo.toml");
+    std::fs::write(
+        &manifest_path,
+        manifest.replacen(&line, &format!("version = \"{next}\""), 1),
+    )?;
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    run(Command::new(cargo)
+        .args(["update", "-p", "plaivo", "--offline"])
+        .current_dir(root()))?;
+    git(&["add", "Cargo.toml", "Cargo.lock"])?;
+    git(&["commit", "-m", &format!("chore: release {tag}")])?;
+    git(&["tag", "-a", &tag, "-m", &format!("Plaivo {tag}")])?;
+    if !confirm(&format!(
+        "Committed and tagged {tag} locally. Push main and {tag} to start the release build?"
+    ))? {
+        println!("Not pushed. Push later with: git push --atomic origin main {tag}");
+        return Ok(());
     }
-    std::fs::create_dir_all(&stage)?;
-    run(Command::new("ditto")
-        .arg(&app)
-        .arg(stage.join("Plaivo.app")))?;
-    #[cfg(unix)]
-    std::os::unix::fs::symlink("/Applications", stage.join("Applications"))?;
-    let dmg = target.join(format!("Plaivo-{}-arm64.dmg", version()?));
-    run(Command::new("hdiutil")
-        .args([
-            "create",
-            "-volname",
-            "Plaivo",
-            "-format",
-            "UDZO",
-            "-ov",
-            "-srcfolder",
-        ])
-        .arg(&stage)
-        .arg(&dmg))?;
-    std::fs::remove_dir_all(&stage)?;
-    if let Ok(identity) = std::env::var("PLAIVO_SIGN_IDENTITY") {
-        run(Command::new("codesign")
-            .args(["--timestamp", "--sign", &identity])
-            .arg(&dmg))?;
+    git(&["push", "--atomic", "origin", "main", &tag])?;
+
+    println!("Waiting for the release workflow to start…");
+    let run_id = (0..60)
+        .find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            capture(Command::new("gh").args([
+                "run",
+                "list",
+                "--repo",
+                REPO,
+                "--workflow",
+                "release.yml",
+                "--branch",
+                &tag,
+                "--json",
+                "databaseId",
+                "--jq",
+                ".[0].databaseId",
+            ]))
+            .ok()
+            .filter(|id| !id.is_empty())
+        })
+        .context("the release workflow didn't start within 5 minutes")?;
+    run(Command::new("gh").args(["run", "watch", &run_id, "--repo", REPO, "--exit-status"]))?;
+
+    run(Command::new("gh").args(["release", "view", &tag, "--repo", REPO]))?;
+    if confirm(&format!("Publish {tag} to everyone?"))? {
+        run(Command::new("gh").args(["release", "edit", &tag, "--repo", REPO, "--draft=false"]))?;
+        println!("Published. Installed copies pick it up within an hour.");
+    } else {
+        println!(
+            "Left as a draft. Publish with: gh release edit {tag} --repo {REPO} --draft=false"
+        );
     }
-    if let Ok(profile) = std::env::var("PLAIVO_NOTARY_PROFILE") {
-        run(Command::new("xcrun")
-            .args([
-                "notarytool",
-                "submit",
-                "--wait",
-                "--keychain-profile",
-                &profile,
-            ])
-            .arg(&dmg))?;
-        run(Command::new("xcrun").args(["stapler", "staple"]).arg(&dmg))?;
-    }
-    println!("{}", dmg.display());
     Ok(())
 }
 
@@ -181,6 +277,11 @@ fn bundle(release: bool, open: bool) -> anyhow::Result<PathBuf> {
     copy_files(&root.join("shaders"), &exe_dir.join("shaders"))?;
 
     std::fs::write(contents.join("Info.plist"), info_plist(&version()?))?;
+    std::fs::create_dir_all(contents.join("Resources"))?;
+    std::fs::copy(
+        root.join("resources/app.icns"),
+        contents.join("Resources/app.icns"),
+    )?;
 
     match std::env::var("PLAIVO_SIGN_IDENTITY") {
         Ok(identity) => {
@@ -239,6 +340,8 @@ fn info_plist(version: &str) -> String {
     <string>xyz.spikers.plaivo</string>
     <key>CFBundleExecutable</key>
     <string>plaivo</string>
+    <key>CFBundleIconFile</key>
+    <string>app</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

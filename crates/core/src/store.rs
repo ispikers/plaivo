@@ -32,14 +32,16 @@ pub fn cache_dir() -> PathBuf {
     if let Some((_, cache)) = DIRS.get() {
         return cache.clone();
     }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let base: Option<PathBuf> = None;
+    // Not %LOCALAPPDATA%\Plaivo: Velopack installs there and replaces the whole folder on repair.
     #[cfg(windows)]
-    let base = std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Plaivo"));
+    let base = config_dir();
     #[cfg(target_os = "macos")]
-    let base = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches/Plaivo"));
-    base.unwrap_or_else(|| config_dir().join("cache"))
-        .join("cache")
+    let base = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join("Library/Caches/Plaivo"))
+        .unwrap_or_else(|| config_dir().join("cache"));
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let base = config_dir().join("cache");
+    base.join("cache")
 }
 
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
@@ -139,6 +141,25 @@ pub fn prune_cache(max_bytes: u64) {
             total -= len;
         }
     }
+}
+
+const RESET_MARKER: &str = ".reset";
+
+/// Marks everything Plaivo stored for deletion at the next start, when no file is held open.
+pub fn request_reset() -> std::io::Result<()> {
+    std::fs::create_dir_all(config_dir())?;
+    std::fs::write(config_dir().join(RESET_MARKER), b"")
+}
+
+/// Deletes the settings, sign-ins, cache, logs and default downloads if [`request_reset`] asked for it.
+pub fn apply_pending_reset() {
+    if !config_dir().join(RESET_MARKER).exists() {
+        return;
+    }
+    if let Some(cache_base) = cache_dir().parent() {
+        let _ = std::fs::remove_dir_all(cache_base);
+    }
+    let _ = std::fs::remove_dir_all(config_dir());
 }
 
 pub fn clear_cache() {

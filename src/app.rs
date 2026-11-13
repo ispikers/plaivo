@@ -9,12 +9,13 @@ use crate::store;
 use crate::ui::add_server::AddServer;
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::services::Services;
+use crate::update::Update;
 use crate::watch::Watch;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{
-    AppContext, Bounds, Context, Entity, FocusHandle, Pixels, RenderImage, ScrollHandle,
-    SharedString, Task, UniformListScrollHandle, Window,
+    AppContext, Bounds, Context, Entity, FocusHandle, Pixels, PromptLevel, RenderImage,
+    ScrollHandle, SharedString, Task, UniformListScrollHandle, Window,
 };
 pub use plaivo_core::{Account, first, join};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -50,6 +51,7 @@ pub enum Page {
     Detail,
     Settings,
     Licenses,
+    Logs,
     AddServer,
     Downloads,
     Watch,
@@ -68,6 +70,7 @@ pub enum Nav {
     Detail(String, String, Option<String>),
     Settings(Option<Category>),
     Licenses(Option<usize>),
+    Logs,
     AddServer,
     Downloads(Option<(String, String)>),
     Watch,
@@ -329,7 +332,10 @@ pub struct Plaivo {
     pub add_server: AddServer,
     pub services: Services,
     pub watch: Watch,
+    pub updates: Update,
     pub licenses_scroll: UniformListScrollHandle,
+    pub logs_scroll: UniformListScrollHandle,
+    pub log_selection: Option<(usize, usize)>,
     pub toast: Option<SharedString>,
     toast_task: Option<Task<()>>,
     pub auth_waiting: bool,
@@ -414,11 +420,7 @@ pub fn download_root(dir: &str) -> PathBuf {
     if !dir.is_empty() {
         return dir.into();
     }
-    #[cfg(windows)]
-    let base = std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Plaivo"));
-    #[cfg(not(windows))]
-    let base: Option<PathBuf> = None;
-    base.unwrap_or_else(store::config_dir).join("downloads")
+    store::config_dir().join("downloads")
 }
 
 fn open_downloads(root: PathBuf, client: Client, tx: UnboundedSender<()>) -> Arc<Downloads> {
@@ -723,7 +725,10 @@ impl Plaivo {
             add_server,
             services: Services::start(),
             watch,
+            updates: Update::start(cx),
             licenses_scroll: UniformListScrollHandle::new(),
+            logs_scroll: UniformListScrollHandle::new(),
+            log_selection: None,
             toast: None,
             toast_task: None,
             auth_waiting: false,
@@ -998,7 +1003,7 @@ impl Plaivo {
 
     pub fn toast(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
         let msg = msg.into();
-        log::warn!("toast: {msg}");
+        log::info!("toast: {msg}");
         self.toast = Some(msg);
         self.toast_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(TOAST_FOR).await;
@@ -1132,6 +1137,27 @@ impl Plaivo {
         }) {
             cx.drop_image(img, None);
         }
+    }
+
+    pub fn confirm_reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Delete all Plaivo data?",
+            Some("Signs you out of every server and service and deletes your settings, cache, logs and downloads, then restarts Plaivo. Downloads saved to a folder you picked are kept."),
+            &["Delete and restart", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            this.update(cx, |this, cx| match store::request_reset() {
+                Ok(()) => cx.restart(),
+                Err(e) => this.toast(format!("Couldn't delete Plaivo's data: {e}"), cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub fn clear_image_cache(&mut self, cx: &mut Context<Self>) {
@@ -1663,6 +1689,14 @@ impl Plaivo {
                 self.license_scroll = ScrollHandle::new();
                 self.page = Page::Licenses;
                 self.license = license;
+            }
+            Nav::Logs => {
+                self.page = Page::Logs;
+                self.log_selection = None;
+                self.logs_scroll.scroll_to_item(
+                    crate::logging::len().saturating_sub(1),
+                    gpui::ScrollStrategy::Top,
+                );
             }
             Nav::AddServer => {
                 self.page = Page::AddServer;

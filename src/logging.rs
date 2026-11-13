@@ -1,30 +1,77 @@
 use crate::store;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use plaivo_core::redact;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const MAX_LOG_BYTES: u64 = 4 << 20;
+const MAX_BYTES: usize = 1 << 20;
+const MAX_LINE: usize = 16 << 10;
+
+static LINES: Mutex<(VecDeque<String>, usize)> = Mutex::new((VecDeque::new(), 0));
 
 struct Logger {
     console: bool,
-    file: Option<Mutex<File>>,
 }
 
-pub fn log_path() -> PathBuf {
-    store::cache_dir().with_file_name("logs").join("plaivo.log")
+fn log_dir() -> PathBuf {
+    store::cache_dir().with_file_name("logs")
 }
 
-fn open_log() -> Option<File> {
-    let path = log_path();
-    std::fs::create_dir_all(path.parent()?).ok()?;
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_LOG_BYTES) {
-        let _ = std::fs::rename(&path, path.with_extension("old.log"));
+pub fn len() -> usize {
+    LINES.lock().map_or(0, |l| l.0.len())
+}
+
+pub fn lines(range: std::ops::Range<usize>) -> Vec<String> {
+    LINES
+        .lock()
+        .map(|l| {
+            let n = l.0.len();
+            l.0.range(range.start.min(n)..range.end.min(n))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Writes the in-memory log to a text file in the log folder and returns its path.
+pub fn export() -> std::io::Result<PathBuf> {
+    let dir = log_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("plaivo-log.txt");
+    let mut text = format!(
+        "Plaivo {} on {}\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS
+    );
+    for line in lines(0..usize::MAX) {
+        text.push_str(&line);
+        text.push('\n');
     }
-    OpenOptions::new().create(true).append(true).open(path).ok()
+    std::fs::write(&path, text)?;
+    Ok(path)
+}
+
+fn push(mut line: String) {
+    if line.len() > MAX_LINE {
+        let mut end = MAX_LINE;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+        line.push('…');
+    }
+    if let Ok(mut l) = LINES.lock() {
+        let (lines, bytes) = &mut *l;
+        *bytes += line.len();
+        lines.push_back(line);
+        while *bytes > MAX_BYTES
+            && let Some(old) = lines.pop_front()
+        {
+            *bytes -= old.len();
+        }
+    }
 }
 
 fn parse_level(s: &str) -> Option<LevelFilter> {
@@ -50,17 +97,18 @@ pub fn set_debug(debug: bool) {
 
 pub fn init(debug: bool) {
     let level = default_level(debug);
+    for old in ["plaivo.log", "plaivo.old.log"] {
+        let _ = std::fs::remove_file(log_dir().join(old));
+    }
     let logger = Logger {
         console: cfg!(debug_assertions),
-        file: open_log().map(Mutex::new),
     };
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(level);
     }
     log::info!(
-        "Plaivo {} starting, log level {level}, file {}",
-        env!("CARGO_PKG_VERSION"),
-        log_path().display()
+        "Plaivo {} starting, log level {level}",
+        env!("CARGO_PKG_VERSION")
     );
 }
 
@@ -94,7 +142,7 @@ impl Log for Logger {
         if !self.enabled(r.metadata()) {
             return;
         }
-        let mut line = redact(&format!(
+        let line = redact(&format!(
             "{} {:5} {}: {}",
             clock(),
             r.level(),
@@ -111,21 +159,10 @@ impl Log for Logger {
             };
             eprintln!("\x1b[{color}m{line}\x1b[0m");
         }
-        if let Some(f) = &self.file
-            && let Ok(mut f) = f.lock()
-        {
-            line.push('\n');
-            let _ = f.write_all(line.as_bytes());
-        }
+        push(line);
     }
 
-    fn flush(&self) {
-        if let Some(f) = &self.file
-            && let Ok(mut f) = f.lock()
-        {
-            let _ = f.flush();
-        }
-    }
+    fn flush(&self) {}
 }
 
 #[cfg(test)]
@@ -137,5 +174,19 @@ mod tests {
         assert_eq!(parse_level("TRACE"), Some(LevelFilter::Trace));
         assert_eq!(parse_level(" warn "), Some(LevelFilter::Warn));
         assert_eq!(parse_level("loud"), None);
+    }
+
+    #[test]
+    fn buffer_stays_within_its_byte_budget() {
+        let line = "é".repeat(MAX_LINE);
+        for _ in 0..MAX_BYTES / MAX_LINE * 2 {
+            push(line.clone());
+        }
+        push("newest".into());
+        let all = lines(0..usize::MAX);
+        assert!(all.iter().map(String::len).sum::<usize>() <= MAX_BYTES);
+        assert!(all[0].len() <= MAX_LINE + '…'.len_utf8());
+        assert_eq!(all.last().unwrap(), "newest");
+        assert_eq!(lines(len() - 1..len() + 9), ["newest"]);
     }
 }

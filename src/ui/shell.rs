@@ -147,9 +147,23 @@ impl Plaivo {
             cx.stop_propagation();
             return cx.notify();
         }
+        if self.page == Page::Logs {
+            match ev.keystroke.key.as_str() {
+                "escape" if self.log_selection.is_some() => {
+                    self.log_selection = None;
+                    return cx.notify();
+                }
+                "c" if ev.keystroke.modifiers.secondary(cx) => return self.copy_logs(cx),
+                "a" if ev.keystroke.modifiers.secondary(cx) => {
+                    self.log_selection = Some((0, crate::logging::len().saturating_sub(1)));
+                    return cx.notify();
+                }
+                _ => {}
+            }
+        }
         if self.page != Page::Player {
             let sub_page = match self.page {
-                Page::Detail | Page::HubList | Page::Licenses => true,
+                Page::Detail | Page::HubList | Page::Licenses | Page::Logs => true,
                 Page::Settings => self.settings_page.is_some(),
                 Page::Downloads => self.offline_view.is_some(),
                 Page::Library => matches!(self.nav.last(), Some(Nav::Collection(..))),
@@ -252,6 +266,7 @@ impl Plaivo {
             Page::Detail => self.render_detail(window, cx),
             Page::Settings => self.render_settings_page(window, cx),
             Page::Licenses => self.render_licenses(cx),
+            Page::Logs => self.render_logs(cx),
             Page::AddServer => self.render_add_server(window, cx),
             Page::Downloads => self.render_downloads(window, cx),
             Page::Watch => self.render_watch(window, cx),
@@ -507,8 +522,20 @@ impl Plaivo {
                     "settings".into(),
                     Icon::Settings,
                     "Settings".into(),
-                    matches!(self.page, Page::Settings | Page::Licenses),
+                    matches!(self.page, Page::Settings | Page::Licenses | Page::Logs),
                 )
+                .relative()
+                .when(self.updates.attention(), |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top(px(8.))
+                            .left(px(30.))
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(theme::accent()),
+                    )
+                })
                 .on_click(
                     cx.listener(|this, _, _, cx| this.navigate(Nav::Settings(None), true, cx)),
                 ),

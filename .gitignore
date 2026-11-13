@@ -16,6 +16,7 @@
 
 *.md
 !README.md
+!/BUILDING.md
 
 node_modules/
 .wrangler/

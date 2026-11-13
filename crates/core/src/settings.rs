@@ -60,6 +60,7 @@ pub struct Settings {
     pub watch_name: String,
     pub watch_relay: String,
     pub watch_rooms: Vec<String>,
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -106,6 +107,7 @@ impl Default for Settings {
             watch_name: String::new(),
             watch_relay: String::new(),
             watch_rooms: Vec::new(),
+            check_updates: true,
         }
     }
 }

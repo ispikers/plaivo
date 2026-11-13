@@ -22,6 +22,13 @@ fn main() {
     if matches!(os.as_str(), "windows" | "macos") {
         copy_runtime_libs(&root, &out, &deps.join(&os), pin);
     }
+    if os == "windows" {
+        // GPUI loads icon resource 1 from the exe for the window and taskbar.
+        println!("cargo:rerun-if-changed=resources/app.ico");
+        embed_resource::compile(root.join("resources/app.rc"), embed_resource::NONE)
+            .manifest_optional()
+            .unwrap();
+    }
 }
 
 // Copies the runtime libraries in deps/<os>/ (libmpv) and the mpv shaders next to the built executable, so every profile runs as-is.

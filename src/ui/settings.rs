@@ -106,7 +106,10 @@ impl Plaivo {
                     count(self.account.jellyfin.len())
                 )
             }
-            Category::About => format!("Version {VERSION} · libmpv {MPV_VERSION}"),
+            Category::About => match self.updates.summary() {
+                Some(update) => format!("Version {VERSION} · {update}"),
+                None => format!("Version {VERSION} · libmpv {MPV_VERSION}"),
+            },
         }
     }
 
@@ -351,27 +354,37 @@ impl Plaivo {
     }
 
     fn render_advanced_settings(&mut self, cx: &mut Context<Self>) -> Div {
-        let logs = logging::log_path()
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_default();
         div()
             .flex()
             .flex_col()
             .gap(px(28.))
             .child(
-                section("Storage").child(
-                    row(
-                        "clear-cache",
-                        Some(Icon::Refresh),
-                        "Clear image cache",
-                        "Removes cached artwork and library data",
+                section("Storage")
+                    .child(
+                        row(
+                            "clear-cache",
+                            Some(Icon::Refresh),
+                            "Clear image cache",
+                            "Removes cached artwork and library data",
+                        )
+                        .child(
+                            pill("clear-cache-button", "Clear", None, false)
+                                .on_click(cx.listener(|this, _, _, cx| this.clear_image_cache(cx))),
+                        ),
                     )
                     .child(
-                        pill("clear-cache-button", "Clear", None, false)
-                            .on_click(cx.listener(|this, _, _, cx| this.clear_image_cache(cx))),
+                        row(
+                            "reset-data",
+                            Some(Icon::Delete),
+                            "Delete all data",
+                            "Signs you out and deletes settings, cache, logs and downloads",
+                        )
+                        .child(
+                            pill("reset-data-button", "Delete", None, false).on_click(
+                                cx.listener(|this, _, window, cx| this.confirm_reset(window, cx)),
+                            ),
+                        ),
                     ),
-                ),
             )
             .child(
                 section("Logging")
@@ -393,17 +406,13 @@ impl Plaivo {
                         })),
                     )
                     .child(
-                        row(
-                            "log-folder",
-                            Some(Icon::Info),
-                            "Log folder",
-                            logs.display().to_string(),
+                        nav_row(
+                            "logs",
+                            Icon::Info,
+                            "Logs",
+                            "Kept in memory until Plaivo closes; export to share them",
                         )
-                        .child(
-                            pill("open-logs", "Open", Some(Icon::OpenInNew), false).on_click(
-                                cx.listener(move |_, _, _, cx| cx.open_with_system(&logs)),
-                            ),
-                        ),
+                        .on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Logs, true, cx))),
                     ),
             )
     }
@@ -484,35 +493,42 @@ impl Plaivo {
             Some(Category::WatchTogether) => self.render_watch_settings(window, cx),
             Some(Category::Advanced) => self.render_advanced_settings(cx),
             Some(Category::Connections) => self.render_connections(cx),
-            Some(Category::About) => section("Plaivo")
-                .child(row(
-                    "version",
-                    Some(Icon::PlayCircle),
-                    "Plaivo",
-                    format!("Version {VERSION}"),
-                ))
+            Some(Category::About) => div()
+                .flex()
+                .flex_col()
+                .gap(px(28.))
+                .child(self.render_updates(cx))
                 .child(
-                    row("libmpv", Some(Icon::Movie), "libmpv", MPV_INFO).child(
-                        pill("mpv-source", "Source", Some(Icon::OpenInNew), false)
-                            .on_click(|_, _, _| open_url(MPV_SOURCE)),
-                    ),
-                )
-                .child(row(
-                    "trakt",
-                    Some(Icon::Check),
-                    "Trakt",
-                    "Plaivo uses Trakt but is not endorsed or certified by Trakt",
-                ))
-                .child(
-                    nav_row(
-                        "licenses",
-                        Icon::Info,
-                        "Open-source licenses",
-                        format!("libmpv, FFmpeg and {} more", LICENSES.len() - 2),
-                    )
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.navigate(Nav::Licenses(None), true, cx)),
-                    ),
+                    section("Plaivo")
+                        .child(row(
+                            "version",
+                            Some(Icon::PlayCircle),
+                            "Plaivo",
+                            format!("Version {VERSION}"),
+                        ))
+                        .child(
+                            row("libmpv", Some(Icon::Movie), "libmpv", MPV_INFO).child(
+                                pill("mpv-source", "Source", Some(Icon::OpenInNew), false)
+                                    .on_click(|_, _, _| open_url(MPV_SOURCE)),
+                            ),
+                        )
+                        .child(row(
+                            "trakt",
+                            Some(Icon::Check),
+                            "Trakt",
+                            "Plaivo uses Trakt but is not endorsed or certified by Trakt",
+                        ))
+                        .child(
+                            nav_row(
+                                "licenses",
+                                Icon::Info,
+                                "Open-source licenses",
+                                format!("libmpv, FFmpeg and {} more", LICENSES.len() - 2),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.navigate(Nav::Licenses(None), true, cx)
+                            })),
+                        ),
                 ),
         };
         let header = div()
