@@ -1533,11 +1533,12 @@ impl Plaivo {
     }
 
     fn probe_deadline(&mut self, cx: &mut Context<Self>) {
+        let home = self.home_server().map(|s| s.id);
         let Some(sp) = self.splash.as_mut().filter(|sp| !sp.probes_done) else {
             return;
         };
         for (id, name, status) in &sp.servers {
-            if *status == Status::Pending {
+            if *status == Status::Pending && home.as_ref() != Some(id) {
                 log::info!("discovery: {name} has not answered yet, hiding it until it does");
                 plex::set_down(id, true);
             }
