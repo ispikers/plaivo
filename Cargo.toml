@@ -3,7 +3,7 @@ members = [".", "crates/core", "crates/ffi", "crates/uniffi-bindgen", "xtask"]
 
 [package]
 name = "plaivo"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 
