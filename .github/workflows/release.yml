@@ -92,6 +92,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
       - uses: actions/setup-dotnet@v5
         with:
@@ -104,7 +106,8 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --draft --title "Plaivo $GITHUB_REF_NAME" --generate-notes
+          prev="$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          gh release create "$GITHUB_REF_NAME" --draft --title "Plaivo $GITHUB_REF_NAME" --generate-notes ${prev:+--notes-start-tag "$prev"}
           for channel in win osx; do
             dir=windows; [ "$channel" = osx ] && dir=macos
             vpk upload github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$GH_TOKEN" --channel "$channel" --outputDir "$dir" --tag "$GITHUB_REF_NAME" --releaseName "Plaivo $GITHUB_REF_NAME" --merge
