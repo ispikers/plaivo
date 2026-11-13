@@ -21,10 +21,21 @@ actions!(
         SelectAll,
         Home,
         End,
+        SelectHome,
+        SelectEnd,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordLeft,
+        DeleteWordRight,
+        DeleteToStart,
         Paste,
         Cut,
         Copy,
-        Submit
+        Submit,
+        Undo,
+        Redo
     ]
 );
 
@@ -48,11 +59,36 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("home", Home, ctx),
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("enter", Submit, ctx),
+        KeyBinding::new(if MAC { "cmd-z" } else { "ctrl-z" }, Undo, ctx),
+        KeyBinding::new(if MAC { "cmd-shift-z" } else { "ctrl-shift-z" }, Redo, ctx),
+    ]);
+    cx.bind_keys([
+        KeyBinding::new("shift-home", SelectHome, ctx),
+        KeyBinding::new("shift-end", SelectEnd, ctx),
     ]);
     if MAC {
         cx.bind_keys([
             KeyBinding::new("cmd-left", Home, ctx),
             KeyBinding::new("cmd-right", End, ctx),
+            KeyBinding::new("cmd-shift-left", SelectHome, ctx),
+            KeyBinding::new("cmd-shift-right", SelectEnd, ctx),
+            KeyBinding::new("cmd-backspace", DeleteToStart, ctx),
+            KeyBinding::new("alt-left", WordLeft, ctx),
+            KeyBinding::new("alt-right", WordRight, ctx),
+            KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
+            KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
+            KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
+            KeyBinding::new("alt-delete", DeleteWordRight, ctx),
+        ]);
+    } else {
+        cx.bind_keys([
+            KeyBinding::new("ctrl-y", Redo, ctx),
+            KeyBinding::new("ctrl-left", WordLeft, ctx),
+            KeyBinding::new("ctrl-right", WordRight, ctx),
+            KeyBinding::new("ctrl-shift-left", SelectWordLeft, ctx),
+            KeyBinding::new("ctrl-shift-right", SelectWordRight, ctx),
+            KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
+            KeyBinding::new("ctrl-delete", DeleteWordRight, ctx),
         ]);
     }
 }
@@ -60,6 +96,55 @@ pub fn bind_keys(cx: &mut App) {
 pub enum InputEvent {
     Changed(SharedString),
     Submit(SharedString),
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum EditKind {
+    Typing,
+    Deleting,
+    Other,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+struct Snapshot {
+    text: SharedString,
+    selection: Range<usize>,
+}
+
+#[derive(Default)]
+struct History {
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    last: Option<(EditKind, usize)>,
+}
+
+impl History {
+    const LIMIT: usize = 100;
+
+    // Typing or deleting that carries on from where the last such edit left the caret is one undo step.
+    fn record(
+        &mut self,
+        before: Snapshot,
+        kind: EditKind,
+        range: &Range<usize>,
+        caret_after: usize,
+    ) {
+        let continues = match (kind, self.last) {
+            (EditKind::Typing, Some((EditKind::Typing, caret))) => range.start == caret,
+            (EditKind::Deleting, Some((EditKind::Deleting, caret))) => {
+                range.end == caret || range.start == caret
+            }
+            _ => false,
+        };
+        if !continues {
+            self.undo.push(before);
+            if self.undo.len() > Self::LIMIT {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.last = (kind != EditKind::Other).then_some((kind, caret_after));
+    }
 }
 
 pub struct TextInput {
@@ -74,6 +159,7 @@ pub struct TextInput {
     scroll_x: Pixels,
     is_selecting: bool,
     masked: bool,
+    history: History,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -92,6 +178,7 @@ impl TextInput {
             scroll_x: px(0.),
             is_selecting: false,
             masked: false,
+            history: History::default(),
         }
     }
 
@@ -108,8 +195,39 @@ impl TextInput {
         self.content = text.to_owned().into();
         self.selected_range = text.len()..text.len();
         self.marked_range = None;
+        self.history = History::default();
         cx.emit(InputEvent::Changed(self.content.clone()));
         cx.notify();
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            text: self.content.clone(),
+            selection: self.selected_range.clone(),
+        }
+    }
+
+    fn restore(&mut self, to: Snapshot, cx: &mut Context<Self>) {
+        self.content = to.text;
+        self.selected_range = to.selection;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.history.last = None;
+        self.changed(cx);
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(previous) = self.history.undo.pop() {
+            self.history.redo.push(self.snapshot());
+            self.restore(previous, cx);
+        }
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(next) = self.history.redo.pop() {
+            self.history.undo.push(self.snapshot());
+            self.restore(next, cx);
+        }
     }
 
     fn changed(&mut self, cx: &mut Context<Self>) {
@@ -154,6 +272,61 @@ impl TextInput {
         self.move_to(self.content.len(), cx);
     }
 
+    fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx);
+    }
+
+    fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.word_start_before(self.cursor_offset()), cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.word_end_after(self.cursor_offset()), cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.word_start_before(self.cursor_offset()), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.word_end_after(self.cursor_offset()), cx);
+    }
+
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.word_start_before(self.cursor_offset()), cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.word_end_after(self.cursor_offset()), cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete_to_start(&mut self, _: &DeleteToStart, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(0, cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(InputEvent::Submit(self.content.clone()));
     }
@@ -179,12 +352,22 @@ impl TextInput {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus, cx);
-        self.is_selecting = true;
+        let index = self.index_for_mouse_position(event.position);
         if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
-        } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx)
+            self.is_selecting = true;
+            return self.select_to(index, cx);
         }
+        let range = match event.click_count {
+            0 | 1 => {
+                self.is_selecting = true;
+                return self.move_to(index, cx);
+            }
+            2 if !self.masked => word_at(&self.content, index),
+            _ => 0..self.content.len(),
+        };
+        self.is_selecting = false;
+        self.move_to(range.start, cx);
+        self.select_to(range.end, cx);
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
@@ -222,6 +405,7 @@ impl TextInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
+        self.history.last = None;
         cx.notify()
     }
 
@@ -290,6 +474,23 @@ impl TextInput {
     fn next_boundary(&self, offset: usize) -> usize {
         next_boundary(&self.content, offset)
     }
+
+    // A masked field is one word, so word jumps don't reveal where a password has spaces.
+    fn word_start_before(&self, offset: usize) -> usize {
+        if self.masked {
+            0
+        } else {
+            previous_word_start(&self.content, offset)
+        }
+    }
+
+    fn word_end_after(&self, offset: usize) -> usize {
+        if self.masked {
+            self.content.len()
+        } else {
+            next_word_end(&self.content, offset)
+        }
+    }
 }
 
 fn offset_from_utf16(text: &str, offset: usize) -> usize {
@@ -329,6 +530,40 @@ fn next_boundary(text: &str, offset: usize) -> usize {
     text.grapheme_indices(true)
         .find_map(|(idx, _)| (idx > offset).then_some(idx))
         .unwrap_or(text.len())
+}
+
+fn is_word(segment: &str) -> bool {
+    segment.chars().any(char::is_alphanumeric)
+}
+
+fn previous_word_start(text: &str, offset: usize) -> usize {
+    text.split_word_bound_indices()
+        .rev()
+        .find(|&(i, w)| i < offset && is_word(w))
+        .map_or(0, |(i, _)| i)
+}
+
+fn next_word_end(text: &str, offset: usize) -> usize {
+    text.split_word_bound_indices()
+        .map(|(i, w)| (i + w.len(), w))
+        .find(|&(end, w)| end > offset && is_word(w))
+        .map_or(text.len(), |(end, _)| end)
+}
+
+// The word under a double-click; at a word's end, the word rather than the space after it.
+fn word_at(text: &str, offset: usize) -> Range<usize> {
+    let segments: Vec<Range<usize>> = text
+        .split_word_bound_indices()
+        .map(|(i, w)| i..i + w.len())
+        .collect();
+    let here = segments.iter().find(|r| r.contains(&offset));
+    let before = segments.iter().find(|r| r.end == offset);
+    match (here, before) {
+        (Some(h), Some(b)) if !is_word(&text[h.clone()]) && is_word(&text[b.clone()]) => b.clone(),
+        (Some(h), _) => h.clone(),
+        (None, Some(b)) => b.clone(),
+        (None, None) => offset..offset,
+    }
 }
 
 fn marked_selection(start: usize, new_text: &str, selected_utf16: &Range<usize>) -> Range<usize> {
@@ -401,6 +636,20 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        // A composition was recorded when it started, so committing it isn't a step of its own.
+        if self.marked_range.is_none() {
+            let kind =
+                if new_text.is_empty() && next_boundary(&self.content, range.start) == range.end {
+                    EditKind::Deleting
+                } else if range.is_empty() && new_text.chars().count() == 1 {
+                    EditKind::Typing
+                } else {
+                    EditKind::Other
+                };
+            let before = self.snapshot();
+            self.history
+                .record(before, kind, &range, range.start + new_text.len());
+        }
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -422,6 +671,15 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        if self.marked_range.is_none() {
+            let before = self.snapshot();
+            self.history.record(
+                before,
+                EditKind::Other,
+                &range,
+                range.start + new_text.len(),
+            );
+        }
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -667,10 +925,21 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
+            .on_action(cx.listener(Self::delete_to_start))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -720,6 +989,81 @@ mod tests {
         let accent = "xe\u{301}";
         assert_eq!(previous_boundary(accent, accent.len()), 1);
         assert_eq!(next_boundary(accent, 1), accent.len());
+    }
+
+    #[test]
+    fn word_jumps_skip_spaces_and_punctuation() {
+        let text = "hello world,  foo";
+        assert_eq!(previous_word_start(text, text.len()), 14);
+        assert_eq!(previous_word_start(text, 14), 6);
+        assert_eq!(previous_word_start(text, 8), 6);
+        assert_eq!(previous_word_start(text, 3), 0);
+        assert_eq!(previous_word_start(text, 0), 0);
+        assert_eq!(next_word_end(text, 0), 5);
+        assert_eq!(next_word_end(text, 5), 11);
+        assert_eq!(next_word_end(text, 7), 11);
+        assert_eq!(next_word_end(text, 11), text.len());
+        assert_eq!(next_word_end(text, text.len()), text.len());
+        assert_eq!(previous_word_start("   ", 3), 0);
+        assert_eq!(next_word_end("   ", 0), 3);
+        let url = "http://host:32400";
+        assert_eq!(previous_word_start(url, url.len()), 12);
+        assert_eq!(previous_word_start(url, 12), 7);
+    }
+
+    fn snap(text: &'static str, caret: usize) -> Snapshot {
+        Snapshot {
+            text: text.into(),
+            selection: caret..caret,
+        }
+    }
+
+    #[test]
+    fn typing_and_deleting_coalesce_into_single_steps() {
+        let mut h = History::default();
+        h.record(snap("", 0), EditKind::Typing, &(0..0), 1);
+        h.record(snap("a", 1), EditKind::Typing, &(1..1), 2);
+        h.record(snap("ab", 2), EditKind::Typing, &(2..2), 3);
+        assert_eq!(h.undo, vec![snap("", 0)]);
+        h.record(snap("abc", 3), EditKind::Deleting, &(2..3), 2);
+        h.record(snap("ab", 2), EditKind::Deleting, &(1..2), 1);
+        assert_eq!(h.undo, vec![snap("", 0), snap("abc", 3)]);
+        h.record(snap("a", 1), EditKind::Other, &(0..1), 5);
+        h.record(snap("hello", 5), EditKind::Other, &(0..5), 0);
+        assert_eq!(h.undo.len(), 4);
+        h.redo.push(snap("x", 1));
+        h.record(snap("", 0), EditKind::Typing, &(0..0), 1);
+        assert!(h.redo.is_empty());
+    }
+
+    #[test]
+    fn typing_elsewhere_starts_a_new_step() {
+        let mut h = History::default();
+        h.record(snap("", 0), EditKind::Typing, &(0..0), 1);
+        h.record(snap("a", 1), EditKind::Typing, &(0..0), 1);
+        assert_eq!(h.undo.len(), 2);
+    }
+
+    #[test]
+    fn history_is_capped() {
+        let mut h = History::default();
+        for i in 0..History::LIMIT + 5 {
+            h.record(snap("", i), EditKind::Other, &(0..0), 0);
+        }
+        assert_eq!(h.undo.len(), History::LIMIT);
+        assert_eq!(h.undo[0], snap("", 5));
+    }
+
+    #[test]
+    fn double_click_picks_the_word() {
+        let text = "hello world, foo";
+        assert_eq!(word_at(text, 1), 0..5);
+        assert_eq!(word_at(text, 5), 0..5);
+        assert_eq!(word_at(text, 6), 6..11);
+        assert_eq!(word_at(text, 11), 6..11);
+        assert_eq!(word_at(text, text.len()), 13..16);
+        assert_eq!(word_at("a  b", 2), 1..3);
+        assert_eq!(word_at("", 0), 0..0);
     }
 
     #[test]
