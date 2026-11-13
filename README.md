@@ -57,6 +57,8 @@ Uninstalling keeps your sign-ins, settings and downloads, so reinstalling picks 
 
 ## Legal
 
+Plaivo is released under the [MIT License](LICENSE). The libmpv it ships is LGPL-2.1-or-later, built from source by `deps/build-libmpv.sh`.
+
 Third-party licenses are listed under Settings → About → Open-source licenses.
 
 Plaivo is not affiliated with Plex, Inc. or the Jellyfin project. Plaivo uses Trakt but is not endorsed or certified by Trakt.

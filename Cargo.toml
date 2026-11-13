@@ -5,6 +5,7 @@ members = [".", "crates/core", "crates/ffi", "crates/uniffi-bindgen", "xtask"]
 name = "plaivo"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 plaivo-core = { path = "crates/core" }
