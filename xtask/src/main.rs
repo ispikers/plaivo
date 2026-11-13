@@ -246,7 +246,7 @@ fn release(wanted: &str) -> anyhow::Result<()> {
             .filter(|id| !id.is_empty())
         })
         .context("the release workflow didn't start within 5 minutes")?;
-    run(Command::new("gh").args(["run", "watch", &run_id, "--repo", REPO, "--exit-status"]))?;
+    watch_run(&run_id)?;
 
     run(Command::new("gh").args(["release", "view", &tag, "--repo", REPO]))?;
     if confirm(&format!("Publish {tag} to everyone?"))? {
@@ -258,6 +258,40 @@ fn release(wanted: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+// `gh run watch` also exits non-zero on a passing GitHub API error (a 504), so ask the run itself before giving up.
+fn watch_run(run_id: &str) -> anyhow::Result<()> {
+    for _ in 0..10 {
+        if run(Command::new("gh").args(["run", "watch", run_id, "--repo", REPO, "--exit-status"]))
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let state = capture(Command::new("gh").args([
+            "run",
+            "view",
+            run_id,
+            "--repo",
+            REPO,
+            "--json",
+            "status,conclusion",
+            "--jq",
+            r#".status + " " + .conclusion"#,
+        ]))
+        .unwrap_or_default();
+        match state.split_once(' ') {
+            Some(("completed", "success")) => return Ok(()),
+            Some(("completed", conclusion)) => {
+                bail!("the release workflow finished with {conclusion}")
+            }
+            _ => {
+                println!("Lost the connection to GitHub; watching again…");
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        }
+    }
+    bail!("couldn't follow the release workflow; check it with: gh run view {run_id} --repo {REPO}")
 }
 
 fn bundle(release: bool, open: bool) -> anyhow::Result<PathBuf> {
