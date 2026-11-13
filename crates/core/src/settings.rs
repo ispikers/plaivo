@@ -262,7 +262,7 @@ impl Default for CardPrefs {
 
 impl CardPrefs {
     pub fn wide_hub(&self, h: &Hub) -> bool {
-        h.wide() && !(h.kind == "episode" && self.poster != EpisodePoster::Thumbnail)
+        h.wide() && (self.poster == EpisodePoster::Thumbnail || h.kind == "clip")
     }
 
     pub fn art<'a>(&self, it: &'a Item, wide: bool) -> &'a str {
@@ -556,6 +556,11 @@ mod tests {
             spoilers: true,
         };
         assert!(!season.wide_hub(&hub));
+        assert!(!season.wide_hub(&Hub {
+            id: "home.continue".into(),
+            kind: "mixed".into(),
+            ..Default::default()
+        }));
         assert_eq!(season.art(&ep, false), "/season");
         assert_eq!(season.text(&ep), ("Show".to_owned(), "Pilot".to_owned()));
         assert!(season.blur(&ep, "/ep") && !season.blur(&ep, "/season"));
