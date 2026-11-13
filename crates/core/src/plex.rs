@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::settings::CardPrefs;
 use crate::{first, jellyfin, join, store, watch_together};
@@ -1249,10 +1250,25 @@ impl Client {
         drop(tx);
         let mut results: Vec<Option<String>> = vec![None; conns.len()];
         let mut done = vec![false; conns.len()];
-        for (rank, uri) in rx {
-            results[rank] = uri;
-            done[rank] = true;
-            if let Some(best) = best_connection(&tiers, &done, &results) {
+        let mut grace_ends: Option<Instant> = None;
+        loop {
+            let next = match grace_ends {
+                Some(end) => rx.recv_timeout(end.saturating_duration_since(Instant::now())),
+                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            let best = match next {
+                Ok((rank, uri)) => {
+                    results[rank] = uri;
+                    done[rank] = true;
+                    if grace_ends.is_none() && results[rank].is_some() {
+                        grace_ends = Some(Instant::now() + BETTER_TIER_GRACE);
+                    }
+                    best_connection(&tiers, &done, &results)
+                }
+                Err(RecvTimeoutError::Timeout) => results.iter().position(Option::is_some),
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            if let Some(best) = best {
                 set_down(&res.client_identifier, false);
                 return Ok(Server {
                     name: res.name.clone(),
@@ -1274,6 +1290,8 @@ fn is_plex_direct_https(uri: &str) -> bool {
         .and_then(|rest| rest.split([':', '/']).next())
         .is_some_and(|host| host.ends_with(".plex.direct"))
 }
+
+const BETTER_TIER_GRACE: Duration = Duration::from_secs(1);
 
 fn best_connection<T: Ord>(
     tiers: &[T],
