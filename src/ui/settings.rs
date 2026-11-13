@@ -429,14 +429,27 @@ impl Plaivo {
                 .flex_col()
                 .gap(px(8.))
                 .children(CATEGORIES.map(|c| {
-                    nav_row(c.title(), c.icon(), c.title(), self.summary(c)).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            if c == Category::Audio {
-                                this.sync_languages(cx);
-                            }
-                            this.navigate(Nav::Settings(Some(c)), true, cx)
-                        },
-                    ))
+                    let entry = if c == Category::About && self.updates.attention() {
+                        row(c.title(), Some(c.icon()), c.title(), self.summary(c))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::tint(0.12)))
+                            .child(
+                                pill("about-restart-to-update", "Restart to update", None, true)
+                                    .occlude()
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.restart_to_update(cx)),
+                                    ),
+                            )
+                            .child(icon(Icon::ChevronRight, 22., theme::muted()))
+                    } else {
+                        nav_row(c.title(), c.icon(), c.title(), self.summary(c))
+                    };
+                    entry.on_click(cx.listener(move |this, _, _, cx| {
+                        if c == Category::Audio {
+                            this.sync_languages(cx);
+                        }
+                        this.navigate(Nav::Settings(Some(c)), true, cx)
+                    }))
                 })),
             Some(Category::General) => div()
                 .flex()
