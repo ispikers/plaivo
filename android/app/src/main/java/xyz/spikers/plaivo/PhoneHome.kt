@@ -82,7 +82,7 @@ fun PhoneHome(
     onSignOut: () -> Unit,
 ) {
     var refreshing by remember { mutableStateOf(false) }
-    val home = rememberHomeRows(server, refresh) { refreshing = false }
+    val home = rememberHomeRows(server, serversLoaded, refresh) { refreshing = false }
     val rows = home.rows
     val pull = {
         refreshing = true

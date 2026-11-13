@@ -85,7 +85,7 @@ fun HomeScreen(
     openRow: (MediaRow) -> Unit,
     openDownloads: () -> Unit,
 ) {
-    val home = rememberHomeRows(server, refresh)
+    val home = rememberHomeRows(server, serversLoaded, refresh)
     when {
         server == null ->
             Message(if (serversLoaded) "No reachable server" else "Loading…", openDownloads.takeIf { serversLoaded })
@@ -122,9 +122,11 @@ class HomeRows {
 }
 
 @Composable
-fun rememberHomeRows(server: ServerInfo?, refresh: Int, onLoaded: () -> Unit = {}): HomeRows {
+fun rememberHomeRows(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, onLoaded: () -> Unit = {}): HomeRows {
     val home = remember(server?.id) { HomeRows() }
-    LaunchedEffect(server?.id, refresh) {
+    var retriedAfterDiscovery by remember(server?.id, refresh) { mutableStateOf(false) }
+    LaunchedEffect(serversLoaded, home.error) { if (serversLoaded && home.error != null) retriedAfterDiscovery = true }
+    LaunchedEffect(server?.id, refresh, retriedAfterDiscovery) {
         if (server != null) {
             val id = server.id
             val others = io { core.servers() }.map { it.id }.filter { it != id }
