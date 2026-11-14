@@ -132,9 +132,6 @@ impl Plaivo {
             })
             .collect();
         section("Overrides")
-            .child(note(
-                "Use different languages for some libraries. The first match wins.",
-            ))
             .children(rows)
             .child(
                 nav_row(

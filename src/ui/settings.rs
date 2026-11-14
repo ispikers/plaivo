@@ -206,7 +206,6 @@ impl Plaivo {
             .child(up_next)
             .child(
                 section("Skip markers")
-                    .child(note("Button shows a skip button. Auto skips on its own."))
                     .child(skip_row(
                         "skip-intro",
                         "Intro",
@@ -273,7 +272,6 @@ impl Plaivo {
             )
             .child(
                 section("Default quality")
-                    .child(note("Used unless the file is already smaller."))
                     .children(self.choice_list(
                         "quality",
                         None,
@@ -287,9 +285,7 @@ impl Plaivo {
 
     fn render_library_manager(&mut self, cx: &mut Context<Self>) -> Div {
         let groups = self.sections_in_order(true);
-        let mut body = div().flex().flex_col().gap(px(28.)).child(note(
-            "Order and visibility are saved for each library on each server.",
-        ));
+        let mut body = div().flex().flex_col().gap(px(28.));
         for (server, rows) in groups {
             let last = rows.len().saturating_sub(1);
             body = body.child(section(server.to_owned()).children(
@@ -457,9 +453,6 @@ impl Plaivo {
                 .gap(px(28.))
                 .child(
                     section("Home server")
-                        .child(note(
-                            "Home shows Continue Watching and recommendations from this server.",
-                        ))
                         .children(self.server_rows(cx))
                         .when(self.servers.is_empty(), |d| {
                             d.child(note("No servers found."))
@@ -484,7 +477,6 @@ impl Plaivo {
             Some(Category::Shaders) => {
                 let choices = self.shader_choices(&self.settings.shader);
                 section("Default shader")
-                    .child(note("NVScaler turns itself off for HDR video."))
                     .children(self.choice_list(
                         "shader",
                         None,

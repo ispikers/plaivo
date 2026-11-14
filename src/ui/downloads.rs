@@ -334,7 +334,6 @@ impl Plaivo {
             .gap(px(28.))
             .child(
                 section("Location")
-                    .child(note("Only affects new downloads."))
                     .child(
                         row(
                             "download-dir",

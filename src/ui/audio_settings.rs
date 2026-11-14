@@ -1,7 +1,7 @@
 use crate::app::{Category, Choice, Nav, Plaivo};
 use crate::prefs::{self, LANGUAGES, LanguagePrefs, SubtitleMode};
 use crate::settings::{SUBTITLE_COLORS, Settings};
-use crate::ui::settings::{note, nudge};
+use crate::ui::settings::nudge;
 use crate::ui::theme::Icon;
 use crate::ui::widgets::{chip, nav_row, row, section, stepper};
 use gpui::{Context, Div, div, prelude::*, px};
@@ -117,7 +117,6 @@ impl Plaivo {
             })
             .collect::<Vec<_>>();
         let languages = section("Languages")
-            .child(note("Saved to your Plex and Jellyfin accounts."))
             .child(
                 nav_row("audio-language", Icon::Volume, "Audio language", audio).on_click(
                     cx.listener(|this, _, _, cx| {
@@ -146,7 +145,6 @@ impl Plaivo {
                 .child(div().flex().gap(px(6.)).children(modes)),
             );
         let style = section("Subtitle style")
-            .child(note("Styled ASS subtitles keep their own look."))
             .child(self.style_row(
                 "subtitle-size",
                 "Size",

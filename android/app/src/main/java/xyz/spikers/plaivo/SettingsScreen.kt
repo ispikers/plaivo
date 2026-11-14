@@ -412,7 +412,6 @@ fun SettingsScreen(
                         }
                 Category.General -> {
                     SectionTitle("Home server")
-                    Note("Home shows Continue Watching and recommendations from this server.")
                     servers.forEach { s ->
                         val selected = s.id == home?.id
                         SettingsRow(
@@ -444,7 +443,6 @@ fun SettingsScreen(
                     }
                 }
                 Category.Libraries -> {
-                    Note("Order and visibility are saved for each library on each server.")
                     val ids = libraries.map { it.id }
                     libraries
                         .groupBy { it.serverName }
@@ -600,7 +598,6 @@ fun SettingsScreen(
                         }
                     }
                     SectionTitle("Skip markers")
-                    Note("Button shows a skip button. Auto skips on its own.")
                     SettingsRow(
                         null,
                         "Intro",
@@ -635,7 +632,6 @@ fun SettingsScreen(
                         Value("${settings.seekLarge} s")
                     }
                     SectionTitle("Default quality")
-                    Note("Used unless the file is already smaller.")
                     val original = qualities.none { it.kbps.toInt() == quality }
                     SettingsRow(
                         null,
@@ -659,7 +655,6 @@ fun SettingsScreen(
                         }
                     }
                     SectionTitle("Overrides")
-                    Note("Use a different quality for some libraries. The first match wins.")
                     settings.playbackRules.forEachIndexed { i, r ->
                         SettingsRow(
                             Glyph.Sort,
@@ -744,7 +739,6 @@ fun SettingsScreen(
                     }
                 Category.PlaybackOverrideQuality ->
                     playbackDraft?.let { (index, r) ->
-                        Note("Used unless the file is already smaller.")
                         (listOf(null, 0u) + qualities.map { it.kbps }).forEachIndexed { i, kbps ->
                             val on = r.quality == kbps
                             SettingsRow(
@@ -761,7 +755,6 @@ fun SettingsScreen(
                     }
                 Category.AudioSubtitles -> {
                     SectionTitle("Languages")
-                    Note("Saved to your Plex and Jellyfin accounts.")
                     SettingsRow(
                         null,
                         "Audio language",
@@ -788,7 +781,6 @@ fun SettingsScreen(
                         Value(settings.subtitleMode.label)
                     }
                     SectionTitle("Overrides")
-                    Note("Use different languages for some libraries. The first match wins.")
                     settings.languageRules.forEachIndexed { i, r ->
                         SettingsRow(
                             Glyph.Sort,
@@ -812,7 +804,6 @@ fun SettingsScreen(
                         },
                     )
                     SectionTitle("Subtitle style")
-                    Note("Styled ASS subtitles keep their own look.")
                     SettingsRow(
                         null,
                         "Size",
@@ -954,7 +945,6 @@ fun SettingsScreen(
                     draft?.let { (index, r) ->
                         val subtitles = category == Category.OverrideSubtitles
                         val order = if (subtitles) r.subtitles else r.audio
-                        Note("Pick languages in order. The first one the video has is used.")
                         languages().forEachIndexed { i, l ->
                             val at = order.indexOf(l.code)
                             SettingsRow(
@@ -997,7 +987,6 @@ fun SettingsScreen(
                     }
                 }
                 Category.Services -> {
-                    Note("Syncs what you watch to these services.")
                     Service.entries.forEach { s ->
                         val status = trackers.getValue(s)
                         SectionTitle(s.title)
@@ -1048,7 +1037,6 @@ fun SettingsScreen(
                 }
                 Category.WatchTogether -> {
                     SectionTitle("Display name")
-                    Note("Leave empty to use this TV's name.")
                     var name by remember { mutableStateOf(settings.watchName) }
                     Field(
                         name,
@@ -1063,7 +1051,6 @@ fun SettingsScreen(
                         Modifier.takeFocus(true),
                     )
                     SectionTitle("Relay")
-                    Note("Everyone in a room must use the same relay. Applies from the next room you join.")
                     var custom by remember { mutableStateOf(settings.watchRelay.isNotBlank()) }
                     SettingsRow(
                         Glyph.Link,
@@ -1095,7 +1082,6 @@ fun SettingsScreen(
                 }
                 Category.Downloads -> {
                     SectionTitle("Location")
-                    Note("Uninstalling Plaivo deletes your downloads.")
                     val root = DownloadQueue.root
                     val free by produceState<ULong?>(null) { value = io { freeSpace(root) } }
                     SettingsRow(Glyph.Download, "Download folder", root.absolutePath, Modifier.takeFocus(true)) {

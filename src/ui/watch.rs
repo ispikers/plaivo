@@ -332,12 +332,10 @@ impl Plaivo {
             .gap(px(28.))
             .child(
                 section("Display name")
-                    .child(note("Leave empty to use your Plex or Jellyfin name."))
                     .child(self.field("watch-name", &name, window, cx)),
             )
             .child(
                 section("Relay")
-                    .child(note("Everyone in a room must use the same relay."))
                     .child(
                         div()
                             .flex()
@@ -356,8 +354,5 @@ impl Plaivo {
                             })
                     }),
             )
-            .child(note(
-                "Changes apply the next time you create or join a room.",
-            ))
     }
 }

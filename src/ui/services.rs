@@ -1,7 +1,7 @@
 use crate::app::{Plaivo, open_url, poll_until};
 use crate::plex::Item;
 use crate::ui::player::spinner;
-use crate::ui::settings::{note, toggle_row};
+use crate::ui::settings::toggle_row;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{backdrop, floating, pill, row, section, shadow};
 use gpui::{
@@ -451,9 +451,6 @@ impl Plaivo {
             .flex()
             .flex_col()
             .gap(px(28.))
-            .child(note(
-                "Anime is matched to MyAnimeList by its TVDB, TMDB or AniDB ID.",
-            ))
             .children(Service::ALL.map(|s| self.render_service(s, cx)))
     }
 }
