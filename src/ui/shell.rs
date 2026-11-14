@@ -1,10 +1,12 @@
 use crate::app::{Choice, Nav, Page, Plaivo, Status};
-use crate::menu;
+use crate::ui::input;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, shadow};
+use crate::{keymap, menu};
 use gpui::{
-    AnyElement, AnyView, Context, ElementId, Entity, EventEmitter, FontWeight, Hsla, KeyDownEvent,
-    KeyUpEvent, SharedString, StyleRefinement, Subscription, Window, div, prelude::*, px, rgb,
+    Action, AnyElement, AnyView, Context, ElementId, Entity, EventEmitter, FontWeight, Hsla,
+    KeyDownEvent, KeyUpEvent, SharedString, StyleRefinement, Subscription, Window, div, prelude::*,
+    px, rgb,
 };
 use std::time::{Duration, Instant};
 
@@ -48,11 +50,23 @@ impl Root {
     ) -> impl Fn(&mut Self, &E, &mut Window, &mut Context<Self>) {
         move |this, ev, window, cx| this.app.update(cx, |app, cx| f(app, ev, window, cx))
     }
+
+    fn player<A: Action>(
+        f: fn(&mut Plaivo, &mut Window, &mut Context<Plaivo>),
+    ) -> impl Fn(&mut Self, &A, &mut Window, &mut Context<Self>) {
+        move |this, _, window, cx| {
+            this.app.update(cx, |app, cx| {
+                app.wake_controls(cx);
+                f(app, window, cx);
+                cx.notify();
+            })
+        }
+    }
 }
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (focus, mini, overlays, toast) = self.app.update(cx, |app, cx| {
+        let (page, focus, mini, overlays, toast) = self.app.update(cx, |app, cx| {
             if app.start_frame(window) {
                 let id = cx.entity_id();
                 window.on_next_frame(move |_, cx| cx.notify(id));
@@ -68,8 +82,13 @@ impl Render for Root {
                 .toast
                 .clone()
                 .map(|msg| app.render_toast(msg, lift).into_any_element());
-            (app.focus.clone(), mini, overlays, toast)
+            (app.page, app.focus.clone(), mini, overlays, toast)
         });
+        let context = match page {
+            Page::Player => Some(keymap::PLAYER),
+            Page::Logs => Some(keymap::LOGS),
+            _ => None,
+        };
         div()
             .id("root")
             .size_full()
@@ -80,8 +99,55 @@ impl Render for Root {
             .text_color(theme::text())
             .text_size(px(14.))
             .track_focus(&focus)
+            .when_some(context, |d, c| d.key_context(c))
             .on_key_down(cx.listener(Self::on_app(Plaivo::on_key)))
             .on_key_up(cx.listener(Self::on_app(Plaivo::on_key_up)))
+            .on_action(cx.listener(Self::on_app(Plaivo::cancel)))
+            .when(page == Page::Player, |d| {
+                use keymap::*;
+                d.on_action(
+                    cx.listener(Self::player::<TogglePause>(|app, _, _| app.toggle_pause())),
+                )
+                .on_action(cx.listener(Self::player::<SeekBack>(|app, _, _| {
+                    app.seek_by(-app.seek_step(false))
+                })))
+                .on_action(cx.listener(Self::player::<SeekForward>(|app, _, _| {
+                    app.seek_by(app.seek_step(false))
+                })))
+                .on_action(cx.listener(Self::player::<SeekBackLarge>(|app, _, _| {
+                    app.seek_by(-app.seek_step(true))
+                })))
+                .on_action(cx.listener(Self::player::<SeekForwardLarge>(|app, _, _| {
+                    app.seek_by(app.seek_step(true))
+                })))
+                .on_action(cx.listener(Self::player::<VolumeUp>(|app, _, cx| {
+                    app.nudge_volume(5., cx)
+                })))
+                .on_action(cx.listener(Self::player::<VolumeDown>(|app, _, cx| {
+                    app.nudge_volume(-5., cx)
+                })))
+                .on_action(
+                    cx.listener(Self::player::<ToggleMute>(|app, _, cx| app.toggle_mute(cx))),
+                )
+                .on_action(cx.listener(Self::player::<SkipMarker>(|app, _, _| app.skip_marker())))
+                .on_action(cx.listener(Self::player::<NextItem>(|app, _, cx| {
+                    app.play_neighbor(1, cx)
+                })))
+                .on_action(cx.listener(Self::player::<PreviousItem>(|app, _, cx| {
+                    app.play_neighbor(-1, cx)
+                })))
+            })
+            .when(page == Page::Logs, |d| {
+                d.on_action(cx.listener(Self::on_app(|app, _: &input::Copy, _, cx| {
+                    app.copy_logs(cx)
+                })))
+                .on_action(cx.listener(Self::on_app(
+                    |app, _: &input::SelectAll, _, cx| {
+                        app.log_selection = Some((0, crate::logging::len().saturating_sub(1)));
+                        cx.notify();
+                    },
+                )))
+            })
             .on_action(cx.listener(|this, _: &menu::OpenSettings, _, cx| {
                 this.app.update(cx, |app, cx| {
                     if !matches!(app.page, Page::Splash | Page::Auth) {
@@ -142,72 +208,37 @@ impl Plaivo {
         chrome && self.player.mini && self.playing()
     }
 
-    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if ev.keystroke.key == "escape" && self.close_overlays() {
-            cx.stop_propagation();
+    fn sub_page(&self) -> bool {
+        match self.page {
+            Page::Detail | Page::HubList | Page::Licenses | Page::Logs => true,
+            Page::Settings => self.settings_page.is_some(),
+            Page::Downloads => self.offline_view.is_some(),
+            Page::Library => matches!(self.nav.last(), Some(Nav::Collection(..))),
+            Page::AddServer => self.nav.len() > 1 && !self.add_server_standalone(),
+            _ => false,
+        }
+    }
+
+    fn seek_step(&self, large: bool) -> f64 {
+        if large {
+            self.settings.seek_large as f64
+        } else {
+            self.settings.seek_small as f64
+        }
+    }
+
+    fn nudge_volume(&mut self, delta: f64, cx: &mut Context<Self>) {
+        self.set_volume(self.player.volume + delta);
+        self.hint_volume(cx);
+    }
+
+    fn cancel(&mut self, _: &keymap::Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.close_overlays() {
             return cx.notify();
         }
-        if self.page == Page::Logs {
-            match ev.keystroke.key.as_str() {
-                "escape" if self.log_selection.is_some() => {
-                    self.log_selection = None;
-                    return cx.notify();
-                }
-                "c" if ev.keystroke.modifiers.secondary(cx) => return self.copy_logs(cx),
-                "a" if ev.keystroke.modifiers.secondary(cx) => {
-                    self.log_selection = Some((0, crate::logging::len().saturating_sub(1)));
-                    return cx.notify();
-                }
-                _ => {}
-            }
-        }
-        if self.page != Page::Player {
-            let sub_page = match self.page {
-                Page::Detail | Page::HubList | Page::Licenses | Page::Logs => true,
-                Page::Settings => self.settings_page.is_some(),
-                Page::Downloads => self.offline_view.is_some(),
-                Page::Library => matches!(self.nav.last(), Some(Nav::Collection(..))),
-                Page::AddServer => self.nav.len() > 1 && !self.add_server_standalone(),
-                _ => false,
-            };
-            if ev.keystroke.key == "escape" && sub_page {
-                self.back(cx);
-            }
-            return;
-        }
-        self.wake_controls(cx);
-        match ev.keystroke.key.as_str() {
-            "space" if ev.is_held => {
-                if self.view.space_down {
-                    self.start_boost();
-                }
-            }
-            "space" => self.view.space_down = true,
-            "k" => self.toggle_pause(),
-            "left" | "right" => {
-                let step = if ev.keystroke.modifiers.shift {
-                    self.settings.seek_large
-                } else {
-                    self.settings.seek_small
-                } as f64;
-                self.seek_by(if ev.keystroke.key == "left" {
-                    -step
-                } else {
-                    step
-                });
-            }
-            "up" | "down" => {
-                self.set_volume(
-                    self.player.volume + if ev.keystroke.key == "up" { 5. } else { -5. },
-                );
-                self.hint_volume(cx);
-            }
-            "m" => self.toggle_mute(cx),
-            "f" => window.toggle_fullscreen(),
-            "s" => self.skip_marker(),
-            "n" => self.play_neighbor(1, cx),
-            "p" => self.play_neighbor(-1, cx),
-            "escape" => {
+        match self.page {
+            Page::Player => {
+                self.wake_controls(cx);
                 if self.player.panel.is_some() {
                     self.player.panel = None;
                 } else if window.is_fullscreen() {
@@ -218,7 +249,26 @@ impl Plaivo {
                     self.minimize_player(cx);
                 }
             }
+            Page::Logs if self.log_selection.is_some() => self.log_selection = None,
+            _ if self.sub_page() => self.back(cx),
             _ => return,
+        }
+        cx.notify();
+    }
+
+    // Space stays a raw key: tap pauses on release and hold boosts, which a binding can't express.
+    fn on_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.page != Page::Player {
+            return;
+        }
+        self.wake_controls(cx);
+        if ev.keystroke.key != "space" {
+            return;
+        }
+        if !ev.is_held {
+            self.view.space_down = true;
+        } else if self.view.space_down {
+            self.start_boost();
         }
         cx.stop_propagation();
         cx.notify();

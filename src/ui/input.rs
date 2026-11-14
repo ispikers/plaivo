@@ -1,8 +1,8 @@
 use crate::ui::theme;
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
     fill, point, prelude::*, px, relative, size,
 };
@@ -39,59 +39,8 @@ actions!(
     ]
 );
 
-const CONTEXT: &str = "TextInput";
-const MAC: bool = cfg!(target_os = "macos");
+pub const CONTEXT: &str = "TextInput";
 const CARET: f32 = 2.;
-
-pub fn bind_keys(cx: &mut App) {
-    let ctx = Some(CONTEXT);
-    cx.bind_keys([
-        KeyBinding::new("backspace", Backspace, ctx),
-        KeyBinding::new("delete", Delete, ctx),
-        KeyBinding::new("left", Left, ctx),
-        KeyBinding::new("right", Right, ctx),
-        KeyBinding::new("shift-left", SelectLeft, ctx),
-        KeyBinding::new("shift-right", SelectRight, ctx),
-        KeyBinding::new(if MAC { "cmd-a" } else { "ctrl-a" }, SelectAll, ctx),
-        KeyBinding::new(if MAC { "cmd-v" } else { "ctrl-v" }, Paste, ctx),
-        KeyBinding::new(if MAC { "cmd-c" } else { "ctrl-c" }, Copy, ctx),
-        KeyBinding::new(if MAC { "cmd-x" } else { "ctrl-x" }, Cut, ctx),
-        KeyBinding::new("home", Home, ctx),
-        KeyBinding::new("end", End, ctx),
-        KeyBinding::new("enter", Submit, ctx),
-        KeyBinding::new(if MAC { "cmd-z" } else { "ctrl-z" }, Undo, ctx),
-        KeyBinding::new(if MAC { "cmd-shift-z" } else { "ctrl-shift-z" }, Redo, ctx),
-    ]);
-    cx.bind_keys([
-        KeyBinding::new("shift-home", SelectHome, ctx),
-        KeyBinding::new("shift-end", SelectEnd, ctx),
-    ]);
-    if MAC {
-        cx.bind_keys([
-            KeyBinding::new("cmd-left", Home, ctx),
-            KeyBinding::new("cmd-right", End, ctx),
-            KeyBinding::new("cmd-shift-left", SelectHome, ctx),
-            KeyBinding::new("cmd-shift-right", SelectEnd, ctx),
-            KeyBinding::new("cmd-backspace", DeleteToStart, ctx),
-            KeyBinding::new("alt-left", WordLeft, ctx),
-            KeyBinding::new("alt-right", WordRight, ctx),
-            KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
-            KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
-            KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
-            KeyBinding::new("alt-delete", DeleteWordRight, ctx),
-        ]);
-    } else {
-        cx.bind_keys([
-            KeyBinding::new("ctrl-y", Redo, ctx),
-            KeyBinding::new("ctrl-left", WordLeft, ctx),
-            KeyBinding::new("ctrl-right", WordRight, ctx),
-            KeyBinding::new("ctrl-shift-left", SelectWordLeft, ctx),
-            KeyBinding::new("ctrl-shift-right", SelectWordRight, ctx),
-            KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
-            KeyBinding::new("ctrl-delete", DeleteWordRight, ctx),
-        ]);
-    }
-}
 
 pub enum InputEvent {
     Changed(SharedString),

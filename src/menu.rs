@@ -1,5 +1,5 @@
 use crate::ui::input;
-use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, actions};
+use gpui::{App, Menu, MenuItem, OsAction, SystemMenuType, actions};
 
 actions!(
     plaivo,
@@ -23,14 +23,6 @@ pub fn install(cx: &mut App) {
         cx.hide();
         cx.quit();
     });
-    cx.bind_keys([
-        KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("cmd-h", Hide, None),
-        KeyBinding::new("alt-cmd-h", HideOthers, None),
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
-        KeyBinding::new("cmd-m", Minimize, None),
-    ]);
     cx.set_menus([
         Menu::new("Plaivo").items([
             MenuItem::action("Settings…", OpenSettings),
