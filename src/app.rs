@@ -2410,29 +2410,7 @@ impl Plaivo {
         let who = name.clone();
         self.load(
             cx,
-            move |c| {
-                if srv.id == DISCOVER_ID {
-                    return Ok(std::thread::scope(|s| {
-                        let info = s.spawn(|| srv.discover_person(c, &id));
-                        let items = plex::person_everywhere(&servers, c, &who, &id);
-                        (info.join().unwrap_or_default(), items)
-                    }));
-                }
-                let (info, items) = std::thread::scope(|s| {
-                    let info = s.spawn(|| srv.person(c, &id, discover.as_ref()));
-                    (info.join(), srv.person_items(c, &id, 0, 200, false))
-                });
-                let info = match info {
-                    Ok(Ok(info)) => info,
-                    Ok(Err(e)) => {
-                        log::debug!("person {id}: {e}");
-                        Default::default()
-                    }
-                    Err(_) => Default::default(),
-                };
-                let items = items?.0.into_iter().map(|it| (srv.id.clone(), it));
-                Ok((info, items.collect()))
-            },
+            move |c| plex::person_page(&srv, c, &id, &who, discover.as_ref(), &servers),
             move |this, r, cx| {
                 if this.detail_id != wanted {
                     return;

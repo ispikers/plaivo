@@ -210,6 +210,7 @@ pub struct Rating {
 
 #[derive(uniffi::Record)]
 pub struct CastMember {
+    pub id: String,
     pub name: String,
     pub role: String,
     pub image: Option<String>,
@@ -246,6 +247,8 @@ pub struct Detail {
     pub season: Option<String>,
     pub watched: bool,
     pub trailer_key: Option<String>,
+    pub photo: Option<String>,
+    pub rows: Vec<Row>,
 }
 
 #[derive(uniffi::Record)]
@@ -607,6 +610,14 @@ pub struct Plaivo {
 }
 
 impl Plaivo {
+    fn live_servers(&self) -> Vec<Server> {
+        let home = self.settings.lock().unwrap().home_server.clone();
+        let mut servers = self.account.lock().unwrap().all_servers();
+        servers.retain(|s| !plex::is_down(&s.id));
+        servers.sort_by_key(|s| s.id != home);
+        servers
+    }
+
     fn card_prefs(&self) -> CardPrefs {
         self.settings.lock().unwrap().card_prefs()
     }
@@ -1206,6 +1217,7 @@ impl Plaivo {
                 .iter()
                 .take(40)
                 .map(|p| CastMember {
+                    id: p.id.clone(),
                     name: p.tag.clone(),
                     role: p.role.clone(),
                     image: image(&p.thumb, 300, 300),
@@ -1230,6 +1242,102 @@ impl Plaivo {
                 .collect(),
             watched: it.watched(),
             trailer_key: it.trailer().map(|t| t.rating_key.clone()),
+            photo: None,
+            rows: Vec::new(),
+        })
+    }
+
+    pub fn person(&self, server_id: String, id: String, name: String, cached: bool) -> R<Detail> {
+        let srv = self.server(&server_id)?;
+        let ctx = Ctx::new(
+            self.client.clone(),
+            if cached {
+                Source::Cache
+            } else {
+                Source::Network
+            },
+        );
+        let discover = self.server(DISCOVER_ID).ok();
+        let servers = self.live_servers();
+        let matched: &[Server] = if server_id == DISCOVER_ID {
+            &servers
+        } else {
+            &[]
+        };
+        let (info, items) = plex::person_page(&srv, &ctx, &id, &name, discover.as_ref(), matched)?;
+        let prefs = self.card_prefs();
+        let mut keys = HashSet::new();
+        let library: Vec<Card> = items
+            .iter()
+            .filter(|(s, it)| keys.insert((s.clone(), it.rating_key.clone())))
+            .filter_map(|(s, it)| {
+                let owner = servers.iter().chain([&srv]).find(|x| x.id == *s)?;
+                Some(card(owner, it, false, &prefs))
+            })
+            .collect();
+        let mut keys = HashSet::new();
+        let known_for: Vec<Card> = match &discover {
+            Some(d) => info
+                .known_for
+                .iter()
+                .filter(|it| keys.insert(it.rating_key.clone()))
+                .map(|it| card(d, it, false, &prefs))
+                .collect(),
+            None => Vec::new(),
+        };
+        let backdrop = library
+            .iter()
+            .chain(&known_for)
+            .find_map(|c| c.backdrop.clone());
+        let row = |title: &str, cards: Vec<Card>| Row {
+            key: String::new(),
+            title: title.into(),
+            resume: false,
+            wide: false,
+            cards,
+        };
+        Ok(Detail {
+            server: server_id,
+            key: id,
+            kind: "person".into(),
+            title: name,
+            eyebrow: String::new(),
+            logo: None,
+            backdrop,
+            chips: Vec::new(),
+            ratings: Vec::new(),
+            genres: Vec::new(),
+            summary: info.summary,
+            play_key: String::new(),
+            play_label: String::new(),
+            progress: 0.,
+            media_line: String::new(),
+            info: [
+                ("Born", info.born),
+                ("Died", info.died),
+                ("Birthplace", info.birthplace),
+            ]
+            .into_iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(label, value)| InfoLine {
+                label: label.into(),
+                value,
+            })
+            .collect(),
+            cast: Vec::new(),
+            extras: Vec::new(),
+            seasons: Vec::new(),
+            season: None,
+            watched: false,
+            trailer_key: None,
+            photo: (!info.thumb.is_empty()).then(|| srv.image_url(&info.thumb, 400, 600)),
+            rows: [
+                row("Media in Library", library),
+                row("Known For", known_for),
+            ]
+            .into_iter()
+            .filter(|r| !r.cards.is_empty())
+            .collect(),
         })
     }
 
@@ -1719,10 +1827,7 @@ impl Plaivo {
             .or_else(|_| {
                 discover.metadata(&Ctx::new(self.client.clone(), Source::Network), &key)
             })?;
-        let home = self.settings.lock().unwrap().home_server.clone();
-        let mut servers = self.account.lock().unwrap().all_servers();
-        servers.retain(|s| !plex::is_down(&s.id));
-        servers.sort_by_key(|s| s.id != home);
+        let servers = self.live_servers();
         let prefs = self.card_prefs();
         Ok(
             plaivo_core::watch_together::find_owned(&it, &servers, &self.client).and_then(

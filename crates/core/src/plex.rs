@@ -999,6 +999,37 @@ pub fn person_everywhere(
         .collect()
 }
 
+pub fn person_page(
+    srv: &Server,
+    c: &Ctx,
+    id: &str,
+    name: &str,
+    discover: Option<&Server>,
+    servers: &[Server],
+) -> R<(PersonInfo, Vec<(String, Item)>)> {
+    if srv.id == DISCOVER_ID {
+        return Ok(std::thread::scope(|s| {
+            let info = s.spawn(|| srv.discover_person(c, id));
+            let items = person_everywhere(servers, c, name, id);
+            (info.join().unwrap_or_default(), items)
+        }));
+    }
+    let (info, items) = std::thread::scope(|s| {
+        let info = s.spawn(|| srv.person(c, id, discover));
+        (info.join(), srv.person_items(c, id, 0, 200, false))
+    });
+    let info = match info {
+        Ok(Ok(info)) => info,
+        Ok(Err(e)) => {
+            log::debug!("person {id}: {e}");
+            Default::default()
+        }
+        Err(_) => Default::default(),
+    };
+    let items = items?.0.into_iter().map(|it| (srv.id.clone(), it));
+    Ok((info, items.collect()))
+}
+
 pub fn is_down(server_id: &str) -> bool {
     DOWN.lock()
         .unwrap_or_else(|e| e.into_inner())

@@ -78,6 +78,7 @@ import uniffi.plaivo_ffi.discoverId
 
 private val rowShape = RoundedCornerShape(10.dp)
 private val TV_WIDTH = 960.dp
+private const val SUMMARY_LINES = 4
 
 private fun Detail.card(key: String = this.key) =
     MediaCard(
@@ -102,6 +103,8 @@ fun DetailScreen(
     refresh: Int,
     open: (MediaCard) -> Unit,
     openRow: (MediaRow) -> Unit,
+    openPerson: (server: String, id: String, name: String) -> Unit,
+    person: String? = null,
     onChanged: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -114,9 +117,11 @@ fun DetailScreen(
     var episodesOf by remember { mutableStateOf<String?>(null) }
     var related by remember { mutableStateOf<List<MediaRow>>(emptyList()) }
     val focus = remember { FocusRequester() }
+    fun fetch(cached: Boolean) =
+        if (person != null) core.person(server, key, person, cached) else core.detail(server, key, cached)
     LaunchedEffect(refresh) {
-        if (detail == null) io { runCatching { core.detail(server, key, true) } }.onSuccess { detail = it }
-        io { runCatching { core.detail(server, key, false) } }
+        if (detail == null) io { runCatching { fetch(true) } }.onSuccess { detail = it }
+        io { runCatching { fetch(false) } }
             .onSuccess {
                 detail = it
                 error = null
@@ -141,6 +146,7 @@ fun DetailScreen(
     LaunchedEffect(d != null) { if (d != null && !touch) runCatching { focus.requestFocus() } }
     if (d == null) return Message(error ?: "Loading…")
     val library = remember(d.server) { d.server != discoverId() }
+    val isPerson = d.kind == "person"
     fun setWatched(on: Boolean) =
         scope.launch {
             val result = io {
@@ -174,20 +180,21 @@ fun DetailScreen(
                     Column(Modifier.padding(horizontal = edge), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (d.eyebrow.isNotEmpty())
                             Text(d.eyebrow, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted)
-                        Title(d)
+                        Heading(d)
                         Badges(d)
                         if (d.playKey.isNotEmpty())
                             PlayButton(d.playLabel, d.progress, Modifier.padding(top = 6.dp).fillMaxWidth()) {
                                 play(d.card(d.playKey))
                             }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            RoundActions(d, library, {}, Modifier, { setWatched(!d.watched) })
-                            Spacer(Modifier.weight(1f))
-                            MediaLine(d)
-                        }
+                        if (!isPerson)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                RoundActions(d, library, {}, Modifier, { setWatched(!d.watched) })
+                                Spacer(Modifier.weight(1f))
+                                MediaLine(d)
+                            }
                         if (d.info.isNotEmpty())
                             Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 InfoRows(d)
@@ -241,27 +248,28 @@ fun DetailScreen(
                     ) {
                         if (d.eyebrow.isNotEmpty())
                             Text(d.eyebrow, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted)
-                        Title(d)
+                        Heading(d)
                         Badges(d)
-                        Row(
-                            Modifier.padding(top = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            if (d.playKey.isNotEmpty())
-                                PlayButton(d.playLabel, d.progress, Modifier.focusRequester(focus)) {
-                                    play(d.card(d.playKey))
-                                }
-                            RoundActions(
-                                d,
-                                library,
-                                { hint = it },
-                                if (d.playKey.isEmpty()) Modifier.focusRequester(focus) else Modifier,
-                                { setWatched(!d.watched) },
-                            )
-                            Text(hint, fontSize = 13.sp, color = Palette.muted, modifier = Modifier.weight(1f))
-                            MediaLine(d)
-                        }
+                        if (!isPerson)
+                            Row(
+                                Modifier.padding(top = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                if (d.playKey.isNotEmpty())
+                                    PlayButton(d.playLabel, d.progress, Modifier.focusRequester(focus)) {
+                                        play(d.card(d.playKey))
+                                    }
+                                RoundActions(
+                                    d,
+                                    library,
+                                    { hint = it },
+                                    if (d.playKey.isEmpty()) Modifier.focusRequester(focus) else Modifier,
+                                    { setWatched(!d.watched) },
+                                )
+                                Text(hint, fontSize = 13.sp, color = Palette.muted, modifier = Modifier.weight(1f))
+                                MediaLine(d)
+                            }
                         if (!sideInfo && d.info.isNotEmpty())
                             Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 InfoRows(d)
@@ -271,15 +279,21 @@ fun DetailScreen(
             }
         if (d.summary.isNotEmpty())
             item(key = "overview") {
+                var expanded by remember { mutableStateOf(false) }
+                var long by remember { mutableStateOf(false) }
                 Column(Modifier.padding(horizontal = edge)) {
-                    SectionTitle("Overview", top = 0.dp)
+                    SectionTitle(if (isPerson) "Biography" else "Overview", top = 0.dp)
                     Text(
                         d.summary,
                         fontSize = 16.sp,
                         lineHeight = 25.sp,
                         color = Palette.text,
+                        maxLines = if (expanded) Int.MAX_VALUE else SUMMARY_LINES,
+                        overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { if (!expanded) long = it.hasVisualOverflow },
                         modifier = Modifier.widthIn(max = 900.dp),
                     )
+                    if (long || expanded) TextAction(if (expanded) "Less" else "More") { expanded = !expanded }
                 }
             }
         if (d.kind == "show" && d.seasons.isNotEmpty()) {
@@ -295,19 +309,82 @@ fun DetailScreen(
             }
             items(episodes, key = { "ep/${it.key}" }) { EpisodeRow(it, edge) { play(it) } }
         }
-        if (d.cast.isNotEmpty()) item(key = "cast") { Shelf("Cast", edge) { items(d.cast) { CastCard(it) } } }
+        if (d.cast.isNotEmpty())
+            item(key = "cast") {
+                Shelf("Cast", edge) {
+                    items(d.cast) { p ->
+                        CastCard(
+                            p,
+                            if (p.id.isEmpty()) null
+                            else {
+                                { openPerson(d.server, p.id, p.name) }
+                            },
+                        )
+                    }
+                }
+            }
         if (d.extras.isNotEmpty())
             item(key = "extras") {
                 Shelf("Trailers & Extras", edge) {
                     items(d.extras, key = { it.key }) { MediaTile(it, wide = true) { play(it) } }
                 }
             }
-        itemsIndexed(related, key = { i, _ -> "related/$i" }) { _, row ->
+        itemsIndexed(if (isPerson) d.rows else related, key = { i, _ -> "related/$i" }) { _, row ->
             Shelf(row.title, edge) {
                 items(row.cards, key = { "${it.server}/${it.key}" }) { MediaTile(it, wide = false) { open(it) } }
                 if (row.key.isNotEmpty()) item(key = "see-all") { SeeAll(wide = false, dim = false) { openRow(row) } }
             }
         }
+    }
+}
+
+@Composable
+private fun Heading(d: Detail) {
+    if (d.kind != "person") return Title(d)
+    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        Box(
+            Modifier.width(120.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(12.dp)).background(Palette.surface),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (d.photo != null)
+                AsyncImage(
+                    model = d.photo,
+                    contentDescription = d.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            else GlyphIcon(Glyph.Person, 48.dp, Palette.muted)
+        }
+        Title(d)
+    }
+}
+
+@Composable
+private fun TextAction(label: String, onClick: () -> Unit) {
+    val content: @Composable BoxScope.() -> Unit = {
+        Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 14.dp))
+    }
+    val modifier = Modifier.padding(top = 8.dp).height(32.dp)
+    if (LocalTouch.current)
+        return Tap(onClick, modifier, CircleShape, Palette.tint(0.08f), Palette.text, content = content)
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = ClickableSurfaceDefaults.shape(CircleShape),
+        colors =
+            ClickableSurfaceDefaults.colors(
+                containerColor = Palette.tint(0.08f),
+                contentColor = Palette.text,
+                focusedContainerColor = Palette.tint(0.16f),
+                focusedContentColor = Palette.text,
+            ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        border =
+            ClickableSurfaceDefaults.border(
+                focusedBorder = Border(BorderStroke(2.dp, Palette.text), inset = (-3).dp, shape = CircleShape)
+            ),
+    ) {
+        Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.Center, content = content)
     }
 }
 
@@ -614,7 +691,7 @@ private fun Shelf(title: String, edge: Dp, content: LazyListScope.() -> Unit) {
 }
 
 @Composable
-private fun CastCard(p: CastMember) {
+private fun CastCard(p: CastMember, onClick: (() -> Unit)?) {
     val shape = RoundedCornerShape(8.dp)
     Column(Modifier.width(120.dp)) {
         val photo: @Composable BoxScope.() -> Unit = {
@@ -629,10 +706,13 @@ private fun CastCard(p: CastMember) {
                 else GlyphIcon(Glyph.Person, 48.dp, Palette.muted)
             }
         }
-        if (LocalTouch.current) Box(Modifier.size(120.dp).clip(shape).background(Palette.surface), content = photo)
-        else
+        if (LocalTouch.current) {
+            if (onClick != null)
+                Tap(onClick, Modifier.size(120.dp), shape, Palette.surface, Palette.text, content = photo)
+            else Box(Modifier.size(120.dp).clip(shape).background(Palette.surface), content = photo)
+        } else
             Surface(
-                onClick = {},
+                onClick = onClick ?: {},
                 modifier = Modifier.size(120.dp),
                 shape = ClickableSurfaceDefaults.shape(shape),
                 colors =

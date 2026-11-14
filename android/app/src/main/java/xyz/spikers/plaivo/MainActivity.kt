@@ -293,6 +293,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
             else -> play(card)
         }
     }
+    val openPerson = { server: String, id: String, name: String -> pages = pages + SubPage.Person(server, id, name) }
     val openRow = { server: String, row: MediaRow ->
         pages = pages + SubPage.Hub(server, row.key, row.title, row.resume)
     }
@@ -461,7 +462,26 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                             when (p) {
                                 is SubPage.Hub -> HubListScreen(p.server, p.key, p.title, if (p.resume) play else open)
                                 is SubPage.Detail ->
-                                    DetailScreen(p.server, p.key, changes, open, { row -> openRow(p.server, row) }) {
+                                    DetailScreen(
+                                        p.server,
+                                        p.key,
+                                        changes,
+                                        open,
+                                        { row -> openRow(p.server, row) },
+                                        openPerson,
+                                    ) {
+                                        changes++
+                                    }
+                                is SubPage.Person ->
+                                    DetailScreen(
+                                        p.server,
+                                        p.id,
+                                        changes,
+                                        open,
+                                        { row -> openRow(p.server, row) },
+                                        openPerson,
+                                        p.name,
+                                    ) {
                                         changes++
                                     }
                                 is SubPage.Collection -> CollectionScreen(p.server, p.key, p.title, open)
@@ -481,6 +501,8 @@ sealed interface SubPage {
     data class Hub(val server: String, val key: String, val title: String, val resume: Boolean) : SubPage
 
     data class Detail(val server: String, val key: String) : SubPage
+
+    data class Person(val server: String, val id: String, val name: String) : SubPage
 
     data class Collection(val server: String, val key: String, val title: String) : SubPage
 
