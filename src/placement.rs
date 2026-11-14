@@ -3,7 +3,6 @@ use plaivo_core::store;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Main window size and position, in GPUI's coordinates for `display` (a display UUID).
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Placement {
     display: String,
@@ -26,7 +25,7 @@ pub fn save(p: &Placement) {
     store::write_json(&path(), p);
 }
 
-/// The window's current placement; `None` in full screen, so the last windowed placement is kept.
+// `None` in full screen, so the last windowed placement is kept.
 pub fn current(window: &Window, cx: &App) -> Option<Placement> {
     let (b, maximized) = match window.window_bounds() {
         WindowBounds::Windowed(b) => (b, false),
@@ -43,7 +42,6 @@ pub fn current(window: &Window, cx: &App) -> Option<Placement> {
     })
 }
 
-/// Bounds to open the main window with: the saved placement if its display is still connected, else centered at the default size.
 // shortcut: trusts saved bounds on a connected display even if its resolution shrank; clamp to the display if that bites.
 pub fn restore(saved: Option<&Placement>, cx: &App) -> (WindowBounds, Option<DisplayId>) {
     let found = saved.and_then(|p| {

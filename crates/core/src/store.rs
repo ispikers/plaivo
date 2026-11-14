@@ -145,13 +145,12 @@ pub fn prune_cache(max_bytes: u64) {
 
 const RESET_MARKER: &str = ".reset";
 
-/// Marks everything Plaivo stored for deletion at the next start, when no file is held open.
+// Deferred to the next start, when no file is held open.
 pub fn request_reset() -> std::io::Result<()> {
     std::fs::create_dir_all(config_dir())?;
     std::fs::write(config_dir().join(RESET_MARKER), b"")
 }
 
-/// Deletes the settings, sign-ins, cache, logs and default downloads if [`request_reset`] asked for it.
 pub fn apply_pending_reset() {
     if !config_dir().join(RESET_MARKER).exists() {
         return;

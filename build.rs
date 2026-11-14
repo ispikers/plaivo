@@ -31,7 +31,6 @@ fn main() {
     }
 }
 
-// Copies the runtime libraries in deps/<os>/ (libmpv) and the mpv shaders next to the built executable, so every profile runs as-is.
 fn copy_runtime_libs(root: &Path, out: &Path, src: &Path, pin: Option<libmpv::Pin>) {
     let Some(profile_dir) = out.ancestors().nth(3) else {
         return;

@@ -14,7 +14,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 
 static RESTARTED_INTO: OnceLock<String> = OnceLock::new();
 
-/// Handles Velopack's install, update and uninstall hooks, which exit the process; returns otherwise.
+// Velopack's hooks exit the process; a normal launch returns.
 pub fn run_installer_hooks() {
     VelopackApp::build()
         .on_restarted(|v| {

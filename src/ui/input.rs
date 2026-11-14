@@ -499,7 +499,7 @@ fn next_word_end(text: &str, offset: usize) -> usize {
         .map_or(text.len(), |(end, _)| end)
 }
 
-// The word under a double-click; at a word's end, the word rather than the space after it.
+// At a word's end, the word rather than the space after it.
 fn word_at(text: &str, offset: usize) -> Range<usize> {
     let segments: Vec<Range<usize>> = text
         .split_word_bound_indices()

@@ -149,7 +149,7 @@ const OBSERVED: &[(&str, c_int)] = &[
     ("audio-device-list", FORMAT_STRING),
 ];
 
-/// Read only by the file info panel; observed as strings so `get` serves them from the cache without blocking the UI.
+// Observed as strings so `get` serves them from the cache without blocking the UI.
 const INFO: &[&str] = &[
     "hwdec-current",
     "file-format",
@@ -209,10 +209,7 @@ impl Drop for Ctx {
     }
 }
 
-// libmpv's client API is thread-safe; the handle is freed only when the last owner drops it, normally the
-// event thread after SHUTDOWN.
-// Only the event thread makes blocking calls: on macOS mpv's video output waits on the main thread while it
-// (re)configures, so a blocking call from the main thread can deadlock.
+// libmpv's client API is thread-safe; only the event thread blocks, since macOS's vo waits on the main thread.
 unsafe impl Send for Ctx {}
 unsafe impl Sync for Ctx {}
 

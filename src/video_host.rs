@@ -32,8 +32,7 @@ mod imp {
     static REGION: Mutex<Option<Region>> = Mutex::new(None);
     static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
 
-    // mpv renders into a disabled child window; GPUI draws into a DirectComposition visual that composites above
-    // child windows, so video, UI, thumbnails and Peek all come from this one window.
+    // mpv renders into a disabled child window; GPUI's DirectComposition visual composites above it.
     pub struct VideoHost {
         app: HWND,
         host: HWND,
@@ -56,8 +55,7 @@ mod imp {
                     ..std::mem::zeroed()
                 };
                 RegisterClassW(&wc);
-                // WS_CLIPCHILDREN keeps the host's background paints from invalidating mpv's window; without it a
-                // paused mpv re-renders its frame continuously (~30% of a core).
+                // Without WS_CLIPCHILDREN a paused mpv re-renders its frame continuously (~30% of a core).
                 let host = CreateWindowExW(
                     WS_EX_NOPARENTNOTIFY,
                     class.as_ptr(),
@@ -182,8 +180,7 @@ mod imp {
     use objc2_app_kit::{NSAutoresizingMaskOptions, NSCursor, NSView, NSWindowOrderingMode};
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
-    // mpv hosts its Metal layer in this view (deps/mpv-macos-embed.patch adds --wid to macvk). It sits below GPUI's
-    // transparent view in the same window, so the video moves, resizes, goes full screen and composites with the UI natively.
+    // mpv's Metal layer lives here (deps/mpv-macos-embed.patch adds --wid to macvk), below GPUI's transparent view.
     pub struct VideoHost {
         view: Retained<NSView>,
     }

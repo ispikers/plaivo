@@ -35,7 +35,6 @@ pub fn lines(range: std::ops::Range<usize>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Writes the in-memory log to a text file in the log folder and returns its path.
 pub fn export() -> std::io::Result<PathBuf> {
     let dir = log_dir();
     std::fs::create_dir_all(&dir)?;

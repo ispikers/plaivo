@@ -172,7 +172,6 @@ fn confirm(question: &str) -> anyhow::Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
-// Bumps the version, tags and pushes it, waits for the release workflow, then publishes the draft it made.
 fn release(wanted: &str) -> anyhow::Result<()> {
     let (next, current) = (wanted.to_owned(), version()?);
     ensure!(
