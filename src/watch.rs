@@ -520,7 +520,7 @@ impl Plaivo {
         };
         if let Some(text) = text {
             if self.page == Page::Player {
-                self.hint(Icon::Group, text, cx);
+                self.hint_for(Icon::Group, text, crate::player::WATCH_HINT_FOR, cx);
             } else {
                 self.toast(text, cx);
             }

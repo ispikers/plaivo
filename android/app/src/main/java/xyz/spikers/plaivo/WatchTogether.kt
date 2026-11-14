@@ -162,7 +162,7 @@ object Watch : WatchListener {
     }
 
     private fun toast(text: String?) {
-        if (!text.isNullOrEmpty()) Toast.makeText(App.instance, text, Toast.LENGTH_SHORT).show()
+        if (!text.isNullOrEmpty()) Toast.makeText(App.instance, text, Toast.LENGTH_LONG).show()
     }
 }
 

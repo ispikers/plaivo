@@ -20,6 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CONTROLS_FOR: Duration = Duration::from_secs(3);
 const HINT_FOR: Duration = Duration::from_millis(1200);
+pub const WATCH_HINT_FOR: Duration = Duration::from_secs(4);
 const QUIT_REPORT_WAIT: Duration = Duration::from_secs(2);
 const HOME_REFRESH: Duration = Duration::from_secs(120);
 const CACHE_RENDER: Duration = Duration::from_millis(250);
@@ -1965,9 +1966,19 @@ impl Plaivo {
     }
 
     pub fn hint(&mut self, icon: Icon, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.hint_for(icon, text, HINT_FOR, cx);
+    }
+
+    pub fn hint_for(
+        &mut self,
+        icon: Icon,
+        text: impl Into<SharedString>,
+        duration: Duration,
+        cx: &mut Context<Self>,
+    ) {
         self.player.hint = Some((icon, text.into()));
         self.player.hint_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(HINT_FOR).await;
+            cx.background_executor().timer(duration).await;
             this.update(cx, |this, cx| {
                 this.player.hint = None;
                 cx.notify();
