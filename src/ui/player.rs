@@ -1,5 +1,6 @@
 use crate::app::{Card, Choice, Nav, Plaivo, Shape, fmt_resolution};
 use crate::clock;
+use crate::keymap;
 use crate::player::{Panel, SPEEDS};
 use crate::plex::{self, QUALITIES};
 use crate::settings::Scale;
@@ -10,9 +11,10 @@ use crate::ui::widgets::{
     bounds_probe, fmt_time, icon, pill, progress_bar, round_button, shadow, stepper, tip,
 };
 use gpui::{
-    AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, PathBuilder, SharedString, Window, canvas, div, linear_color_stop,
-    linear_gradient, point, prelude::*, px, rgb, uniform_list,
+    Action, AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, ScrollDelta, ScrollEvent, SharedString,
+    Window, canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgb,
+    uniform_list,
 };
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -21,6 +23,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const QUEUE_ROW: f32 = 75.;
 const SEEK_PREVIEW: Duration = Duration::from_millis(500);
 const BOOST_HOLD: Duration = Duration::from_millis(300);
+// Windows reports a wheel notch as the system "lines per notch" (default 3); macOS reports about 1.
+const WHEEL_LINES_PER_NOTCH: f32 = if cfg!(target_os = "macos") { 1. } else { 3. };
+const WHEEL_PX_PER_NOTCH: f32 = 50.;
 const SPIN_PERIOD_MS: u128 = 900;
 
 fn control(
@@ -217,6 +222,31 @@ impl Plaivo {
         }
     }
 
+    fn volume_wheel(&mut self, ev: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let notches = match ev.delta {
+            ScrollDelta::Lines(d) if d.y.abs() > d.x.abs() => d.y / WHEEL_LINES_PER_NOTCH,
+            ScrollDelta::Pixels(d) if d.y.abs() > d.x.abs() => f32::from(d.y) / WHEEL_PX_PER_NOTCH,
+            _ => return,
+        };
+        let acc = &mut self.view.volume_wheel;
+        if acc.signum() != notches.signum() {
+            *acc = 0.;
+        }
+        *acc += notches;
+        while acc.abs() >= 1. {
+            let up = *acc > 0.;
+            *acc -= acc.signum();
+            window.dispatch_action(
+                if up {
+                    keymap::VolumeUp.boxed_clone()
+                } else {
+                    keymap::VolumeDown.boxed_clone()
+                },
+                cx,
+            );
+        }
+    }
+
     pub fn render_player(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let hide = !self.controls_shown();
         if hide != self.view.cursor_hidden {
@@ -273,6 +303,9 @@ impl Plaivo {
                         cx.notify();
                     }
                 }),
+            )
+            .on_scroll(
+                cx.listener(|this, ev: &ScrollEvent, window, cx| this.volume_wheel(ev, window, cx)),
             )
             .on_click(cx.listener(|this, ev: &gpui::ClickEvent, window, cx| {
                 let first_click_paused = CLICK_PAUSED.replace(false);

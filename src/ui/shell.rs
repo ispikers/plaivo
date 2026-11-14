@@ -4,9 +4,9 @@ use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, shadow};
 use crate::{keymap, menu};
 use gpui::{
-    Action, AnyElement, AnyView, Context, ElementId, Entity, EventEmitter, FontWeight, Hsla,
-    KeyDownEvent, KeyUpEvent, SharedString, StyleRefinement, Subscription, Window, div, prelude::*,
-    px, rgb,
+    Action, AnyElement, AnyView, App, Context, DispatchPhase, ElementId, Entity, EventEmitter,
+    FontWeight, Hsla, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, NavigationDirection,
+    SharedString, StyleRefinement, Subscription, Window, canvas, div, prelude::*, px, rgb,
 };
 use std::time::{Duration, Instant};
 
@@ -165,6 +165,22 @@ impl Render for Root {
             .children(mini)
             .children(overlays)
             .children(toast)
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    |_, _, window, _| window.on_mouse_event(mouse_back),
+                )
+                .absolute(),
+            )
+    }
+}
+
+// Registered on the window rather than an element so it fires over occluding bars, panels and menus.
+fn mouse_back(ev: &MouseDownEvent, phase: DispatchPhase, window: &mut Window, cx: &mut App) {
+    if phase == DispatchPhase::Bubble
+        && ev.button == MouseButton::Navigate(NavigationDirection::Back)
+    {
+        window.dispatch_action(keymap::Cancel.boxed_clone(), cx);
     }
 }
 
