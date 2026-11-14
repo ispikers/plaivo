@@ -32,7 +32,11 @@ fn main() {
 }
 
 fn copy_runtime_libs(root: &Path, out: &Path, src: &Path, pin: Option<libmpv::Pin>) {
-    let Some(profile_dir) = out.ancestors().nth(3) else {
+    let Some(profile_dir) = out
+        .ancestors()
+        .find(|p| p.file_name() == Some("build".as_ref()))
+        .and_then(Path::parent)
+    else {
         return;
     };
     copy_files(src, profile_dir);
