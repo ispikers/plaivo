@@ -9,6 +9,8 @@ const RECENT_SEARCHES: usize = 8;
 const RECENT_ROOMS: usize = 5;
 pub const COUNTDOWN_MAX: u32 = 30;
 pub const DENSITY_MAX: u32 = 5;
+pub const SKIP_DELAY_MAX: i32 = 15;
+pub const AUTO_SKIP_NOTICE: f64 = 7.0;
 pub const SUBTITLE_COLORS: [(&str, &str); 4] = [
     ("FFFFFF", "White"),
     ("FFFF00", "Yellow"),
@@ -30,6 +32,8 @@ pub struct Settings {
     pub stop_on_close: bool,
     pub skip_intro: SkipMode,
     pub skip_credits: SkipMode,
+    pub skip_intro_delay: i32,
+    pub skip_credits_delay: i32,
     pub seek_small: u32,
     pub seek_large: u32,
     pub shader: String,
@@ -77,6 +81,8 @@ impl Default for Settings {
             stop_on_close: false,
             skip_intro: SkipMode::Button,
             skip_credits: SkipMode::Button,
+            skip_intro_delay: 0,
+            skip_credits_delay: 0,
             seek_small: 10,
             seek_large: 30,
             shader: String::new(),
@@ -110,6 +116,11 @@ impl Default for Settings {
             check_updates: true,
         }
     }
+}
+
+pub fn countdown_left(seconds: u32, time: f64, anchor: &mut Option<f64>) -> f64 {
+    let since = *anchor.insert(anchor.filter(|a| *a <= time).unwrap_or(time));
+    seconds.min(COUNTDOWN_MAX) as f64 - (time - since)
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Debug)]
@@ -373,6 +384,15 @@ impl Settings {
         }
     }
 
+    pub fn auto_skip_at(&self, marker: &str, start: f64) -> f64 {
+        let delay = match marker {
+            "intro" => self.skip_intro_delay,
+            "credits" => self.skip_credits_delay,
+            _ => 0,
+        };
+        (start + delay.clamp(-SKIP_DELAY_MAX, SKIP_DELAY_MAX) as f64).max(0.0)
+    }
+
     pub fn up_next_in(
         &self,
         time: f64,
@@ -389,8 +409,7 @@ impl Settings {
             *anchor = None;
             return None;
         }
-        let since = *anchor.get_or_insert(time);
-        Some(countdown - (time - since))
+        Some(countdown_left(self.autoplay_countdown, time, anchor))
     }
 
     pub fn languages(&self) -> LanguagePrefs {
@@ -683,6 +702,26 @@ mod tests {
         assert_eq!(s.skip_mode("intro"), SkipMode::Auto);
         assert_eq!(s.skip_mode("credits"), SkipMode::Off);
         assert_eq!(s.skip_mode("commercial"), SkipMode::Button);
+        let s = Settings {
+            skip_intro_delay: -3,
+            skip_credits_delay: 99,
+            ..s
+        };
+        assert_eq!(s.auto_skip_at("intro", 60.0), 57.0);
+        assert_eq!(s.auto_skip_at("intro", 1.0), 0.0);
+        assert_eq!(s.auto_skip_at("credits", 1200.0), 1215.0);
+        assert_eq!(s.auto_skip_at("commercial", 60.0), 60.0);
+    }
+
+    #[test]
+    fn countdown_restarts_when_seeking_back_past_its_start() {
+        let mut anchor = None;
+        let left: Vec<_> = [100.0, 103.0, 99.0, 101.0, 110.0]
+            .iter()
+            .map(|&t| countdown_left(5, t, &mut anchor))
+            .collect();
+        assert_eq!(left, [5.0, 2.0, 5.0, 3.0, -6.0]);
+        assert_eq!(countdown_left(99, 0.0, &mut None), COUNTDOWN_MAX as f64);
     }
 
     #[test]

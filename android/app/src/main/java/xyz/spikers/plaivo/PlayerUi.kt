@@ -184,17 +184,29 @@ fun PlayerScreen(player: PlayerActivity) {
             player.playback
                 ?.markers
                 ?.withIndex()
-                ?.firstOrNull { (i, m) ->
-                    position >= m.startMs.toLong() &&
-                        position < m.endMs.toLong() - 1000 &&
-                        (m.mode == SkipMode.BUTTON ||
-                            (m.mode == SkipMode.AUTO && (i in player.autoSkipped || player.watching())))
+                ?.firstNotNullOfOrNull { (i, m) ->
+                    val pending = player.autoPending(i, m)
+                    val shown =
+                        if (pending)
+                            position >= m.noticeAtMs.toLong() &&
+                                position < m.autoAtMs.toLong() &&
+                                m.autoAtMs.toLong() < m.endMs.toLong() - 1000
+                        else
+                            m.mode != SkipMode.OFF &&
+                                position >= m.startMs.toLong() &&
+                                position < m.endMs.toLong() - 1000
+                    Triple(i, m, pending).takeIf { shown }
                 }
-                ?.value
                 ?.takeIf { upNext == null }
         }
     }
-    val skip = skipState.value
+    val skip = skipState.value?.second
+    val skipPending = skipState.value?.third == true
+    val skipNow: () -> Unit = {
+        skipState.value?.let { (i, m, pending) ->
+            if (pending) player.cancelAutoSkip(i) else player.seekTo(m.endMs.toLong())
+        }
+    }
     val scrubbing by remember { derivedStateOf { scrub != null } }
     val hideable = !paused && panel == null && !scrubbing
     LaunchedEffect(controls, lastInput, hideable) {
@@ -314,7 +326,7 @@ fun PlayerScreen(player: PlayerActivity) {
                     Key.NumPadEnter ->
                         when {
                             upNext != null -> player.playNext()
-                            skip != null -> player.seekTo(skip.endMs.toLong())
+                            skip != null -> skipNow()
                             else -> show(Target.Play)
                         }
                     Key.DirectionLeft -> {
@@ -610,7 +622,6 @@ fun PlayerScreen(player: PlayerActivity) {
                     .padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp)
         if (skip != null && panel == null) {
             val source = remember { MutableInteractionSource() }
-            val skipNow: () -> Unit = { player.seekTo(skip.endMs.toLong()) }
             Surface(
                 onClick = skipNow,
                 modifier = corner.focusRequester(skipButton).tap(touch, source, onClick = skipNow),
@@ -634,8 +645,13 @@ fun PlayerScreen(player: PlayerActivity) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    GlyphIcon(Glyph.FastForward, 20.dp, Palette.bg)
-                    Text(skip.label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.bg)
+                    if (!skipPending) GlyphIcon(Glyph.FastForward, 20.dp, Palette.bg)
+                    Text(
+                        if (skipPending) "Cancel Autoskip" else skip.label,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Palette.bg,
+                    )
                 }
             }
         }

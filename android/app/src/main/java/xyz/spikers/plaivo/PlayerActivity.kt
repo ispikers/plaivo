@@ -17,6 +17,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.net.toUri
@@ -52,6 +53,7 @@ import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.Playback
 import uniffi.plaivo_ffi.Scale as CoreScale
 import uniffi.plaivo_ffi.Settings
+import uniffi.plaivo_ffi.SkipMarker
 import uniffi.plaivo_ffi.SkipMode
 import uniffi.plaivo_ffi.SubtitleMode
 import uniffi.plaivo_ffi.TrackInfo
@@ -121,7 +123,8 @@ class PlayerActivity : ComponentActivity() {
         private set
 
     private var upNextAnchor: ULong? = null
-    val autoSkipped = mutableSetOf<Int>()
+    val autoSkipped = mutableStateListOf<Int>()
+
     private var queueShow: String? = null
     private var fellBack = false
     private var loading: Job? = null
@@ -474,11 +477,18 @@ class PlayerActivity : ComponentActivity() {
         val markers = playback?.markers?.takeIf { !watching() } ?: return null
         val i =
             markers.indexOfFirst {
-                it.mode == SkipMode.AUTO && positionMs >= it.startMs.toLong() && positionMs < it.endMs.toLong() - 1000
+                it.mode == SkipMode.AUTO && positionMs >= it.autoAtMs.toLong() && positionMs < it.endMs.toLong() - 1000
             }
-        if (i < 0 || !autoSkipped.add(i)) return null
+        if (i < 0 || i in autoSkipped) return null
+        autoSkipped.add(i)
         exo.seekTo(markers[i].endMs.toLong())
         return markers[i].label.replaceFirst("Skip", "Skipped")
+    }
+
+    fun autoPending(i: Int, m: SkipMarker) = m.mode == SkipMode.AUTO && i !in autoSkipped && !watching()
+
+    fun cancelAutoSkip(i: Int) {
+        if (i !in autoSkipped) autoSkipped.add(i)
     }
 
     fun togglePause() = setPlaying(!exo.playWhenReady)

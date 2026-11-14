@@ -4,7 +4,7 @@ use crate::plex::{
     self, Ctx, Item, Media, Picks, Quality, Server, Source, Transcode, resolve_playable,
 };
 use crate::prefs::{self, LanguagePrefs, LanguageRule, TrackInfo};
-use crate::settings::{Scale, SkipMode, library_key};
+use crate::settings::{AUTO_SKIP_NOTICE, Scale, SkipMode, library_key};
 use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::video_host::{self, Region};
@@ -75,6 +75,7 @@ pub struct Skip {
     pub start: f64,
     pub end: f64,
     auto: bool,
+    at: f64,
 }
 
 pub type Crumb = (SharedString, Option<Nav>);
@@ -673,11 +674,13 @@ impl Plaivo {
             .filter_map(|m| {
                 let label = m.skip_label()?;
                 let mode = self.settings.skip_mode(&m.kind);
+                let start = m.start_time_offset as f64 / 1000.0;
                 (mode != SkipMode::Off).then(|| Skip {
                     label,
-                    start: m.start_time_offset as f64 / 1000.0,
+                    start,
                     end: m.end_time_offset as f64 / 1000.0,
                     auto: mode == SkipMode::Auto,
+                    at: self.settings.auto_skip_at(&m.kind, start),
                 })
             })
             .collect();
@@ -869,7 +872,7 @@ impl Plaivo {
             .player
             .skips
             .iter_mut()
-            .find(|s| s.auto && t >= s.start && t < s.end - 1.0)
+            .find(|s| s.auto && t >= s.at && t < s.end - 1.0)
         else {
             return;
         };
@@ -1178,16 +1181,30 @@ impl Plaivo {
         }
     }
 
-    pub fn active_skip(&self) -> Option<&Skip> {
+    pub fn active_skip(&self) -> Option<(&Skip, bool)> {
         let t = self.player.time;
-        self.player
+        let skipping = !self.watch_holds() || self.watch_controls();
+        self.player.skips.iter().find_map(|s| match s.auto {
+            false => (t >= s.start && t < s.end - 1.0).then_some((s, false)),
+            true => (skipping && t >= s.at - AUTO_SKIP_NOTICE && t < s.at && s.at < s.end - 1.0)
+                .then_some((s, true)),
+        })
+    }
+
+    pub fn cancel_auto_skip(&mut self) {
+        let t = self.player.time;
+        if let Some(s) = self
+            .player
             .skips
-            .iter()
-            .find(|s| !s.auto && t >= s.start && t < s.end - 1.0)
+            .iter_mut()
+            .find(|s| s.auto && t >= s.at - AUTO_SKIP_NOTICE && t < s.at)
+        {
+            s.auto = false;
+        }
     }
 
     pub fn skip_marker(&mut self) {
-        if let Some(end) = self.active_skip().map(|s| s.end) {
+        if let Some(end) = self.active_skip().map(|(s, _)| s.end) {
             self.player.time = end;
             self.seek_to(end);
         }
@@ -1594,7 +1611,7 @@ impl Plaivo {
                 let shown = |this: &mut Self| {
                     (
                         this.controls_shown().then_some(this.player.time as u64),
-                        this.active_skip().is_some(),
+                        this.active_skip().map(|(_, pending)| pending),
                         this.up_next().map(|(_, left)| left.max(0.).ceil() as u64),
                     )
                 };

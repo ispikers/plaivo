@@ -6,8 +6,8 @@ use plaivo_core::plex::{
 };
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{
-    BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, PlaybackRule, SUBTITLE_COLORS, Scale,
-    Settings, SkipMode, Theme, ViewMode, library_key, rank_in,
+    AUTO_SKIP_NOTICE, BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, PlaybackRule,
+    SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key, rank_in,
 };
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
 use plaivo_core::{Account, detail, first, jellyfin, join, store};
@@ -69,6 +69,8 @@ pub struct Settings {
     pub stop_on_close: bool,
     pub skip_intro: SkipMode,
     pub skip_credits: SkipMode,
+    pub skip_intro_delay: i32,
+    pub skip_credits_delay: i32,
     pub seek_small: u32,
     pub seek_large: u32,
     pub shader: String,
@@ -519,6 +521,8 @@ pub struct UpNext {
 pub struct SkipMarker {
     pub kind: String,
     pub mode: SkipMode,
+    pub auto_at_ms: u64,
+    pub notice_at_ms: u64,
     pub label: String,
     pub start_ms: u64,
     pub end_ms: u64,
@@ -2052,9 +2056,12 @@ impl Plaivo {
             .marker
             .iter()
             .filter_map(|m| {
+                let at = settings.auto_skip_at(&m.kind, m.start_time_offset as f64 / 1000.0);
                 Some(SkipMarker {
                     kind: m.kind.clone(),
                     mode: settings.skip_mode(&m.kind),
+                    auto_at_ms: (at * 1000.0) as u64,
+                    notice_at_ms: ((at - AUTO_SKIP_NOTICE).max(0.0) * 1000.0) as u64,
                     label: m.skip_label()?.into(),
                     start_ms: m.start_time_offset,
                     end_ms: m.end_time_offset,

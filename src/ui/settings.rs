@@ -1,6 +1,7 @@
 use crate::app::{Category, Nav, Plaivo, open_url};
 use crate::settings::{
-    COUNTDOWN_MAX, DENSITY_MAX, EpisodePoster, GridSpacing, Settings, SkipMode, ViewMode,
+    COUNTDOWN_MAX, DENSITY_MAX, EpisodePoster, GridSpacing, SKIP_DELAY_MAX, Settings, SkipMode,
+    ViewMode,
 };
 use crate::ui::licenses::LICENSES;
 use crate::ui::theme::{self, Icon};
@@ -164,6 +165,26 @@ impl Plaivo {
                 }),
             ))
         };
+        let delay_row = |id: &'static str,
+                         detail: &'static str,
+                         value: i32,
+                         field: fn(&mut Settings) -> &mut i32,
+                         cx: &mut Context<Self>| {
+            row(id, None, "Delay", detail).child(stepper(
+                id,
+                format!("{value:+} s"),
+                (value > -SKIP_DELAY_MAX, value < SKIP_DELAY_MAX),
+                cx.listener(move |this, step: &i8, _, cx| {
+                    let v = field(&mut this.settings);
+                    *v = match step {
+                        0 => 0,
+                        _ => (*v + *step as i32).clamp(-SKIP_DELAY_MAX, SKIP_DELAY_MAX),
+                    };
+                    this.save_settings_soon(cx);
+                    cx.notify();
+                }),
+            ))
+        };
         let up_next = section("Up next")
             .child(
                 toggle_row(
@@ -220,6 +241,15 @@ impl Plaivo {
                         false,
                         cx,
                     ))
+                    .when(s.skip_intro == SkipMode::Auto, |d| {
+                        d.child(delay_row(
+                            "skip-intro-delay",
+                            "Seconds after the intro starts to skip it; negative skips earlier",
+                            s.skip_intro_delay,
+                            |s| &mut s.skip_intro_delay,
+                            cx,
+                        ))
+                    })
                     .child(skip_row(
                         "skip-credits",
                         "Credits",
@@ -227,7 +257,16 @@ impl Plaivo {
                         s.skip_credits,
                         true,
                         cx,
-                    )),
+                    ))
+                    .when(s.skip_credits == SkipMode::Auto, |d| {
+                        d.child(delay_row(
+                            "skip-credits-delay",
+                            "Seconds after the credits start to skip them; negative skips earlier",
+                            s.skip_credits_delay,
+                            |s| &mut s.skip_credits_delay,
+                            cx,
+                        ))
+                    }),
             )
             .child(
                 section("Seeking")

@@ -111,6 +111,7 @@ private enum class Category(val title: String, val glyph: Glyph, val parent: Cat
 }
 
 private val COUNTDOWNS = listOf(0u, 3u, 5u, 10u, 15u, 20u, 30u)
+private val DELAYS = listOf(-15, -10, -5, -3, -2, -1, 0, 1, 2, 3, 5, 10, 15)
 private val SEEK_SMALL = listOf(5u, 10u, 15u, 20u, 30u)
 private val SEEK_LARGE = listOf(30u, 60u, 90u, 120u, 300u)
 private val SUBTITLE_SIZES = listOf(50u, 75u, 100u, 125u, 150u, 175u, 200u)
@@ -606,6 +607,14 @@ fun SettingsScreen(
                     ) {
                         Value(settings.skipIntro.label)
                     }
+                    if (settings.skipIntro == SkipMode.AUTO) {
+                        DelayRow(
+                            "Seconds after the intro starts to skip it; negative skips earlier",
+                            settings.skipIntroDelay,
+                        ) {
+                            onEdit { it.copy(skipIntroDelay = DELAYS.after(it.skipIntroDelay)) }
+                        }
+                    }
                     SettingsRow(
                         null,
                         "Credits",
@@ -613,6 +622,14 @@ fun SettingsScreen(
                         onClick = { onEdit { it.copy(skipCredits = SkipMode.entries.after(it.skipCredits)) } },
                     ) {
                         Value(settings.skipCredits.label)
+                    }
+                    if (settings.skipCredits == SkipMode.AUTO) {
+                        DelayRow(
+                            "Seconds after the credits start to skip them; negative skips earlier",
+                            settings.skipCreditsDelay,
+                        ) {
+                            onEdit { it.copy(skipCreditsDelay = DELAYS.after(it.skipCreditsDelay)) }
+                        }
                     }
                     SectionTitle("Seeking")
                     SettingsRow(
@@ -1196,6 +1213,11 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+@Composable
+private fun DelayRow(detail: String, seconds: Int, onClick: () -> Unit) {
+    SettingsRow(null, "Delay", detail, onClick = onClick) { Value("%+d s".format(seconds)) }
 }
 
 @Composable
