@@ -1469,6 +1469,7 @@ impl Plaivo {
             .child(stepper(
                 id,
                 format!("{:+} ms", v as i64),
+                (v > -10_000., v < 10_000.),
                 cx.listener(move |this, step: &i8, _, cx| {
                     this.nudge_delay(audio, *step as f64 * 50.);
                     cx.notify();

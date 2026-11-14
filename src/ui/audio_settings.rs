@@ -67,9 +67,15 @@ impl Plaivo {
         change: fn(&mut Settings, i8),
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let moves = |step| {
+            let mut probe = self.settings.clone();
+            change(&mut probe, step);
+            probe != self.settings
+        };
         row(id, None, title, detail).child(stepper(
             id,
             value,
+            (moves(-1), moves(1)),
             cx.listener(move |this, step: &i8, _, cx| {
                 change(&mut this.settings, *step);
                 this.save_settings_soon(cx);

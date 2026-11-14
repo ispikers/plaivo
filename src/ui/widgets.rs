@@ -364,6 +364,7 @@ pub fn nav_row(
 pub fn stepper(
     id: &'static str,
     value: impl Into<SharedString>,
+    (down, up): (bool, bool),
     on: impl Fn(&i8, &mut Window, &mut App) + 'static,
 ) -> Div {
     let on = Rc::new(on);
@@ -371,22 +372,21 @@ pub fn stepper(
         let on = on.clone();
         move |_: &ClickEvent, window: &mut Window, cx: &mut App| on(&step, window, cx)
     };
+    let button = |n: usize, i: Icon, step: i8, enabled: bool| {
+        let (hover, fg) = if enabled {
+            (theme::tint(0.08), theme::text().into())
+        } else {
+            (theme::black(0.), theme::tint(0.3))
+        };
+        round_button((id, n), i, 32., 18., theme::black(0.), hover, fg)
+            .when(enabled, |b| b.on_click(click(step)))
+            .when(!enabled, |b| b.cursor_default())
+    };
     div()
         .flex()
         .items_center()
         .gap(px(4.))
-        .child(
-            round_button(
-                (id, 0usize),
-                Icon::Remove,
-                32.,
-                18.,
-                theme::black(0.),
-                theme::tint(0.08),
-                theme::text(),
-            )
-            .on_click(click(-1)),
-        )
+        .child(button(0, Icon::Remove, -1, down))
         .child(
             div()
                 .id((id, 1usize))
@@ -399,18 +399,7 @@ pub fn stepper(
                 .child(value.into())
                 .on_click(click(0)),
         )
-        .child(
-            round_button(
-                (id, 2usize),
-                Icon::Add,
-                32.,
-                18.,
-                theme::black(0.),
-                theme::tint(0.08),
-                theme::text(),
-            )
-            .on_click(click(1)),
-        )
+        .child(button(2, Icon::Add, 1, up))
 }
 
 pub struct Tip(pub SharedString);

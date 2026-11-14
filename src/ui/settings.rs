@@ -144,15 +144,20 @@ impl Plaivo {
                         value: u32,
                         large: bool,
                         cx: &mut Context<Self>| {
+            let nudged = move |v: u32, step: i8| match large {
+                true => nudge(v, step, 10, 10, 600, 30),
+                false => nudge(v, step, 5, 5, 60, 10),
+            };
             row(id, None, title, detail).child(stepper(
                 id,
                 format!("{value} s"),
+                (nudged(value, -1) != value, nudged(value, 1) != value),
                 cx.listener(move |this, step: &i8, _, cx| {
                     let s = &mut this.settings;
                     if large {
-                        s.seek_large = nudge(s.seek_large, *step, 10, 10, 600, 30)
+                        s.seek_large = nudged(s.seek_large, *step)
                     } else {
-                        s.seek_small = nudge(s.seek_small, *step, 5, 5, 60, 10)
+                        s.seek_small = nudged(s.seek_small, *step)
                     }
                     this.save_settings_soon(cx);
                     cx.notify();
@@ -184,6 +189,7 @@ impl Plaivo {
                     .child(stepper(
                         "countdown",
                         format!("{} s", s.autoplay_countdown),
+                        (s.autoplay_countdown > 0, s.autoplay_countdown < COUNTDOWN_MAX),
                         cx.listener(|this, step: &i8, _, cx| {
                             this.settings.autoplay_countdown = nudge(
                                 this.settings.autoplay_countdown,
