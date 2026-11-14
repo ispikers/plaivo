@@ -194,7 +194,7 @@ impl Plaivo {
                     s.autoplay_next,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.autoplay_next = !this.settings.autoplay_next;
+                    this.settings.autoplay_next.toggle();
                     this.save_settings_soon(cx);
                     cx.notify();
                 })),
@@ -299,7 +299,7 @@ impl Plaivo {
                         s.stop_on_close,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.settings.stop_on_close = !this.settings.stop_on_close;
+                        this.settings.stop_on_close.toggle();
                         this.save_settings_soon(cx);
                         cx.notify();
                     })),
@@ -437,7 +437,7 @@ impl Plaivo {
                             self.settings.debug_logging,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.settings.debug_logging = !this.settings.debug_logging;
+                            this.settings.debug_logging.toggle();
                             this.save_settings_soon(cx);
                             logging::set_debug(this.settings.debug_logging);
                             if let Some(m) = &this.player.mpv {

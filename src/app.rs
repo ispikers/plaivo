@@ -2687,7 +2687,7 @@ impl Plaivo {
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.settings.sidebar_compact = !self.settings.sidebar_compact;
+        self.settings.sidebar_compact.toggle();
         self.save_settings_soon(cx);
         self.view.sidebar_anim = Some(Instant::now());
         cx.notify();

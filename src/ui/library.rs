@@ -412,7 +412,7 @@ impl Plaivo {
             .gap(px(6.))
             .child(icon(Icon::Sort, 16., theme::text()))
             .on_click(cx.listener(|this, _, _, cx| {
-                this.sort_open = !this.sort_open;
+                this.sort_open.toggle();
                 cx.notify();
             }))
     }

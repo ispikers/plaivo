@@ -693,7 +693,7 @@ impl Plaivo {
                                     .hover(|s| s.text_color(theme::text()))
                                     .child(if expanded { "Less" } else { "More" })
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.summary_expanded = !this.summary_expanded;
+                                        this.summary_expanded.toggle();
                                         cx.notify();
                                     })),
                             ),

@@ -366,7 +366,7 @@ impl Plaivo {
                         self.settings.auto_remove_watched,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.settings.auto_remove_watched = !this.settings.auto_remove_watched;
+                        this.settings.auto_remove_watched.toggle();
                         this.save_settings_soon(cx);
                         let on = this.settings.auto_remove_watched;
                         this.with_downloads(cx, move |d| d.set_auto_remove_watched(on));

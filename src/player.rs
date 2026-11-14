@@ -1958,7 +1958,7 @@ impl Plaivo {
 
     pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
         self.mpv(|m| m.command(&["cycle", "mute"]));
-        self.player.muted = !self.player.muted;
+        self.player.muted.toggle();
         self.hint_volume(cx);
     }
 

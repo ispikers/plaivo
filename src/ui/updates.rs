@@ -80,7 +80,7 @@ impl Plaivo {
                         self.settings.check_updates,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.settings.check_updates = !this.settings.check_updates;
+                        this.settings.check_updates.toggle();
                         this.save_settings_soon(cx);
                         if this.settings.check_updates {
                             this.check_for_updates(cx);
