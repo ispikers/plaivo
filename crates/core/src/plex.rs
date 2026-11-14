@@ -132,6 +132,8 @@ pub struct SearchHit {
     pub score: Option<f64>,
     #[serde(rename = "Metadata")]
     pub metadata: Option<Item>,
+    #[serde(rename = "Directory")]
+    pub directory: Option<Directory>,
 }
 
 #[derive(Deserialize, Default)]
@@ -144,10 +146,38 @@ pub struct SearchGroup {
 #[derive(Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct Directory {
+    #[serde(deserialize_with = "flex_string")]
+    pub id: String,
     pub key: String,
     pub title: String,
+    pub tag: String,
+    #[serde(rename = "tagKey")]
+    pub tag_key: String,
+    pub thumb: String,
     #[serde(rename = "type")]
     pub kind: String,
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct PersonInfo {
+    pub thumb: String,
+    pub summary: String,
+    #[serde(rename = "bornAt")]
+    pub born: String,
+    #[serde(rename = "diedAt")]
+    pub died: String,
+    #[serde(rename = "birthPlace")]
+    pub birthplace: String,
+    #[serde(skip)]
+    pub known_for: Vec<Item>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct People {
+    #[serde(rename = "Metadata")]
+    metadata: Vec<PersonInfo>,
 }
 
 #[derive(Deserialize, Default)]
@@ -262,6 +292,8 @@ pub struct Tag {
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct Person {
+    #[serde(deserialize_with = "flex_string")]
+    pub id: String,
     pub tag: String,
     pub role: String,
     pub thumb: String,
@@ -824,9 +856,7 @@ impl<'a> Resume<'a> {
     }
 }
 
-// Keys are clamped to a running minimum so each server keeps its own order (untimed next-up episodes stay
-// behind the item before them) while the servers interleave by recency. One server's own list is never
-// collapsed; across servers the same title keeps one card, placed at the latest activity among its copies.
+// Keys are clamped to a running minimum so untimed next-up episodes keep their server's order.
 pub fn merge_continue<'a>(lists: &[(&'a str, &'a [Item])]) -> Vec<(&'a str, &'a Item)> {
     let mut seen = HashSet::new();
     let mut all = Vec::new();
@@ -937,6 +967,35 @@ pub fn hub_sorts(items: &[Item], key: &str) -> Vec<(&'static str, &'static str)>
                 .copied()
                 .filter(|(id, _)| *id != "addedAt:desc" || added),
         )
+        .collect()
+}
+
+pub fn person_everywhere(
+    servers: &[Server],
+    c: &Ctx,
+    name: &str,
+    tag_key: &str,
+) -> Vec<(String, Item)> {
+    let found: Vec<Vec<(String, Item)>> = std::thread::scope(|s| {
+        let jobs: Vec<_> = servers
+            .iter()
+            .map(|srv| {
+                s.spawn(move || {
+                    let id = srv.find_person(c, name, tag_key).ok().flatten()?;
+                    let items = srv.person_items(c, &id, 0, 200, false).ok()?.0;
+                    Some(items.into_iter().map(|it| (srv.id.clone(), it)).collect())
+                })
+            })
+            .collect();
+        jobs.into_iter()
+            .filter_map(|j| j.join().ok().flatten())
+            .collect()
+    });
+    let mut seen = HashSet::new();
+    found
+        .into_iter()
+        .flatten()
+        .filter(|(_, it)| seen.insert((it.kind.clone(), it.title.to_lowercase(), it.year)))
         .collect()
 }
 
@@ -1509,6 +1568,96 @@ impl Server {
             start,
             size,
         )
+    }
+
+    pub fn person_items(
+        &self,
+        c: &Ctx,
+        id: &str,
+        start: usize,
+        size: usize,
+        summaries: bool,
+    ) -> R<(Vec<Item>, usize)> {
+        if self.is_jellyfin() {
+            return jellyfin::person_items(self, c, id, start, size, summaries);
+        }
+        self.paged(c, &format!("/library/people/{id}/media"), start, size)
+    }
+
+    pub fn person(&self, c: &Ctx, id: &str, discover: Option<&Server>) -> R<PersonInfo> {
+        if self.is_jellyfin() {
+            return jellyfin::person(self, c, id);
+        }
+        let dir = self
+            .get::<Container>(c, &format!("/library/people/{id}"))?
+            .directory
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        // PMS keeps only name and photo; the biography lives on Plex's metadata provider.
+        let mut info = discover
+            .filter(|_| !dir.tag_key.is_empty())
+            .map(|d| d.discover_person(c, &dir.tag_key))
+            .unwrap_or_default();
+        if !dir.thumb.is_empty() {
+            info.thumb = dir.thumb;
+        }
+        Ok(info)
+    }
+
+    pub fn discover_person(&self, c: &Ctx, tag_key: &str) -> PersonInfo {
+        let tag = encode(tag_key);
+        let mut info = self
+            .get::<People>(c, &format!("/library/people/{tag}"))
+            .ok()
+            .and_then(|p| p.metadata.into_iter().next())
+            .unwrap_or_default();
+        info.known_for = self
+            .get::<Container>(c, &format!("/library/people/{tag}/person_known_for"))
+            .map(|ct| ct.metadata)
+            .unwrap_or_default();
+        info.known_for
+            .retain(|it| matches!(it.kind.as_str(), "movie" | "show"));
+        info.born.truncate(10);
+        info.died.truncate(10);
+        info
+    }
+
+    pub fn find_person(&self, c: &Ctx, name: &str, tag_key: &str) -> R<Option<String>> {
+        if self.is_jellyfin() {
+            return jellyfin::find_person(self, c, name);
+        }
+        let hits = self
+            .get::<Container>(
+                c,
+                &format!(
+                    "/library/search?query={}&limit=20&searchTypes=people",
+                    encode(name)
+                ),
+            )?
+            .search_result;
+        let mut dirs: Vec<Directory> = hits
+            .into_iter()
+            .filter_map(|h| h.directory)
+            .filter(|d| !d.id.is_empty() && d.tag.eq_ignore_ascii_case(name))
+            .collect();
+        dirs.dedup_by(|a, b| a.id == b.id);
+        for d in dirs {
+            let key = if d.tag_key.is_empty() {
+                self.get::<Container>(c, &format!("/library/people/{}", d.id))?
+                    .directory
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default()
+                    .tag_key
+            } else {
+                d.tag_key
+            };
+            if key == tag_key {
+                return Ok(Some(d.id));
+            }
+        }
+        Ok(None)
     }
 
     pub fn hub_items(&self, c: &Ctx, key: &str) -> R<Vec<Item>> {
@@ -2582,9 +2731,39 @@ mod tests {
     }
 
     #[test]
+    fn people_search_hit() {
+        let json = r#"{"MediaContainer":{"SearchResult":[{"score":0.9,"Directory":{"id":38797,"tag":"Anna Kendrick","tagKey":"5d776833eb5d26001f1e0245","type":"tag","tagType":6}}]}}"#;
+        let d = serde_json::from_str::<Envelope<Container>>(json)
+            .unwrap()
+            .media_container
+            .search_result
+            .remove(0)
+            .directory
+            .unwrap();
+        assert_eq!(
+            (d.id.as_str(), d.tag.as_str(), d.tag_key.as_str()),
+            ("38797", "Anna Kendrick", "5d776833eb5d26001f1e0245")
+        );
+    }
+
+    #[test]
+    fn person_info() {
+        let json = r#"{"MediaContainer":{"Metadata":[{"summary":"Bio","bornAt":"1976-09-04T00:00:00Z","birthPlace":"Savannah, Georgia, USA"}]}}"#;
+        let p = serde_json::from_str::<Envelope<People>>(json)
+            .unwrap()
+            .media_container
+            .metadata
+            .remove(0);
+        assert_eq!(
+            (p.summary.as_str(), &p.born[..10], p.birthplace.as_str()),
+            ("Bio", "1976-09-04", "Savannah, Georgia, USA")
+        );
+    }
+
+    #[test]
     fn detail_metadata() {
         let json = r#"{"MediaContainer":{"Metadata":[{"ratingKey":"7","guid":"plex://movie/5d77","type":"movie","primaryExtraKey":"/library/metadata/91","userRating":8.0,
-            "Role":[{"tag":"Jacob Elordi","role":"Hig","thumb":"https://img/x.jpg"}],"Director":[{"tag":"Ridley Scott"}],
+            "Role":[{"id":38797,"tag":"Jacob Elordi","role":"Hig","thumb":"https://img/x.jpg"}],"Director":[{"tag":"Ridley Scott"}],
             "Rating":[{"image":"imdb://image.rating","value":6.3,"type":"audience"},{"image":"rottentomatoes://image.rating.rotten","value":4.1,"type":"critic"},{"image":"rottentomatoes://image.rating.upright","value":6.9,"type":"audience"},{"image":"themoviedb://image.rating","value":7.2,"type":"audience"}],
             "Image":[{"type":"coverPoster","url":"/p"},{"type":"clearLogo","url":"/library/metadata/7/clearLogo/1"}],
             "Extras":{"Metadata":[{"ratingKey":"90","type":"clip","subtype":"trailer"},{"ratingKey":"91","type":"clip","subtype":"trailer"}]},
@@ -2636,8 +2815,12 @@ mod tests {
             "4K · HEVC · DV P8 · English (EAC3 5.1) · English (SRT)"
         );
         assert_eq!(
-            (it.role[0].role.as_str(), it.director[0].tag.as_str()),
-            ("Hig", "Ridley Scott")
+            (
+                it.role[0].id.as_str(),
+                it.role[0].role.as_str(),
+                it.director[0].tag.as_str()
+            ),
+            ("38797", "Hig", "Ridley Scott")
         );
         assert_eq!(
             Item {

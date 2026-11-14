@@ -1,4 +1,4 @@
-use crate::app::{Card, CastMember, Plaivo, Shape, ShelfKey};
+use crate::app::{Card, CastMember, Nav, Plaivo, Shape, ShelfKey};
 use crate::plex::{DISCOVER_ID, RatingSource};
 use crate::ui::home::{arrow_y, card_width, content_width};
 use crate::ui::theme::{self, Icon};
@@ -11,6 +11,7 @@ use gpui::{
 };
 
 const CAST_W: f32 = 150.;
+const SUMMARY_LINES: usize = 4;
 const EXTRA_W: f32 = 240.;
 
 const LOGO_W: f32 = 440.;
@@ -171,14 +172,16 @@ impl Plaivo {
             d.art.clone(),
             d.is_show,
         );
-        let (logo, ratings, media_line, info, watchlisted) = (
+        let (logo, ratings, media_line, info, watchlisted, photo) = (
             d.logo.clone(),
             d.ratings.clone(),
             d.media_line.clone(),
             d.info.clone(),
             d.watchlisted,
+            d.photo.clone(),
         );
         let it = &d.item;
+        let person = it.kind == "person";
         let local = *server != *DISCOVER_ID;
         let library = local && matches!(it.kind.as_str(), "movie" | "episode" | "show" | "season");
         let watched = it.watched();
@@ -229,6 +232,37 @@ impl Plaivo {
                 .font_weight(FontWeight::BOLD)
                 .child(title)
                 .into_any_element(),
+        };
+        let title_el = if person {
+            let photo = self.picture(&photo, Shape::Poster);
+            div()
+                .flex()
+                .items_end()
+                .gap(px(24.))
+                .child(
+                    div()
+                        .w(px(160.))
+                        .h(px(240.))
+                        .flex_none()
+                        .rounded(px(12.))
+                        .overflow_hidden()
+                        .bg(theme::surface())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(match photo {
+                            Some(im) => im
+                                .size_full()
+                                .rounded(px(12.))
+                                .object_fit(ObjectFit::Cover)
+                                .into_any_element(),
+                            None => icon(Icon::Person, 64., theme::muted()).into_any_element(),
+                        }),
+                )
+                .child(title_el)
+                .into_any_element()
+        } else {
+            title_el
         };
         let chip_bg = Hsla::from(bg).opacity(0.55);
         let rate_chip = can_rate.then(|| {
@@ -469,7 +503,7 @@ impl Plaivo {
                                 .children(genres.into_iter().map(|g| badge(chip_bg).child(g))),
                         )
                     })
-                    .child(div().pt(px(6.)).child(actions)),
+                    .when(!person, |d| d.child(div().pt(px(6.)).child(actions))),
             );
         let d = self.detail.as_mut().expect("checked above");
         let (cast, extras, related_rows) = (
@@ -480,7 +514,7 @@ impl Plaivo {
         let cast_cards: Vec<AnyElement> = cast
             .iter()
             .enumerate()
-            .map(|(i, p)| self.cast_card(i, p))
+            .map(|(i, p)| self.cast_card(i, p, cx))
             .collect();
         let extra_cards: Vec<AnyElement> = extras
             .iter()
@@ -582,6 +616,37 @@ impl Plaivo {
                     }),
                 )
             });
+        let mut style = window.text_style();
+        style.font_family = ".SystemUIFont".into();
+        let long = window
+            .text_system()
+            .shape_text(
+                summary.clone(),
+                px(16.),
+                &[style.to_run(summary.len())],
+                Some(px((cw - 48.).min(1100.))),
+                None,
+            )
+            .is_ok_and(|lines| {
+                lines
+                    .iter()
+                    .map(|l| l.wrap_boundaries().len() + 1)
+                    .sum::<usize>()
+                    > SUMMARY_LINES
+            });
+        let expanded = self.summary_expanded;
+        let summary: SharedString = if long && !expanded {
+            // line_clamp applies per paragraph, so join them to clamp the whole text.
+            summary
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .into()
+        } else {
+            summary
+        };
         let body = div()
             .px(px(24.))
             .pb(px(32.))
@@ -589,13 +654,33 @@ impl Plaivo {
             .flex_col()
             .gap(px(8.))
             .when(!summary.is_empty(), |d| {
-                d.child(heading("Overview").pt(px(0.))).child(
-                    div()
-                        .text_size(px(16.))
-                        .line_height(px(25.))
-                        .max_w(px(1100.))
-                        .child(summary),
-                )
+                d.child(heading(if person { "Biography" } else { "Overview" }).pt(px(0.)))
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .line_height(px(25.))
+                            .max_w(px(1100.))
+                            .when(long && !expanded, |d| d.line_clamp(SUMMARY_LINES))
+                            .child(summary),
+                    )
+                    .when(long, |d| {
+                        d.child(
+                            div().flex().child(
+                                div()
+                                    .id("summary-more")
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::muted())
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(theme::text()))
+                                    .child(if expanded { "Less" } else { "More" })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.summary_expanded = !this.summary_expanded;
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                    })
             })
             .children(narrow_info)
             .when(is_show, |d| {
@@ -633,14 +718,26 @@ impl Plaivo {
             .into_any_element()
     }
 
-    fn cast_card(&mut self, i: usize, p: &CastMember) -> AnyElement {
+    fn cast_card(&mut self, i: usize, p: &CastMember, cx: &mut Context<Self>) -> AnyElement {
         let image = self.picture(&p.thumb, Shape::Poster);
         let side = CAST_W - 6.;
+        let server = self.detail.as_ref().map(|d| d.server.to_string());
+        let person = server
+            .filter(|_| !p.id.is_empty())
+            .map(|s| Nav::Person(s, p.id.clone(), p.name.to_string()));
         div()
             .id(("cast", i))
             .w(px(CAST_W))
             .flex_none()
             .p(px(3.))
+            .rounded(px(10.))
+            .when_some(person, |d, nav| {
+                d.cursor_pointer()
+                    .hover(|s| s.bg(theme::surface()))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.navigate(nav.clone(), true, cx)),
+                    )
+            })
             .flex()
             .flex_col()
             .child(

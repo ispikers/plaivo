@@ -8,7 +8,8 @@ use std::time::Duration;
 use crate::first;
 use crate::plex::{
     Backend, Client, Ctx, Directory, Extras, Guid, Hub, Image, Item, Marker, Media, OnDeck,
-    PRODUCT, Part, Person, R, Rating, Server, Stream, Tag, Transcode, drain, encode, err,
+    PRODUCT, Part, Person, PersonInfo, R, Rating, Server, Stream, Tag, Transcode, drain, encode,
+    err,
 };
 
 const TICKS_PER_MS: u64 = 10_000;
@@ -387,6 +388,7 @@ impl Dto {
             .iter()
             .filter(|p| p.kind == "Actor")
             .map(|p| Person {
+                id: p.id.clone(),
                 tag: p.name.clone(),
                 role: p.role.clone(),
                 thumb: image(&p.id, "Primary", &p.primary_image_tag),
@@ -543,6 +545,7 @@ pub fn sections(srv: &Server, c: &Ctx) -> R<Vec<Directory>> {
                 kind: section_kind(&v.collection_type)?.into(),
                 key: v.id,
                 title: v.name,
+                ..Default::default()
             })
         })
         .collect())
@@ -668,6 +671,73 @@ pub fn collection_items(
     summaries: bool,
 ) -> R<(Vec<Item>, usize)> {
     paged(srv, c, &format!("ParentId={key}"), start, size, summaries)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct PersonDto {
+    id: String,
+    overview: String,
+    premiere_date: String,
+    end_date: String,
+    production_locations: Vec<String>,
+    image_tags: ImageTags,
+}
+
+pub fn person(srv: &Server, c: &Ctx, id: &str) -> R<PersonInfo> {
+    let p: PersonDto = get(
+        srv,
+        c,
+        &format!(
+            "/Users/{}/Items/{id}?Fields=Overview,ProductionLocations",
+            srv.user_id
+        ),
+    )?;
+    let day = |d: &str| d.get(..10).unwrap_or_default().to_owned();
+    Ok(PersonInfo {
+        thumb: image(&p.id, "Primary", &p.image_tags.primary),
+        summary: p.overview,
+        born: day(&p.premiere_date),
+        died: day(&p.end_date),
+        birthplace: p.production_locations.join(", "),
+        known_for: Vec::new(),
+    })
+}
+
+pub fn find_person(srv: &Server, c: &Ctx, name: &str) -> R<Option<String>> {
+    let found = items(
+        srv,
+        c,
+        &format!(
+            "/Items?userId={}&IncludeItemTypes=Person&Recursive=true&SearchTerm={}&Limit=10",
+            srv.user_id,
+            encode(name)
+        ),
+    )?;
+    Ok(found
+        .into_iter()
+        .find(|p| p.title.eq_ignore_ascii_case(name))
+        .map(|p| p.rating_key))
+}
+
+pub fn person_items(
+    srv: &Server,
+    c: &Ctx,
+    id: &str,
+    start: usize,
+    size: usize,
+    summaries: bool,
+) -> R<(Vec<Item>, usize)> {
+    paged(
+        srv,
+        c,
+        &format!(
+            "PersonIds={id}&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=PremiereDate,ProductionYear,SortName&SortOrder=Descending,Descending,Ascending"
+        ),
+        start,
+        size,
+        summaries,
+    )
 }
 
 fn paged(

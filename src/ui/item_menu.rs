@@ -481,7 +481,11 @@ impl Plaivo {
                 self.navigate(Nav::Detail(server, key, self.season.clone()), false, cx)
             }
             Some(
-                nav @ (Nav::Library(..) | Nav::Collection(..) | Nav::Hub(..) | Nav::Watchlist),
+                nav @ (Nav::Library(..)
+                | Nav::Collection(..)
+                | Nav::Person(..)
+                | Nav::Hub(..)
+                | Nav::Watchlist),
             ) => self.navigate(nav, false, cx),
             Some(Nav::Home) => self.load_home(cx),
             _ => {}

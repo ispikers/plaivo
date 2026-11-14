@@ -64,6 +64,7 @@ pub enum Nav {
     Servers,
     Library(String, String),
     Collection(String, String, String),
+    Person(String, String, String),
     Hub(String, String, String, bool),
     Watchlist,
     Search,
@@ -262,10 +263,12 @@ pub struct DetailView {
     pub extras: Vec<Card>,
     pub related: Vec<(SharedString, Vec<Card>)>,
     pub watchlisted: Option<bool>,
+    pub photo: Option<Thumb>,
 }
 
 #[derive(Clone)]
 pub struct CastMember {
+    pub id: String,
     pub name: SharedString,
     pub role: SharedString,
     pub thumb: Option<Thumb>,
@@ -392,6 +395,7 @@ pub struct Plaivo {
     pub offline_view: Option<(String, String)>,
     pub detail_scroll: ScrollHandle,
     pub detail_shelves: Vec<(ScrollHandle, Slide)>,
+    pub summary_expanded: bool,
     pub arrivals: HashMap<String, Instant>,
     pub settings_scroll: ScrollHandle,
     pub license_scroll: ScrollHandle,
@@ -556,8 +560,6 @@ fn title_rank(title: &str, q: &str) -> u8 {
     }
 }
 
-// Library hits (episodes folded into their show) ranked by title match then server score; Discover hits the
-// account already owns are dropped, the rest follow in Discover's own order.
 fn rank_search(
     q: &str,
     home: &str,
@@ -785,6 +787,7 @@ impl Plaivo {
             offline_view: None,
             detail_scroll: ScrollHandle::new(),
             detail_shelves: Vec::new(),
+            summary_expanded: false,
             arrivals: HashMap::new(),
             settings_scroll: ScrollHandle::new(),
             license_scroll: ScrollHandle::new(),
@@ -965,7 +968,6 @@ impl Plaivo {
         self.download_entries.iter().any(|e| e.state == State::Done)
     }
 
-    // Stale-while-revalidate: apply the disk-cached response at once, then the network one only if it differs.
     pub(crate) fn load<T: Send + 'static>(
         &self,
         cx: &mut Context<Self>,
@@ -1387,6 +1389,7 @@ impl Plaivo {
         self.nav.retain(|n| match n {
             Nav::Library(server, _)
             | Nav::Collection(server, _, _)
+            | Nav::Person(server, _, _)
             | Nav::Hub(server, _, _, _)
             | Nav::Detail(server, _, _) => known.contains(server),
             Nav::Watchlist => known.contains(DISCOVER_ID),
@@ -1779,6 +1782,10 @@ impl Plaivo {
                     title.into(),
                     cx,
                 );
+            }
+            Nav::Person(server, id, name) => {
+                self.page = Page::Detail;
+                self.load_person(server, id, name, cx);
             }
             Nav::Hub(server, key, title, resume) => {
                 self.page = Page::HubList;
@@ -2337,14 +2344,7 @@ impl Plaivo {
             return;
         };
         if self.detail_id != (server.clone(), key.clone()) {
-            self.detail = None;
-            self.seasons.clear();
-            self.season_items.clear();
-            self.episodes.clear();
-            self.episode_items.clear();
-            self.season = None;
-            self.detail_scroll = ScrollHandle::new();
-            self.detail_shelves.clear();
+            self.clear_detail();
             self.owned_check = (server == DISCOVER_ID).then(|| key.clone());
         }
         if season.is_some() {
@@ -2376,6 +2376,125 @@ impl Plaivo {
                 }
             },
         );
+    }
+
+    fn clear_detail(&mut self) {
+        self.detail = None;
+        self.seasons.clear();
+        self.season_items.clear();
+        self.episodes.clear();
+        self.episode_items.clear();
+        self.season = None;
+        self.detail_scroll = ScrollHandle::new();
+        self.detail_shelves.clear();
+        self.summary_expanded = false;
+        self.owned_check = None;
+    }
+
+    fn load_person(&mut self, server: String, id: String, name: String, cx: &mut Context<Self>) {
+        let Some(srv) = self.server(&server) else {
+            return;
+        };
+        let key = format!("person:{id}");
+        if self.detail_id != (server.clone(), key.clone()) {
+            self.clear_detail();
+        }
+        self.detail_id = (server.clone(), key);
+        let wanted = self.detail_id.clone();
+        let discover = self.server(DISCOVER_ID);
+        let servers = if server == DISCOVER_ID {
+            self.live_servers()
+        } else {
+            Vec::new()
+        };
+        let who = name.clone();
+        self.load(
+            cx,
+            move |c| {
+                if srv.id == DISCOVER_ID {
+                    return Ok(std::thread::scope(|s| {
+                        let info = s.spawn(|| srv.discover_person(c, &id));
+                        let items = plex::person_everywhere(&servers, c, &who, &id);
+                        (info.join().unwrap_or_default(), items)
+                    }));
+                }
+                let (info, items) = std::thread::scope(|s| {
+                    let info = s.spawn(|| srv.person(c, &id, discover.as_ref()));
+                    (info.join(), srv.person_items(c, &id, 0, 200, false))
+                });
+                let info = match info {
+                    Ok(Ok(info)) => info,
+                    Ok(Err(e)) => {
+                        log::debug!("person {id}: {e}");
+                        Default::default()
+                    }
+                    Err(_) => Default::default(),
+                };
+                let items = items?.0.into_iter().map(|it| (srv.id.clone(), it));
+                Ok((info, items.collect()))
+            },
+            move |this, r, cx| {
+                if this.detail_id != wanted {
+                    return;
+                }
+                match r {
+                    Ok((info, items)) => this.apply_person(&wanted.0, &name, info, items),
+                    Err(e) => this.toast(format!("Could not load {name}: {e}"), cx),
+                }
+            },
+        );
+    }
+
+    fn apply_person(
+        &mut self,
+        server: &str,
+        name: &str,
+        info: plex::PersonInfo,
+        items: Vec<(String, Item)>,
+    ) {
+        let art = items
+            .iter()
+            .map(|(s, it)| (s.as_str(), it))
+            .chain(info.known_for.iter().map(|it| (DISCOVER_ID, it)))
+            .map(|(s, it)| (s, first(&[&it.art, &it.grandparent_art])))
+            .find(|(_, a)| !a.is_empty())
+            .and_then(|(s, a)| thumb(s, a));
+        let known_for: Vec<Card> = info
+            .known_for
+            .iter()
+            .map(|it| card_for(it, false, DISCOVER_ID))
+            .collect();
+        let library = items.iter().map(|(s, it)| card_for(it, false, s)).collect();
+        let related = [
+            ("Media in Library".into(), library),
+            ("Known For".into(), known_for),
+        ]
+        .into_iter()
+        .filter(|(_, cards)| !cards.is_empty())
+        .collect();
+        let info_rows = [
+            ("Born", info.born),
+            ("Died", info.died),
+            ("Birthplace", info.birthplace),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        self.detail = Some(DetailView {
+            server: server.to_owned().into(),
+            title: name.to_owned().into(),
+            summary: info.summary.into(),
+            art,
+            photo: thumb(server, &info.thumb),
+            info: info_rows,
+            related,
+            item: Item {
+                kind: "person".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
     }
 
     fn apply_detail(&mut self, server: &str, it: Item, seasons: Vec<Item>, cx: &mut Context<Self>) {
@@ -2423,6 +2542,7 @@ impl Plaivo {
                 .iter()
                 .take(40)
                 .map(|p| CastMember {
+                    id: p.id.clone(),
                     name: p.tag.clone().into(),
                     role: p.role.clone().into(),
                     thumb: thumb(server, &p.thumb),
@@ -2431,6 +2551,7 @@ impl Plaivo {
             extras,
             related,
             watchlisted,
+            photo: None,
             server: server.to_owned().into(),
             eyebrow: summary.eyebrow.into(),
             title: it.title.clone().into(),
@@ -2509,7 +2630,7 @@ impl Plaivo {
         cx.notify();
     }
 
-    fn open_owned_copy(&mut self, it: &Item, cx: &mut Context<Self>) {
+    fn live_servers(&self) -> Vec<Server> {
         let home = self.home_server().map(|h| h.id).unwrap_or_default();
         let mut servers: Vec<Server> = self
             .servers
@@ -2518,6 +2639,11 @@ impl Plaivo {
             .cloned()
             .collect();
         servers.sort_by_key(|s| s.id != home);
+        servers
+    }
+
+    fn open_owned_copy(&mut self, it: &Item, cx: &mut Context<Self>) {
+        let servers = self.live_servers();
         let (client, key, it) = (self.client.clone(), it.rating_key.clone(), it.clone());
         Self::bg(
             cx,
