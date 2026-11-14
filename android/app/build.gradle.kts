@@ -62,6 +62,7 @@ val buildRust = tasks.register<Exec>("buildRust") {
     workingDir = workspace
     val out = layout.buildDirectory.dir("rust/jniLibs").get().asFile.absolutePath
     commandLine("cargo", "ndk", "-t", "arm64-v8a", "-t", "armeabi-v7a", "-P", "24", "-o", out, "build", "-p", "plaivo-ffi", "--release", "--config", "profile.release.strip=false", "--config", "profile.release.panic='unwind'")
+    environment("PLAIVO_APP_VERSION", android.defaultConfig.versionName!!)
     doFirst { environment("ANDROID_NDK_HOME", ndkDir.get().asFile.absolutePath) }
 }
 

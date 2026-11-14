@@ -69,6 +69,7 @@ pub struct PartyState {
     pub match_: Option<Match>,
     pub offset_ms: i64,
     pub player: PlayerState,
+    pub start_pending: bool,
     pub end_reason: Option<EndReason>,
 }
 
@@ -88,6 +89,13 @@ impl PartyState {
                     .room
                     .as_ref()
                     .is_some_and(|r| r.control == Control::Everyone))
+    }
+
+    pub fn in_room(&self) -> bool {
+        matches!(
+            self.connection,
+            Connection::Connected | Connection::Reconnecting
+        )
     }
 }
 
@@ -179,7 +187,7 @@ pub struct Party {
 
 impl Party {
     pub fn new(name: &str, client: &str, seed: u64) -> Result<Self, PartyError> {
-        if !valid_text(name, 32) || !valid_client(client) {
+        if !valid_text(name, NAME_MAX) || !valid_client(client) {
             return Err(PartyError::local("invalid_message"));
         }
         Ok(Self {
@@ -412,6 +420,10 @@ impl Party {
 
     fn close_cancelled(&mut self) {
         self.cancel_by = None;
+        self.close_socket();
+    }
+
+    fn close_socket(&mut self) {
         if self.open {
             self.open = false;
             self.out.push(Output::Close(1000));
@@ -563,10 +575,7 @@ impl Party {
             _ => {}
         }
         self.ping(now);
-        if !matches!(
-            self.state.connection,
-            Connection::Connected | Connection::Reconnecting
-        ) {
+        if !self.state.in_room() {
             return;
         }
         if self.state.connection == Connection::Connected
@@ -590,6 +599,13 @@ impl Party {
             self.run_step(now);
         }
         self.state.player = self.derive_player(now);
+        self.state.start_pending = self.play_at.is_some()
+            || (self.bound
+                && self
+                    .state
+                    .room
+                    .as_ref()
+                    .is_some_and(|r| r.phase == Phase::Waiting));
         if self.state.connection == Connection::Connected {
             self.pace_status(now);
         }
@@ -752,10 +768,7 @@ impl Party {
     }
 
     pub fn retry(&mut self, now: i64) {
-        if self.open {
-            self.out.push(Output::Close(1000));
-            self.open = false;
-        }
+        self.close_socket();
         self.clock = None;
         self.answer_by = Some(now + CONNECT_TIMEOUT_MS);
     }
@@ -778,10 +791,7 @@ impl Party {
 
     fn reset(&mut self) {
         self.cancel_by = None;
-        if self.open {
-            self.out.push(Output::Close(1000));
-            self.open = false;
-        }
+        self.close_socket();
         let (connection, end_reason) = (self.state.connection, self.state.end_reason);
         self.state = PartyState {
             connection,
@@ -1012,8 +1022,8 @@ impl Party {
             .participants
             .iter()
             .filter(|p| after.participant(&p.peer_id).is_none());
-        let joined: Vec<_> = joined.cloned().map(Event::ParticipantJoined).collect();
-        self.events.extend(joined);
+        self.events
+            .extend(joined.cloned().map(Event::ParticipantJoined));
         self.events
             .extend(left.cloned().map(Event::ParticipantLeft));
     }
@@ -1036,10 +1046,7 @@ impl Party {
     }
 
     fn attempt_failed(&mut self, now: i64) {
-        if self.open {
-            self.out.push(Output::Close(1000));
-            self.open = false;
-        }
+        self.close_socket();
         self.answer_by = None;
         self.clock = None;
         self.schedule_attempt(now);
@@ -1277,8 +1284,10 @@ mod tests {
         );
         assert!(sim.paused);
         assert_eq!(p.state().player, PlayerState::Ready);
+        assert!(p.state().start_pending);
 
         run(&mut p, &mut sim, &mut now, 8000, &mut log);
+        assert!(!p.state().start_pending);
         let target = |now: i64| 60_000 + (now + OFFSET - start);
         assert!(
             log.iter()

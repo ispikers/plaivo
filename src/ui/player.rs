@@ -369,7 +369,11 @@ impl Plaivo {
                         cx.notify();
                     }))
             });
-        let hint = self.player.hint.clone().map(|(i, text)| {
+        let hint = self
+            .watch_wait()
+            .map(|text| (Icon::Group, text.into()))
+            .or_else(|| self.player.hint.clone());
+        let hint = hint.map(|(i, text)| {
             div()
                 .absolute()
                 .top(px(18.))
@@ -781,7 +785,12 @@ impl Plaivo {
                                     30.,
                                     if paused { "Play" } else { "Pause" },
                                 )
-                                .on_click(cx.listener(|this, _, _, _| this.toggle_pause())),
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.toggle_pause();
+                                        cx.notify();
+                                    },
+                                )),
                             )
                             .child(seek_button("fwd", Icon::Forward, small, false).on_click(
                                 cx.listener(move |this, _, _, _| this.seek_by(small as f64)),

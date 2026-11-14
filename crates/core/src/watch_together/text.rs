@@ -32,6 +32,19 @@ impl EndReason {
     }
 }
 
+impl PartyState {
+    pub fn waiting_text(&self) -> Option<String> {
+        let room = self.room.as_ref()?;
+        let names: Vec<&str> = room
+            .waiting_on
+            .iter()
+            .filter(|id| Some(id.as_str()) != self.peer_id.as_deref())
+            .map(|id| room.participant(id).map_or("someone", |p| p.name.as_str()))
+            .collect();
+        (!names.is_empty()).then(|| format!("Waiting for {}", names.join(", ")))
+    }
+}
+
 impl Event {
     pub fn text(&self, s: &PartyState) -> Option<String> {
         match self {

@@ -6,16 +6,15 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{AppContext, Context, Entity, SharedString};
 use plaivo_core::watch_together::{
-    Connection, Event, Match, MatchState, Media, PartyError, PartyState, PlaivoExt, PlayerCommand,
-    PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy, match_for,
-    normalize_code,
+    Connection, Event, Match, MatchState, Media, NAME_MAX, PartyError, PartyState, Phase,
+    PlaivoExt, PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, clean, describe,
+    find_copy, match_for, normalize_code,
 };
 use std::time::{Duration, Instant};
 
 const CLIENT: &str = concat!("Plaivo/", env!("CARGO_PKG_VERSION"));
 const FEED_EVERY: Duration = Duration::from_millis(400);
 const SAVE_AFTER: Duration = Duration::from_millis(600);
-const NAME_MAX: usize = 32;
 
 pub struct Watch {
     wt: Option<WatchTogether>,
@@ -23,12 +22,12 @@ pub struct Watch {
     tx: UnboundedSender<(u64, Update)>,
     pub state: PartyState,
     pub starting: bool,
+    pub resuming: bool,
     creating: bool,
     pub error: Option<SharedString>,
     epoch: Option<i64>,
     file: Option<(String, String)>,
     share: Option<(Media, i64)>,
-    pub unavailable: bool,
     last_feed: Option<Instant>,
     attached: bool,
     pub custom_relay: bool,
@@ -98,12 +97,12 @@ impl Watch {
             tx,
             state: PartyState::default(),
             starting: false,
+            resuming: false,
             creating: false,
             error: None,
             epoch: None,
             file: None,
             share: None,
-            unavailable: false,
             last_feed: None,
             attached: false,
             custom_relay: !relay.is_empty(),
@@ -116,10 +115,13 @@ impl Watch {
     }
 
     pub fn in_room(&self) -> bool {
-        matches!(
-            self.state.connection,
-            Connection::Connected | Connection::Reconnecting
-        )
+        self.state.in_room()
+    }
+
+    pub fn unavailable(&self) -> bool {
+        self.state
+            .match_
+            .is_some_and(|m| m.state == MatchState::Unavailable)
     }
 
     pub fn can_open(&self) -> bool {
@@ -181,12 +183,9 @@ pub fn holds(
     file: Option<&(String, String)>,
     playing: Option<(&str, &str)>,
 ) -> bool {
-    matches!(
-        s.connection,
-        Connection::Connected | Connection::Reconnecting
-    ) && s
-        .match_
-        .is_some_and(|m| matches!(m.state, MatchState::Matched | MatchState::Mismatched))
+    s.in_room()
+        && s.match_
+            .is_some_and(|m| matches!(m.state, MatchState::Matched | MatchState::Mismatched))
         && file
             .zip(playing)
             .is_some_and(|((fs, fk), (ps, pk))| fs == ps && fk == pk)
@@ -347,9 +346,7 @@ impl Plaivo {
         if !w.busy() {
             self.watch_create(cx);
         }
-        let same = self.playing()
-            && self.player.key == key
-            && self.player.server.as_ref().is_some_and(|s| s.id == server);
+        let same = self.playing_file() == Some((server.as_str(), key.as_str()));
         if same {
             self.cancel_pending_play();
             let at = (self.player.time * 1000.0) as i64;
@@ -442,7 +439,6 @@ impl Plaivo {
         let mut resolve = None;
         if epoch != w.epoch {
             w.epoch = epoch;
-            w.unavailable = false;
             w.file = None;
             match on_epoch(&s) {
                 Bind::Resolve(media, epoch) => resolve = Some((*media, epoch)),
@@ -452,9 +448,9 @@ impl Plaivo {
         }
         if matches!(s.connection, Connection::Idle | Connection::Ended) {
             w.creating = false;
-            w.file = None;
-            w.epoch = None;
-            w.unavailable = false;
+        }
+        if s.room.as_ref().is_none_or(|r| r.phase != Phase::Paused) {
+            w.resuming = false;
         }
         w.state = s;
         if let Some((media, epoch)) = resolve {
@@ -477,14 +473,7 @@ impl Plaivo {
                 }
                 let Some(wt) = &w.wt else { return };
                 let Some((server, it)) = found else {
-                    wt.set_match(
-                        epoch,
-                        Match {
-                            state: MatchState::Unavailable,
-                            delta_ms: None,
-                        },
-                    );
-                    w.unavailable = true;
+                    wt.set_match(epoch, Match::UNAVAILABLE);
                     return this.toast(
                         format!(
                             "{} isn't in your libraries.",
@@ -508,13 +497,13 @@ impl Plaivo {
     fn watch_event(&mut self, event: Event, cx: &mut Context<Self>) {
         let text = event.text(&self.watch.state);
         let text = match event {
+            Event::Error(_) => {
+                self.watch.resuming = false;
+                text
+            }
             Event::Failed(_) => {
                 self.watch.error = text.clone().map(SharedString::from);
                 text.filter(|_| self.page != Page::Watch)
-            }
-            Event::Ended { .. } => {
-                self.watch.creating = false;
-                text
             }
             _ => text,
         };
@@ -549,6 +538,24 @@ impl Plaivo {
             self.watch.file.as_ref(),
             self.playing_file(),
         )
+    }
+
+    pub fn watch_resume(&mut self) {
+        self.watch.resuming = self
+            .watch
+            .state
+            .room
+            .as_ref()
+            .is_some_and(|r| r.phase == Phase::Paused);
+        self.watch_call(WatchTogether::play);
+    }
+
+    pub fn watch_wait(&self) -> Option<String> {
+        let s = &self.watch.state;
+        if !self.player.paused || !(self.watch.resuming || s.start_pending) || !self.watch_holds() {
+            return None;
+        }
+        Some(s.waiting_text().unwrap_or_else(|| "Starting…".into()))
     }
 
     pub fn watch_following(&self) -> bool {
@@ -622,7 +629,7 @@ impl Plaivo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plaivo_core::watch_together::{Control, MediaKind, Participant, Phase, PlayerState, Room};
+    use plaivo_core::watch_together::{Control, MediaKind, Participant, PlayerState, Room};
 
     fn state(
         connection: Connection,

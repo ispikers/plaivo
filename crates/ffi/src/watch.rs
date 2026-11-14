@@ -2,14 +2,11 @@ use crate::{Plaivo, R};
 use plaivo_core::plex::{Ctx, Source, resolve_playable};
 use plaivo_core::settings::Settings;
 use plaivo_core::watch_together::{
-    Connection, Control, Match, MatchState, Media, Participant, PartyState, PlayerCommand,
-    PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy, format_code, match_for,
-    normalize_code, sync_label,
+    Connection, Control, Match, MatchState, Media, NAME_MAX, Participant, PartyState,
+    PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy,
+    format_code, match_for, normalize_code, sync_label,
 };
 use std::sync::{Arc, Mutex};
-
-const CLIENT: &str = concat!("Plaivo/", env!("CARGO_PKG_VERSION"));
-const NAME_MAX: usize = 32;
 
 #[uniffi::export(callback_interface)]
 pub trait WatchListener: Send + Sync {
@@ -140,15 +137,7 @@ impl Plaivo {
     }
 
     pub fn watch_unavailable(&self, epoch: i64) {
-        self.with_watch(|w| {
-            w.set_match(
-                epoch,
-                Match {
-                    state: MatchState::Unavailable,
-                    delta_ms: None,
-                },
-            )
-        });
+        self.with_watch(|w| w.set_match(epoch, Match::UNAVAILABLE));
     }
 
     pub fn watch_resolve(&self, epoch: i64) -> Option<WatchItem> {
@@ -250,7 +239,7 @@ impl Plaivo {
             drop(old);
             let state = Arc::new(Mutex::new(PartyState::default()));
             let shared = state.clone();
-            let wt = WatchTogether::new(&name, CLIENT, relays, move |u| {
+            let wt = WatchTogether::new(&name, &client(), relays, move |u| {
                 deliver(&*listener, &shared, u)
             })
             .map_err(|e| format!("Watch Together: {}", e.code))?;
@@ -305,6 +294,11 @@ fn deliver(listener: &dyn WatchListener, shared: &Mutex<PartyState>, update: Upd
     }
 }
 
+fn client() -> String {
+    let version = option_env!("PLAIVO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+    format!("Plaivo/{version}")
+}
+
 fn display_name(saved: &str, device: &str) -> Option<String> {
     [saved, device, "Plaivo"]
         .into_iter()
@@ -315,24 +309,10 @@ fn display_name(saved: &str, device: &str) -> Option<String> {
 fn view(s: &PartyState) -> WatchState {
     let room = s.room.as_ref();
     let me = s.peer_id.as_deref();
-    let name = |id: &str| {
-        room.and_then(|r| r.participant(id))
-            .map_or("someone", |p| p.name.as_str())
-    };
-    let waiting: Vec<&str> = room
-        .map(|r| {
-            r.waiting_on
-                .iter()
-                .filter(|id| Some(id.as_str()) != me)
-                .map(|id| name(id))
-                .collect()
-        })
-        .unwrap_or_default();
     let status = match s.match_.map(|m| m.state) {
         Some(MatchState::Searching) => "Finding the video".into(),
         Some(MatchState::Unavailable) => "Not on your servers".into(),
-        _ if !waiting.is_empty() => format!("Waiting for {}", waiting.join(", ")),
-        _ => String::new(),
+        _ => s.waiting_text().unwrap_or_default(),
     };
     WatchState {
         connection: match s.connection {

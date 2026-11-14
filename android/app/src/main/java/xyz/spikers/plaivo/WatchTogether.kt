@@ -46,7 +46,7 @@ import uniffi.plaivo_ffi.formatRoomCode
 import uniffi.plaivo_ffi.rememberRoom
 
 object Watch : WatchListener {
-    data class Bound(val code: String, val epoch: Long, val server: String, val key: String)
+    data class Bound(val epoch: Long, val server: String, val key: String)
 
     private val main = Handler(Looper.getMainLooper())
     var state by mutableStateOf<WatchState?>(null)
@@ -105,8 +105,7 @@ object Watch : WatchListener {
         }
     }
 
-    fun epochFor(server: String, key: String): Long? =
-        item?.takeIf { inRoom && it.server == server && it.key == key }?.epoch
+    fun epochFor(server: String, key: String): Long? = item?.takeIf { it.server == server && it.key == key }?.epoch
 
     fun loaded(server: String, key: String, durationMs: Long) {
         epochFor(server, key)?.let { core.watchMatched(it, durationMs) }
@@ -154,7 +153,7 @@ object Watch : WatchListener {
                     core.watchUnavailable(s.epoch)
                     toast("${s.media} isn't on your servers")
                 } else {
-                    item = Bound(s.code, s.epoch, found.server, found.key)
+                    item = Bound(s.epoch, found.server, found.key)
                     open()
                 }
             }

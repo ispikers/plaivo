@@ -1930,15 +1930,12 @@ impl Plaivo {
         self.mpv(|m| m.command(&["seek", &d.to_string(), "relative"]));
     }
 
-    pub fn toggle_pause(&self) {
+    pub fn toggle_pause(&mut self) {
         if self.watch_holds() {
-            return self.watch_call(|wt| {
-                if self.player.paused {
-                    wt.play()
-                } else {
-                    wt.pause()
-                }
-            });
+            if self.player.paused {
+                return self.watch_resume();
+            }
+            return self.watch_call(|wt| wt.pause());
         }
         self.mpv(|m| m.command(&["cycle", "pause"]));
     }

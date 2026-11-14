@@ -1,5 +1,5 @@
 use super::media::{Media, MediaFile, MediaKind, PlaivoExt, Series, ids_from_guids};
-use super::protocol::{Match, MatchState};
+use super::protocol::{Match, MatchState, forbidden};
 use crate::plex::{Client, Ctx, Item, Server, Source};
 use std::collections::{BTreeMap, HashSet};
 
@@ -8,12 +8,11 @@ const CANDIDATES: usize = 5;
 const PARALLEL: usize = 4;
 
 pub fn clean(s: &str, max: usize) -> String {
-    let bidi = |c: char| matches!(c, '\u{61C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
     s.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .filter(|c| !c.is_control() && !bidi(*c))
+        .filter(|c| !forbidden(*c))
         .take(max)
         .collect()
 }

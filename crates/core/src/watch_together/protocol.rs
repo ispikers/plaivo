@@ -52,6 +52,13 @@ pub struct Match {
     pub delta_ms: Option<i64>,
 }
 
+impl Match {
+    pub const UNAVAILABLE: Match = Match {
+        state: MatchState::Unavailable,
+        delta_ms: None,
+    };
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Participant {
@@ -100,7 +107,6 @@ impl Room {
     }
 
     fn valid(&self) -> bool {
-        let int = |v: i64| (0..=MAX_INT).contains(&v);
         let mut seen = HashSet::with_capacity(self.waiting_on.len());
         let waiting = (self.phase == Phase::Waiting || self.waiting_on.is_empty())
             && self
@@ -110,7 +116,7 @@ impl Room {
         let participants = self.participants.iter().filter(|p| p.host).count() == 1
             && self.participants.iter().all(|p| {
                 valid_peer_id(&p.peer_id)
-                    && valid_text(&p.name, 32)
+                    && valid_text(&p.name, NAME_MAX)
                     && valid_client(&p.client)
                     && (-MAX_DURATION_MS..=MAX_DURATION_MS).contains(&p.offset_ms)
                     && p.match_.is_none_or(|m| {
@@ -118,9 +124,9 @@ impl Room {
                     })
             });
         self.rev >= 1
-            && int(self.rev)
-            && int(self.epoch)
-            && int(self.at_ms)
+            && int_ok(self.rev)
+            && int_ok(self.epoch)
+            && int_ok(self.at_ms)
             && valid_code(&self.code)
             && (0..=MAX_DURATION_MS).contains(&self.position_ms)
             && (self.phase != Phase::Idle || self.position_ms == 0)
@@ -341,6 +347,8 @@ pub fn normalize_ints(v: &mut Value) {
         _ => {}
     }
 }
+
+pub const NAME_MAX: usize = 32;
 
 pub fn forbidden(c: char) -> bool {
     matches!(c as u32, 0..=0x1F | 0x7F..=0x9F | 0x61C | 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069)

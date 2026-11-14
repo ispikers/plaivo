@@ -144,7 +144,7 @@ impl Plaivo {
             ]),
             None => m.title.clone(),
         });
-        let mine = if self.watch.unavailable {
+        let mine = if self.watch.unavailable() {
             "Not in your libraries"
         } else {
             sync_label(s.player, s.match_, true)
@@ -274,7 +274,7 @@ impl Plaivo {
         let room = s.room.as_ref().filter(|_| self.watch.in_room())?;
         let state = match s.connection {
             Connection::Reconnecting => "Reconnecting",
-            _ if self.watch.unavailable => "Not in your libraries",
+            _ if self.watch.unavailable() => "Not in your libraries",
             _ => sync_label(s.player, s.match_, true),
         };
         Some(
