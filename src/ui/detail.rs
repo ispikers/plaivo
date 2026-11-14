@@ -182,6 +182,14 @@ impl Plaivo {
         );
         let it = &d.item;
         let person = it.kind == "person";
+        let show_link =
+            (it.kind == "episode" && !it.grandparent_rating_key.is_empty()).then(|| {
+                Nav::Detail(
+                    server.to_string(),
+                    it.grandparent_rating_key.clone(),
+                    Some(it.parent_rating_key.clone()).filter(|k| !k.is_empty()),
+                )
+            });
         let local = *server != *DISCOVER_ID;
         let library = local && matches!(it.kind.as_str(), "movie" | "episode" | "show" | "season");
         let watched = it.watched();
@@ -463,11 +471,21 @@ impl Plaivo {
                     .gap(px(10.))
                     .when(!eyebrow.is_empty(), |d| {
                         d.child(
-                            div()
-                                .text_size(px(16.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme::muted())
-                                .child(eyebrow),
+                            div().flex().child(
+                                div()
+                                    .id("eyebrow")
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme::muted())
+                                    .child(eyebrow)
+                                    .when_some(show_link, |d, nav| {
+                                        d.cursor_pointer()
+                                            .hover(|s| s.text_color(theme::text()))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.navigate(nav.clone(), true, cx)
+                                            }))
+                                    }),
+                            ),
                         )
                     })
                     .child(div().pb(px(4.)).child(title_el))
@@ -709,6 +727,7 @@ impl Plaivo {
                     .id("detail")
                     .size_full()
                     .overflow_y_scroll()
+                    .restrict_scroll_to_axis()
                     .track_scroll(&self.detail_scroll)
                     .child(hero)
                     .child(body),
