@@ -1,0 +1,5 @@
+[alias]
+xtask = "run -p xtask --"
+
+[registry]
+global-min-publish-age = "3 days"
