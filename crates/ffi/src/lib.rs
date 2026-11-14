@@ -6,7 +6,7 @@ use plaivo_core::plex::{
 };
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{
-    AUTO_SKIP_NOTICE, BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, PlaybackRule,
+    AUTO_SKIP_NOTICE, BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, HomeClock, PlaybackRule,
     SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key, rank_in,
 };
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
@@ -102,6 +102,7 @@ pub struct Settings {
     pub watch_relay: String,
     pub watch_rooms: Vec<String>,
     pub check_updates: bool,
+    pub home_clock: HomeClock,
 }
 
 #[uniffi::remote(Enum)]
@@ -284,6 +285,13 @@ pub enum GridSpacing {
     Tight,
     Normal,
     Spacious,
+}
+
+#[uniffi::remote(Enum)]
+pub enum HomeClock {
+    Never,
+    Fullscreen,
+    Always,
 }
 
 #[uniffi::remote(Enum)]

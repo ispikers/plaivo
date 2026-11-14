@@ -333,30 +333,29 @@ impl Plaivo {
             .flex_col()
             .gap(px(28.))
             .child(
-                section("Location")
-                    .child(
-                        row(
-                            "download-dir",
-                            Some(Icon::Folder),
-                            "Download folder",
-                            download_root(&self.settings.download_dir)
-                                .display()
-                                .to_string(),
+                section("Location").child(
+                    row(
+                        "download-dir",
+                        Some(Icon::Folder),
+                        "Download folder",
+                        download_root(&self.settings.download_dir)
+                            .display()
+                            .to_string(),
+                    )
+                    .when(custom, |d| {
+                        d.child(
+                            pill("download-dir-default", "Default", None, false).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.set_download_dir(String::new(), cx)
+                                }),
+                            ),
                         )
-                        .when(custom, |d| {
-                            d.child(
-                                pill("download-dir-default", "Default", None, false).on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.set_download_dir(String::new(), cx)
-                                    }),
-                                ),
-                            )
-                        })
-                        .child(
-                            pill("download-dir-change", "Change", None, false)
-                                .on_click(cx.listener(|this, _, _, cx| this.pick_download_dir(cx))),
-                        ),
+                    })
+                    .child(
+                        pill("download-dir-change", "Change", None, false)
+                            .on_click(cx.listener(|this, _, _, cx| this.pick_download_dir(cx))),
                     ),
+                ),
             )
             .child(
                 section("Storage").child(

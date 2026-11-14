@@ -131,17 +131,15 @@ impl Plaivo {
                 .into_any_element()
             })
             .collect();
-        section("Overrides")
-            .children(rows)
-            .child(
-                nav_row(
-                    "language-rule-add",
-                    Icon::Add,
-                    "Add override",
-                    "Pick libraries and the languages to use",
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.open_language_rule(None, cx))),
+        section("Overrides").children(rows).child(
+            nav_row(
+                "language-rule-add",
+                Icon::Add,
+                "Add override",
+                "Pick libraries and the languages to use",
             )
+            .on_click(cx.listener(|this, _, _, cx| this.open_language_rule(None, cx))),
+        )
     }
 
     fn open_language_rule(&mut self, index: Option<usize>, cx: &mut Context<Self>) {

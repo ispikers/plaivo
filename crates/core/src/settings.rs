@@ -65,6 +65,7 @@ pub struct Settings {
     pub watch_relay: String,
     pub watch_rooms: Vec<String>,
     pub check_updates: bool,
+    pub home_clock: HomeClock,
 }
 
 impl Default for Settings {
@@ -114,6 +115,7 @@ impl Default for Settings {
             watch_relay: String::new(),
             watch_rooms: Vec::new(),
             check_updates: true,
+            home_clock: HomeClock::Fullscreen,
         }
     }
 }
@@ -247,6 +249,31 @@ impl EpisodePoster {
             EpisodePoster::Season => "Season poster",
             EpisodePoster::Thumbnail => "Thumbnail",
         }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum HomeClock {
+    Never,
+    #[default]
+    Fullscreen,
+    Always,
+}
+
+impl HomeClock {
+    pub const ALL: [HomeClock; 3] = [HomeClock::Never, HomeClock::Fullscreen, HomeClock::Always];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HomeClock::Never => "Never",
+            HomeClock::Fullscreen => "Fullscreen",
+            HomeClock::Always => "Always",
+        }
+    }
+
+    pub fn shown(self, fullscreen: bool) -> bool {
+        self == HomeClock::Always || (self == HomeClock::Fullscreen && fullscreen)
     }
 }
 
@@ -544,6 +571,16 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_clock_visibility() {
+        let shown = |c: HomeClock| [c.shown(false), c.shown(true)];
+        assert_eq!(shown(HomeClock::Never), [false, false]);
+        assert_eq!(shown(HomeClock::Fullscreen), [false, true]);
+        assert_eq!(shown(HomeClock::Always), [true, true]);
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.home_clock, HomeClock::Fullscreen);
+    }
 
     #[test]
     fn card_prefs_shape_episode_cards() {

@@ -120,8 +120,8 @@ impl Plaivo {
                     .children(hero)
                     .children(hubs),
             );
-        let fullscreen = window.is_fullscreen();
-        if fullscreen {
+        let show_clock = self.settings.home_clock.shown(window.is_fullscreen());
+        if show_clock {
             self.tick_clock(cx);
         }
         div()
@@ -136,7 +136,7 @@ impl Plaivo {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .when(fullscreen, |d| {
+                    .when(show_clock, |d| {
                         d.child(
                             div()
                                 .h(px(40.))

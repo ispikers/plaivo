@@ -330,10 +330,7 @@ impl Plaivo {
             .flex()
             .flex_col()
             .gap(px(28.))
-            .child(
-                section("Display name")
-                    .child(self.field("watch-name", &name, window, cx)),
-            )
+            .child(section("Display name").child(self.field("watch-name", &name, window, cx)))
             .child(
                 section("Relay")
                     .child(

@@ -52,17 +52,15 @@ impl Plaivo {
                 .into_any_element()
             })
             .collect();
-        section("Overrides")
-            .children(rows)
-            .child(
-                nav_row(
-                    "playback-rule-add",
-                    Icon::Add,
-                    "Add override",
-                    "Pick libraries and the shader or quality to use",
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.open_playback_rule(None, cx))),
+        section("Overrides").children(rows).child(
+            nav_row(
+                "playback-rule-add",
+                Icon::Add,
+                "Add override",
+                "Pick libraries and the shader or quality to use",
             )
+            .on_click(cx.listener(|this, _, _, cx| this.open_playback_rule(None, cx))),
+        )
     }
 
     fn open_playback_rule(&mut self, index: Option<usize>, cx: &mut Context<Self>) {

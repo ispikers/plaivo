@@ -1,7 +1,7 @@
 use crate::app::{Category, Nav, Plaivo, open_url};
 use crate::settings::{
-    COUNTDOWN_MAX, DENSITY_MAX, EpisodePoster, GridSpacing, SKIP_DELAY_MAX, Settings, SkipMode,
-    ViewMode,
+    COUNTDOWN_MAX, DENSITY_MAX, EpisodePoster, GridSpacing, HomeClock, SKIP_DELAY_MAX, Settings,
+    SkipMode, ViewMode,
 };
 use crate::ui::licenses::LICENSES;
 use crate::ui::theme::{self, Icon};
@@ -210,7 +210,10 @@ impl Plaivo {
                     .child(stepper(
                         "countdown",
                         format!("{} s", s.autoplay_countdown),
-                        (s.autoplay_countdown > 0, s.autoplay_countdown < COUNTDOWN_MAX),
+                        (
+                            s.autoplay_countdown > 0,
+                            s.autoplay_countdown < COUNTDOWN_MAX,
+                        ),
                         cx.listener(|this, step: &i8, _, cx| {
                             this.settings.autoplay_countdown = nudge(
                                 this.settings.autoplay_countdown,
@@ -315,16 +318,13 @@ impl Plaivo {
                     })),
                 ),
             )
-            .child(
-                section("Default quality")
-                    .children(self.choice_list(
-                        "quality",
-                        None,
-                        quality,
-                        |this, id, cx| this.set_default_quality(id.parse().unwrap_or(0), cx),
-                        cx,
-                    )),
-            )
+            .child(section("Default quality").children(self.choice_list(
+                "quality",
+                None,
+                quality,
+                |this, id, cx| this.set_default_quality(id.parse().unwrap_or(0), cx),
+                cx,
+            )))
             .child(self.render_playback_rules(cx))
     }
 
@@ -521,17 +521,16 @@ impl Plaivo {
             Some(Category::Playback) => self.render_playback_settings(cx),
             Some(Category::Shaders) => {
                 let choices = self.shader_choices(&self.settings.shader);
-                section("Default shader")
-                    .children(self.choice_list(
-                        "shader",
-                        None,
-                        choices,
-                        |this, id, cx| {
-                            this.settings.shader = id.to_owned();
-                            this.save_settings_soon(cx);
-                        },
-                        cx,
-                    ))
+                section("Default shader").children(self.choice_list(
+                    "shader",
+                    None,
+                    choices,
+                    |this, id, cx| {
+                        this.settings.shader = id.to_owned();
+                        this.save_settings_soon(cx);
+                    },
+                    cx,
+                ))
             }
             Some(Category::Audio) => self.render_audio_settings(cx),
             Some(Category::AudioLanguage) => self.render_language_list(false, cx),
@@ -940,23 +939,36 @@ impl Plaivo {
             },
             cx,
         );
+        let clock = self.segmented(
+            "home-clock",
+            &HomeClock::ALL.map(|c| (c, c.label())),
+            s.home_clock,
+            |this, c, cx| {
+                this.settings.home_clock = c;
+                this.save_settings_soon(cx);
+                cx.notify();
+            },
+            cx,
+        );
         div()
             .flex()
             .flex_col()
             .gap(px(28.))
             .child(
-                section("Display").child(
-                    row(
-                        "theme",
-                        Some(Icon::Contrast),
-                        "Theme",
-                        self.settings.theme.label(),
+                section("Display")
+                    .child(
+                        row(
+                            "theme",
+                            Some(Icon::Contrast),
+                            "Theme",
+                            self.settings.theme.label(),
+                        )
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::tint(0.12)))
+                        .child(icon(Icon::ChevronRight, 22., theme::muted()))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_theme_picker(cx))),
                     )
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::tint(0.12)))
-                    .child(icon(Icon::ChevronRight, 22., theme::muted()))
-                    .on_click(cx.listener(|this, _, _, cx| this.open_theme_picker(cx))),
-                ),
+                    .child(option_block(Icon::Schedule, "Home screen clock", clock)),
             )
             .child(
                 section("Library & cards")
