@@ -177,7 +177,10 @@ mod imp {
     use super::{RawWindowHandle, Region};
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
-    use objc2_app_kit::{NSAutoresizingMaskOptions, NSCursor, NSView, NSWindowOrderingMode};
+    use objc2_app_kit::{
+        NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSCursor, NSTitlePosition, NSView,
+        NSWindowOrderingMode,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     // mpv's Metal layer lives here (deps/mpv-macos-embed.patch adds --wid to macvk), below GPUI's transparent view.
@@ -194,6 +197,21 @@ mod imp {
                 MainThreadMarker::new().ok_or("video host must be created on the main thread")?;
             let gpui: &NSView = unsafe { h.ns_view.cast::<NSView>().as_ref() };
             let content = unsafe { gpui.superview() }.ok_or("GPUI view has no superview")?;
+            // Black under everything: GPUI presents independently of AppKit's resize commit, so a gap would show the desktop.
+            let backdrop = NSBox::initWithFrame(mtm.alloc(), content.bounds());
+            backdrop.setBoxType(NSBoxType::Custom);
+            backdrop.setTitlePosition(NSTitlePosition::NoTitle);
+            backdrop.setBorderWidth(0.0);
+            backdrop.setFillColor(&NSColor::blackColor());
+            backdrop.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            content.addSubview_positioned_relativeTo(
+                &backdrop,
+                NSWindowOrderingMode::Below,
+                Some(gpui),
+            );
             let view = NSView::initWithFrame(mtm.alloc(), content.bounds());
             view.setHidden(true);
             content.addSubview_positioned_relativeTo(
