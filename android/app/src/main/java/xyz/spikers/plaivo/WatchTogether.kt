@@ -42,6 +42,7 @@ import uniffi.plaivo_ffi.WatchCommand
 import uniffi.plaivo_ffi.WatchConnection
 import uniffi.plaivo_ffi.WatchListener
 import uniffi.plaivo_ffi.WatchState
+import uniffi.plaivo_ffi.forgetRoom
 import uniffi.plaivo_ffi.formatRoomCode
 import uniffi.plaivo_ffi.rememberRoom
 
@@ -60,6 +61,7 @@ object Watch : WatchListener {
 
     var player: PlayerActivity? = null
     private var resolving: Pair<String, Long>? = null
+    private var roomCode: String? = null
 
     val inRoom
         get() = state?.connection.let { it == WatchConnection.CONNECTED || it == WatchConnection.RECONNECTING }
@@ -77,6 +79,14 @@ object Watch : WatchListener {
         main.post { toast(text) }
     }
 
+    override fun roomGone() {
+        main.post { roomCode?.let(::forget) }
+    }
+
+    private fun forget(code: String) {
+        rooms = editSettings { forgetRoom(it, code) }.watchRooms
+    }
+
     override fun command(command: WatchCommand) {
         main.post { player?.follow(command) }
     }
@@ -84,18 +94,23 @@ object Watch : WatchListener {
     fun deviceName(): String =
         android.provider.Settings.Global.getString(App.instance.contentResolver, "device_name") ?: Build.MODEL
 
-    fun create() =
+    fun create() {
+        roomCode = null
         background.launch {
             runCatching { core.watchCreate(deviceName()) }.onFailure { main.post { toast(it.message) } }
         }
+    }
 
-    fun join(code: String) =
+    fun join(code: String) {
+        roomCode = code
         background.launch {
             runCatching { core.watchJoin(code, deviceName()) }.onFailure { main.post { toast(it.message) } }
         }
+    }
 
     fun share(card: MediaCard) {
         val create = !inRoom && state?.connection != WatchConnection.CONNECTING
+        if (create) roomCode = null
         background.launch {
             runCatching {
                     if (create) core.watchCreate(deviceName())
@@ -135,7 +150,10 @@ object Watch : WatchListener {
             resolving = null
             return
         }
-        if (s.code != before?.code) rooms = editSettings { rememberRoom(it, s.code) }.watchRooms
+        if (s.code != before?.code) {
+            roomCode = s.code
+            rooms = editSettings { rememberRoom(it, s.code) }.watchRooms
+        }
         val target = s.code to s.epoch
         if (s.media == null) {
             item = null

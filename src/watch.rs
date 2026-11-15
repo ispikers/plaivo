@@ -24,6 +24,7 @@ pub struct Watch {
     pub starting: bool,
     pub resuming: bool,
     creating: bool,
+    room_code: Option<String>,
     pub error: Option<SharedString>,
     epoch: Option<i64>,
     file: Option<(String, String)>,
@@ -99,6 +100,7 @@ impl Watch {
             starting: false,
             resuming: false,
             creating: false,
+            room_code: None,
             error: None,
             epoch: None,
             file: None,
@@ -214,6 +216,7 @@ impl Plaivo {
         w.generation += 1;
         w.starting = true;
         w.creating = code.is_none();
+        w.room_code = code.clone();
         w.error = None;
         w.share = None;
         let generation = w.generation;
@@ -279,6 +282,12 @@ impl Plaivo {
                 }
             },
         );
+        cx.notify();
+    }
+
+    fn watch_forget(&mut self, code: &str, cx: &mut Context<Self>) {
+        self.settings.forget_room(code);
+        self.settings.save();
         cx.notify();
     }
 
@@ -431,6 +440,7 @@ impl Plaivo {
         if s.connection == Connection::Connected && w.state.connection != Connection::Connected {
             w.creating = false;
             if let Some(room) = &s.room {
+                w.room_code = Some(room.code.clone());
                 self.settings.remember_room(&room.code);
                 self.settings.save();
             }
@@ -501,7 +511,16 @@ impl Plaivo {
                 self.watch.resuming = false;
                 text
             }
-            Event::Failed(_) => {
+            Event::Ended { reason, .. } => {
+                if let Some(code) = self.watch.room_code.take().filter(|_| reason.room_gone()) {
+                    self.watch_forget(&code, cx);
+                }
+                text
+            }
+            Event::Failed(ref e) => {
+                if let Some(code) = self.watch.room_code.take().filter(|_| e.room_gone()) {
+                    self.watch_forget(&code, cx);
+                }
                 self.watch.error = text.clone().map(SharedString::from);
                 text.filter(|_| self.page != Page::Watch)
             }

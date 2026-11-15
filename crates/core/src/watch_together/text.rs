@@ -24,6 +24,7 @@ impl EndReason {
         Some(match self {
             EndReason::Left => return None,
             EndReason::Ended => "The room has ended.",
+            EndReason::Closed => "You're no longer in the room.",
             EndReason::Kicked => "You were removed from the room.",
             EndReason::Expired => "The room expired.",
             EndReason::Replaced => "You joined this room from another device.",

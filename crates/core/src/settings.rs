@@ -403,6 +403,10 @@ impl Settings {
         self.watch_rooms.truncate(RECENT_ROOMS);
     }
 
+    pub fn forget_room(&mut self, code: &str) {
+        self.watch_rooms.retain(|c| c != code);
+    }
+
     pub fn skip_mode(&self, marker: &str) -> SkipMode {
         match marker {
             "intro" => self.skip_intro,
@@ -727,6 +731,9 @@ mod tests {
             s.watch_rooms,
             ["FFFFFF", "EEEEEE", "DDDDDD", "CCCCCC", "AAAAAA"]
         );
+        s.forget_room("DDDDDD");
+        s.forget_room("ZZZZZZ");
+        assert_eq!(s.watch_rooms, ["FFFFFF", "EEEEEE", "CCCCCC", "AAAAAA"]);
     }
 
     #[test]

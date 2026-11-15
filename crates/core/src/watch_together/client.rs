@@ -703,6 +703,14 @@ mod tests {
                     _ => None,
                 })
         }
+
+        fn gone(&self) -> bool {
+            self.updates
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|u| matches!(u, Update::Event(Event::Failed(e)) if e.room_gone()))
+        }
     }
 
     #[test]
@@ -755,6 +763,7 @@ mod tests {
         h.cmd(Cmd::Join("QABCDE".into(), false));
         assert!(h.opens().is_empty());
         assert_eq!(h.failure().as_deref(), Some("room_not_found"));
+        assert!(!h.gone(), "an unknown relay doesn't prove the room is gone");
 
         let mut h = Harness::new(offline);
         h.cmd(Cmd::Join("2ABCDE".into(), false));
@@ -763,6 +772,7 @@ mod tests {
         h.refuse("room_not_found", "join");
         assert!(h.opens().is_empty());
         assert_eq!(h.failure().as_deref(), Some("room_not_found"));
+        assert!(h.gone());
     }
 
     #[test]

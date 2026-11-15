@@ -27,10 +27,17 @@ pub enum Connection {
 pub enum EndReason {
     Left,
     Ended,
+    Closed,
     Kicked,
     Expired,
     Replaced,
     Lost,
+}
+
+impl EndReason {
+    pub fn room_gone(self) -> bool {
+        matches!(self, EndReason::Ended | EndReason::Expired)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +54,10 @@ impl PartyError {
             message: String::new(),
             re: None,
         }
+    }
+
+    pub fn room_gone(&self) -> bool {
+        self.code == "room_not_found" && self.re.as_deref() == Some("join")
     }
 }
 
@@ -399,9 +410,10 @@ impl Party {
             ServerMsg::Error(e) => self.on_error(e.into(), now),
             ServerMsg::Closed(reason) if self.state.connection == Connection::Connected => {
                 let reason = match reason.as_str() {
+                    "ended" => EndReason::Ended,
                     "kicked" => EndReason::Kicked,
                     "expired" => EndReason::Expired,
-                    _ => EndReason::Ended,
+                    _ => EndReason::Closed,
                 };
                 self.end(reason, None);
             }
@@ -1620,6 +1632,21 @@ mod tests {
         p.leave();
         assert_eq!(drain(&mut p, 0).sent, [json!({"type": "leave"})]);
         assert_eq!(p.state().end_reason, Some(EndReason::Left));
+    }
+
+    #[test]
+    fn only_ended_and_expired_mean_the_room_is_gone() {
+        for (reason, end, gone) in [
+            ("ended", EndReason::Ended, true),
+            ("expired", EndReason::Expired, true),
+            ("kicked", EndReason::Kicked, false),
+            ("maintenance", EndReason::Closed, false),
+        ] {
+            let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
+            p.on_text(5, &json!({"type": "closed", "reason": reason}).to_string());
+            assert_eq!(p.state().end_reason, Some(end), "{reason}");
+            assert_eq!(end.room_gone(), gone, "{reason}");
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crate::{Plaivo, R};
 use plaivo_core::plex::{Ctx, Source, resolve_playable};
 use plaivo_core::settings::Settings;
 use plaivo_core::watch_together::{
-    Connection, Control, Match, MatchState, Media, NAME_MAX, Participant, PartyState,
+    Connection, Control, Event, Match, MatchState, Media, NAME_MAX, Participant, PartyState,
     PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy,
     format_code, match_for, normalize_code, sync_label,
 };
@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 pub trait WatchListener: Send + Sync {
     fn state(&self, state: WatchState);
     fn notice(&self, text: String);
+    fn room_gone(&self);
     fn command(&self, command: WatchCommand);
 }
 
@@ -202,6 +203,12 @@ pub fn remember_room(mut settings: Settings, code: String) -> Settings {
 }
 
 #[uniffi::export]
+pub fn forget_room(mut settings: Settings, code: String) -> Settings {
+    settings.forget_room(&normalize_code(&code).unwrap_or(code));
+    settings
+}
+
+#[uniffi::export]
 pub fn format_room_code(code: String) -> String {
     format_code(&code).unwrap_or(code)
 }
@@ -280,6 +287,13 @@ fn deliver(listener: &dyn WatchListener, shared: &Mutex<PartyState>, update: Upd
             listener.state(view);
         }
         Update::Event(e) => {
+            if match &e {
+                Event::Failed(err) => err.room_gone(),
+                Event::Ended { reason, .. } => reason.room_gone(),
+                _ => false,
+            } {
+                listener.room_gone();
+            }
             let text = e.text(&shared.lock().unwrap());
             if let Some(text) = text {
                 listener.notice(text);
