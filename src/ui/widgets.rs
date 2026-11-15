@@ -183,7 +183,7 @@ pub fn overlay_button(
     hover: Hsla,
     fg: impl Into<Hsla>,
 ) -> Stateful<Div> {
-    round_button(id, i, size, icon_size, idle, hover, fg).occlude()
+    round_button(id, i, size, icon_size, idle, hover, fg).block_mouse_except_scroll()
 }
 
 struct ScrollDrag {
