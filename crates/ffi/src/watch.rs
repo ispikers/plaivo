@@ -46,6 +46,9 @@ pub struct WatchState {
     pub media: Option<String>,
     pub status: String,
     pub peers: Vec<WatchPeer>,
+    pub offset_ms: i64,
+    pub adjustable: bool,
+    pub mismatch_ms: Option<i64>,
 }
 
 #[derive(uniffi::Enum, Debug, PartialEq)]
@@ -69,6 +72,7 @@ pub struct WatchFeed {
 pub struct WatchItem {
     pub server: String,
     pub key: String,
+    pub mismatch_ms: Option<i64>,
 }
 
 pub(crate) struct Session {
@@ -88,9 +92,9 @@ impl Plaivo {
         self.start_watch(&device_name, WatchTogether::create)
     }
 
-    pub fn watch_join(&self, code: String, device_name: String) -> R<()> {
+    pub fn watch_join(&self, code: String, create: bool, device_name: String) -> R<()> {
         let code = normalize_code(&code).ok_or("Room codes are six letters and numbers")?;
-        self.start_watch(&device_name, |w| w.join(&code, false))
+        self.start_watch(&device_name, |w| w.join(&code, create))
     }
 
     pub fn watch_leave(&self) {
@@ -137,6 +141,27 @@ impl Plaivo {
         self.with_watch(|w| w.set_match(epoch, match_for(Some(duration_ms), theirs)));
     }
 
+    pub fn watch_answer_mismatch(&self, epoch: i64, delta_ms: i64, accept: bool) {
+        let state = if accept {
+            MatchState::Mismatched
+        } else {
+            MatchState::Unavailable
+        };
+        self.with_watch(|w| {
+            w.set_match(
+                epoch,
+                Match {
+                    state,
+                    delta_ms: Some(delta_ms),
+                },
+            )
+        });
+    }
+
+    pub fn watch_set_offset(&self, offset_ms: i64) {
+        self.with_watch(|w| w.set_offset(offset_ms));
+    }
+
     pub fn watch_unavailable(&self, epoch: i64) {
         self.with_watch(|w| w.set_match(epoch, Match::UNAVAILABLE));
     }
@@ -144,9 +169,13 @@ impl Plaivo {
     pub fn watch_resolve(&self, epoch: i64) -> Option<WatchItem> {
         let media = self.watch_media(epoch)?;
         let servers = self.account.lock().unwrap().all_servers();
-        find_copy(&media, &servers, &self.client).map(|(server, it)| WatchItem {
-            server,
-            key: it.rating_key,
+        find_copy(&media, &servers, &self.client).map(|(server, it)| {
+            let m = match_for(it.duration.map(|d| d as i64), media.duration_ms);
+            WatchItem {
+                server,
+                key: it.rating_key,
+                mismatch_ms: m.delta_ms.filter(|_| m.state == MatchState::Mismatched),
+            }
         })
     }
 
@@ -287,11 +316,7 @@ fn deliver(listener: &dyn WatchListener, shared: &Mutex<PartyState>, update: Upd
             listener.state(view);
         }
         Update::Event(e) => {
-            if match &e {
-                Event::Failed(err) => err.room_gone(),
-                Event::Ended { reason, .. } => reason.room_gone(),
-                _ => false,
-            } {
+            if matches!(&e, Event::Failed(err) if err.room_gone()) {
                 listener.room_gone();
             }
             let text = e.text(&shared.lock().unwrap());
@@ -347,6 +372,14 @@ fn view(s: &PartyState) -> WatchState {
         peers: room
             .map(|r| r.participants.iter().map(|p| peer(p, me)).collect())
             .unwrap_or_default(),
+        offset_ms: s.offset_ms,
+        adjustable: s.media.is_some()
+            && s.match_
+                .is_some_and(|m| matches!(m.state, MatchState::Matched | MatchState::Mismatched)),
+        mismatch_ms: s
+            .match_
+            .filter(|m| m.state == MatchState::Mismatched)
+            .and_then(|m| m.delta_ms),
     }
 }
 

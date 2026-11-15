@@ -3,8 +3,15 @@ use super::protocol::{Match, MatchState, PlayerState};
 
 impl PartyError {
     pub fn text(&self) -> Option<&'static str> {
+        let starting = matches!(self.re.as_deref(), Some("create" | "join"));
         Some(match self.code.as_str() {
             "cancelled" => return None,
+            "rate_limited" if starting => {
+                "Too many rooms from your network right now. Try again in a few minutes."
+            }
+            "rate_limited" => "That was too fast. Wait a moment and try again.",
+            "client_blocked" => "This Watch Together server doesn't accept Plaivo.",
+            "unsupported" => "This Watch Together server doesn't support that.",
             "invalid_code" => "That isn't a valid room code.",
             "room_not_found" => "No room with that code.",
             "room_full" => "That room is full.",
@@ -24,7 +31,6 @@ impl EndReason {
         Some(match self {
             EndReason::Left => return None,
             EndReason::Ended => "The room has ended.",
-            EndReason::Closed => "You're no longer in the room.",
             EndReason::Kicked => "You were removed from the room.",
             EndReason::Expired => "The room expired.",
             EndReason::Replaced => "You joined this room from another device.",
@@ -67,6 +73,7 @@ impl Event {
             }
             Event::ParticipantJoined(p) => Some(format!("{} joined", p.name)),
             Event::ParticipantLeft(p) => Some(format!("{} left", p.name)),
+            Event::Error(e) if matches!(e.re.as_deref(), None | Some("status" | "ping")) => None,
             Event::Error(e) | Event::Failed(e) => e.text().map(str::to_owned),
             Event::Ended { reason, .. } => reason.text().map(str::to_owned),
         }
@@ -92,6 +99,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn errors_name_their_cause_and_skip_automatic_messages() {
+        let err = |code: &str, re: Option<&str>| PartyError {
+            code: code.into(),
+            message: String::new(),
+            re: re.map(Into::into),
+        };
+        let s = PartyState::default();
+        assert_ne!(
+            err("rate_limited", Some("join")).text(),
+            err("rate_limited", Some("seek")).text()
+        );
+        for re in [None, Some("status"), Some("ping")] {
+            assert_eq!(Event::Error(err("rate_limited", re)).text(&s), None);
+        }
+        assert!(
+            Event::Error(err("forbidden", Some("seek")))
+                .text(&s)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn every_error_core_raises_has_its_own_text() {
         let fallback = PartyError::local("maintenance").text();
         assert_eq!(fallback, Some("Watch Together ran into a problem."));
@@ -109,6 +138,9 @@ mod tests {
             "not_host",
             "not_in_room",
             "already_in_room",
+            "rate_limited",
+            "client_blocked",
+            "unsupported",
         ] {
             let text = PartyError::local(code).text();
             assert!(text.is_some() && text != fallback, "{code}");

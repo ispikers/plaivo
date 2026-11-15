@@ -1,7 +1,10 @@
 package xyz.spikers.plaivo
 
+import android.app.Activity
+import android.app.Application
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
@@ -46,8 +49,12 @@ import uniffi.plaivo_ffi.forgetRoom
 import uniffi.plaivo_ffi.formatRoomCode
 import uniffi.plaivo_ffi.rememberRoom
 
+private const val BACKGROUND_LEAVE_MS = 5 * 60_000L
+
 object Watch : WatchListener {
     data class Bound(val epoch: Long, val server: String, val key: String)
+
+    data class Mismatch(val bound: Bound, val deltaMs: Long)
 
     private val main = Handler(Looper.getMainLooper())
     var state by mutableStateOf<WatchState?>(null)
@@ -59,6 +66,9 @@ object Watch : WatchListener {
     var rooms by mutableStateOf<List<String>>(emptyList())
         private set
 
+    var mismatch by mutableStateOf<Mismatch?>(null)
+        private set
+
     var player: PlayerActivity? = null
     private var resolving: Pair<String, Long>? = null
     private var roomCode: String? = null
@@ -66,9 +76,36 @@ object Watch : WatchListener {
     val inRoom
         get() = state?.connection.let { it == WatchConnection.CONNECTED || it == WatchConnection.RECONNECTING }
 
+    private var started = 0
+    private val leaveIdle = Runnable { core.watchLeave() }
+
     fun start() {
         rooms = core.settings().watchRooms
         core.watchListen(this)
+        App.instance.registerActivityLifecycleCallbacks(
+            object : Application.ActivityLifecycleCallbacks {
+                override fun onActivityStarted(activity: Activity) {
+                    if (started++ == 0) main.removeCallbacks(leaveIdle)
+                }
+
+                override fun onActivityStopped(activity: Activity) {
+                    if (--started == 0) main.postDelayed(leaveIdle, BACKGROUND_LEAVE_MS)
+                }
+
+                override fun onActivityDestroyed(activity: Activity) {
+                    if (activity is MainActivity && activity.isFinishing && !activity.isChangingConfigurations)
+                        core.watchLeave()
+                }
+
+                override fun onActivityCreated(activity: Activity, state: Bundle?) {}
+
+                override fun onActivityResumed(activity: Activity) {}
+
+                override fun onActivityPaused(activity: Activity) {}
+
+                override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) {}
+            }
+        )
     }
 
     override fun state(state: WatchState) {
@@ -101,10 +138,10 @@ object Watch : WatchListener {
         }
     }
 
-    fun join(code: String) {
+    fun join(code: String, create: Boolean = false) {
         roomCode = code
         background.launch {
-            runCatching { core.watchJoin(code, deviceName()) }.onFailure { main.post { toast(it.message) } }
+            runCatching { core.watchJoin(code, create, deviceName()) }.onFailure { main.post { toast(it.message) } }
         }
     }
 
@@ -148,6 +185,7 @@ object Watch : WatchListener {
         if (!inRoom) {
             item = null
             resolving = null
+            mismatch = null
             return
         }
         if (s.code != before?.code) {
@@ -163,6 +201,7 @@ object Watch : WatchListener {
         if (target == resolving) return
         resolving = target
         item = null
+        mismatch = null
         background.launch {
             val found = runCatching { core.watchResolve(s.epoch) }.getOrNull()
             main.post {
@@ -171,10 +210,27 @@ object Watch : WatchListener {
                     core.watchUnavailable(s.epoch)
                     toast("${s.media} isn't on your servers")
                 } else {
-                    item = Bound(s.epoch, found.server, found.key)
-                    open()
+                    val bound = Bound(s.epoch, found.server, found.key)
+                    val delta = found.mismatchMs
+                    if (delta != null) {
+                        mismatch = Mismatch(bound, delta)
+                        toast("Your copy is a different cut. Choose in Watch Together.")
+                    } else {
+                        item = bound
+                        open()
+                    }
                 }
             }
+        }
+    }
+
+    fun answerMismatch(accept: Boolean) {
+        val m = mismatch ?: return
+        mismatch = null
+        core.watchAnswerMismatch(m.bound.epoch, m.deltaMs, accept)
+        if (accept) {
+            item = m.bound
+            open()
         }
     }
 
@@ -240,6 +296,35 @@ fun WatchTogetherScreen() {
                     ) {
                         SettingsRow(Glyph.PlayCircle, media, s.status, Modifier.weight(1f), onClick = Watch::open)
                         if (Watch.item != null) ActionButton("Open party", Watch::open)
+                    }
+                    Watch.mismatch?.let { m ->
+                        val longer = if (m.deltaMs > 0) "longer" else "shorter"
+                        SettingsRow(
+                            Glyph.Info,
+                            "Your copy is ${seconds(kotlin.math.abs(m.deltaMs), false)} $longer than the room's",
+                            "Play it anyway and line it up with the offset, or sit this one out",
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ActionButton("Play anyway", { Watch.answerMismatch(true) })
+                            ActionButton("Skip", { Watch.answerMismatch(false) })
+                        }
+                    }
+                    if (s.adjustable) {
+                        SettingsRow(
+                            Glyph.Tune,
+                            "Offset ${seconds(s.offsetMs, true)}",
+                            "Shift your video when it runs ahead of or behind the room",
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf("−1 s" to -1000L, "−0.1 s" to -100L, "+0.1 s" to 100L, "+1 s" to 1000L).forEach {
+                                (label, ms) ->
+                                ActionButton(label, { core.watchSetOffset(s.offsetMs + ms) })
+                            }
+                            s.mismatchMs
+                                ?.takeIf { it != s.offsetMs }
+                                ?.let { ActionButton("Use ${seconds(it, true)}", { core.watchSetOffset(it) }) }
+                            if (s.offsetMs != 0L) ActionButton("Reset", { core.watchSetOffset(0) })
+                        }
                     }
                     if (s.host)
                         SettingsRow(
@@ -338,7 +423,7 @@ fun WatchTogetherScreen() {
                 if (Watch.rooms.isNotEmpty()) {
                     SectionTitle("Recent rooms")
                     Watch.rooms.forEach { c ->
-                        SettingsRow(Glyph.Group, formatRoomCode(c), "", onClick = { Watch.join(c) })
+                        SettingsRow(Glyph.Group, formatRoomCode(c), "", onClick = { Watch.join(c, create = true) })
                     }
                 }
             }
@@ -362,3 +447,6 @@ fun WatchPill(s: WatchState, modifier: Modifier = Modifier) {
         )
     }
 }
+
+private fun seconds(ms: Long, signed: Boolean): String =
+    String.format(java.util.Locale.ROOT, if (signed) "%+.1f s" else "%.1f s", ms / 1000.0)

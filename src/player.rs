@@ -1429,6 +1429,7 @@ impl Plaivo {
             .into_iter()
             .collect();
         p.buffering = true;
+        p.paused = false;
         p.video_ready = false;
         p.audio_tracks.clear();
         p.sub_tracks.clear();
@@ -1673,7 +1674,11 @@ impl Plaivo {
                 false
             }
             mpv::Event::Pause(p) => {
+                let outside = p != self.player.paused && self.watch_holds();
                 self.player.paused = p;
+                if outside {
+                    self.watch_relay_pause(p);
+                }
                 self.report(if p { "paused" } else { "playing" }, cx);
                 self.watch_feed(true);
                 if !p {

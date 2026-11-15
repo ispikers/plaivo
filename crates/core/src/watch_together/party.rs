@@ -27,17 +27,10 @@ pub enum Connection {
 pub enum EndReason {
     Left,
     Ended,
-    Closed,
     Kicked,
     Expired,
     Replaced,
     Lost,
-}
-
-impl EndReason {
-    pub fn room_gone(self) -> bool {
-        matches!(self, EndReason::Ended | EndReason::Expired)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -410,10 +403,9 @@ impl Party {
             ServerMsg::Error(e) => self.on_error(e.into(), now),
             ServerMsg::Closed(reason) if self.state.connection == Connection::Connected => {
                 let reason = match reason.as_str() {
-                    "ended" => EndReason::Ended,
                     "kicked" => EndReason::Kicked,
                     "expired" => EndReason::Expired,
-                    _ => EndReason::Closed,
+                    _ => EndReason::Ended,
                 };
                 self.end(reason, None);
             }
@@ -424,7 +416,8 @@ impl Party {
     fn on_cancelled_answer(&mut self, text: &str) {
         match parse(text) {
             ServerMsg::Joined(_) => self.send(ClientMsg::Leave),
-            ServerMsg::Error(e) if matches!(e.re.as_deref(), Some("create" | "join")) => {}
+            ServerMsg::Error(e)
+                if matches!(e.re.as_deref(), Some("create" | "join" | "resume")) => {}
             _ => return,
         }
         self.close_cancelled();
@@ -766,17 +759,25 @@ impl Party {
                 self.send(ClientMsg::Leave);
                 self.end(EndReason::Left, None);
             }
+            Connection::Reconnecting if self.open => {
+                self.keep_for_answer(|p| p.end(EndReason::Left, None))
+            }
             Connection::Reconnecting => self.end(EndReason::Left, None),
             Connection::Connecting if self.open => {
-                let cancel_by = self.answer_by.take();
-                self.open = false;
-                self.fail(PartyError::local("cancelled"));
-                self.open = true;
-                self.cancel_by = cancel_by;
+                self.keep_for_answer(|p| p.fail(PartyError::local("cancelled")))
             }
             Connection::Connecting => self.fail(PartyError::local("cancelled")),
             _ => {}
         }
+    }
+
+    // SDK §14 and §7.2: a sent create, join or resume keeps its socket so a late joined gets a leave.
+    fn keep_for_answer(&mut self, finish: impl FnOnce(&mut Self)) {
+        let cancel_by = self.answer_by.take();
+        self.open = false;
+        finish(self);
+        self.open = true;
+        self.cancel_by = cancel_by;
     }
 
     pub fn retry(&mut self, now: i64) {
@@ -1513,6 +1514,31 @@ mod tests {
     }
 
     #[test]
+    fn leave_during_a_resume_answers_a_late_joined_with_leave() {
+        let mut now = 0;
+        let mut p = joined(now, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
+        drain(&mut p, now);
+        p.on_drop(now, Some(1006));
+        while !drain(&mut p, now)
+            .other
+            .contains(&Output::Connect(URL.into()))
+        {
+            now += 10;
+            p.tick(now);
+        }
+        p.on_open(URL, now, None);
+        assert_eq!(drain(&mut p, now).sent[0]["type"], "resume");
+        p.leave();
+        assert_eq!(p.state().end_reason, Some(EndReason::Left));
+        assert!(!drain(&mut p, now).other.contains(&Output::Close(1000)));
+        p.on_text(now, &json!({"type": "joined", "code": "K7MQ2X", "you": {"peerId": "p1", "token": "a".repeat(43)}, "room": snapshot(2, 0, "idle", 0, 0, false), "media": null, "serverTime": 0}).to_string());
+        let d = drain(&mut p, now);
+        assert_eq!(d.sent, [json!({"type": "leave"})]);
+        assert!(d.other.contains(&Output::Close(1000)));
+        assert_eq!(p.state().connection, Connection::Ended);
+    }
+
+    #[test]
     fn media_set_while_reconnecting_or_creating_is_sent_on_join() {
         let token = "a".repeat(43);
         let media = Media::parse(movie()).unwrap();
@@ -1635,17 +1661,16 @@ mod tests {
     }
 
     #[test]
-    fn only_ended_and_expired_mean_the_room_is_gone() {
-        for (reason, end, gone) in [
-            ("ended", EndReason::Ended, true),
-            ("expired", EndReason::Expired, true),
-            ("kicked", EndReason::Kicked, false),
-            ("maintenance", EndReason::Closed, false),
+    fn closed_reasons_map_to_end_reasons() {
+        for (reason, end) in [
+            ("ended", EndReason::Ended),
+            ("expired", EndReason::Expired),
+            ("kicked", EndReason::Kicked),
+            ("maintenance", EndReason::Ended),
         ] {
             let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
             p.on_text(5, &json!({"type": "closed", "reason": reason}).to_string());
             assert_eq!(p.state().end_reason, Some(end), "{reason}");
-            assert_eq!(end.room_gone(), gone, "{reason}");
         }
     }
 

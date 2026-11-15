@@ -5,13 +5,17 @@ use crate::ui::widgets::{chip, icon, pill, row, section};
 use gpui::{
     AnyElement, ClipboardItem, Context, Div, FontWeight, SharedString, Window, div, prelude::*, px,
 };
-use plaivo_core::watch_together::{Connection, Control, format_code, sync_label};
+use plaivo_core::watch_together::{Connection, Control, MatchState, format_code, sync_label};
 
 fn error_text(text: SharedString) -> Div {
     div()
         .text_size(px(13.))
         .text_color(theme::error())
         .child(text)
+}
+
+fn secs(ms: i64) -> String {
+    format!("{:+.1} s", ms as f64 / 1000.0)
 }
 
 fn code_of(code: &str) -> String {
@@ -60,7 +64,7 @@ impl Plaivo {
         let code = self.watch.code.clone();
         let join_typed = cx.listener(move |this, _, _, cx| {
             let text = this.watch.code.read(cx).text().to_owned();
-            this.watch_join(text, cx)
+            this.watch_join(text, false, cx)
         });
         let recent = self.settings.watch_rooms.clone();
         div()
@@ -106,7 +110,7 @@ impl Plaivo {
                             row(("watch-recent", i), Some(Icon::Group), label, "").child(
                                 pill(("watch-recent-join", i), "Join", None, false).on_click(
                                     cx.listener(move |this, _, _, cx| {
-                                        this.watch_join(c.clone(), cx)
+                                        this.watch_join(c.clone(), true, cx)
                                     }),
                                 ),
                             )
@@ -144,10 +148,33 @@ impl Plaivo {
             ]),
             None => m.title.clone(),
         });
-        let mine = if self.watch.unavailable() {
+        let mine = if self.watch.mismatch.is_some() {
+            "Different cut"
+        } else if self.watch.unavailable() {
             "Not in your libraries"
         } else {
             sync_label(s.player, s.match_, true)
+        };
+        let mismatch = self.watch.mismatch.as_ref().map(|m| {
+            let len = if m.delta_ms > 0 { "longer" } else { "shorter" };
+            format!(
+                "Your copy is {:.1} s {len} than the room's.",
+                m.delta_ms.abs() as f64 / 1000.0
+            )
+        });
+        let offset = s.offset_ms;
+        let hint = s
+            .match_
+            .filter(|m| m.state == MatchState::Mismatched)
+            .and_then(|m| m.delta_ms)
+            .filter(|d| *d != offset);
+        let adjusting = s.media.is_some()
+            && s.match_
+                .is_some_and(|m| matches!(m.state, MatchState::Matched | MatchState::Mismatched));
+        let step = |id: &'static str, label: &'static str, ms: i64| {
+            pill(id, label, None, false).on_click(
+                cx.listener(move |this, _, _, _| this.watch_call(|wt| wt.set_offset(offset + ms))),
+            )
         };
         let copy = code.clone();
         let participants = room.participants.iter().map(|p| {
@@ -214,6 +241,57 @@ impl Plaivo {
                             )
                         }),
                     )
+                    .when_some(mismatch, |d, text| {
+                        d.child(
+                            row(
+                                "watch-mismatch",
+                                Some(Icon::Info),
+                                text,
+                                "Play it anyway and line it up with the offset, or sit this one out.",
+                            )
+                            .child(pill("watch-mismatch-skip", "Skip", None, false).on_click(
+                                cx.listener(|this, _, _, cx| this.watch_answer_mismatch(false, cx)),
+                            ))
+                            .child(
+                                pill("watch-mismatch-play", "Play anyway", None, true).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.watch_answer_mismatch(true, cx)
+                                    }),
+                                ),
+                            ),
+                        )
+                    })
+                    .when(adjusting, |d| {
+                        d.child(
+                            row(
+                                "watch-offset",
+                                Some(Icon::Tune),
+                                format!("Offset {}", secs(offset)),
+                                "Shift your video when it runs ahead of or behind the room.",
+                            )
+                            .child(step("watch-offset-m1", "−1 s", -1000))
+                            .child(step("watch-offset-m01", "−0.1 s", -100))
+                            .child(step("watch-offset-p01", "+0.1 s", 100))
+                            .child(step("watch-offset-p1", "+1 s", 1000))
+                            .when_some(hint, |r, delta| {
+                                r.child(
+                                    pill("watch-offset-hint", format!("Use {}", secs(delta)), None, false)
+                                        .on_click(cx.listener(move |this, _, _, _| {
+                                            this.watch_call(|wt| wt.set_offset(delta))
+                                        })),
+                                )
+                            })
+                            .when(offset != 0, |r| {
+                                r.child(
+                                    pill("watch-offset-reset", "Reset", None, false).on_click(
+                                        cx.listener(|this, _, _, _| {
+                                            this.watch_call(|wt| wt.set_offset(0))
+                                        }),
+                                    ),
+                                )
+                            }),
+                        )
+                    })
                     .when(host && s.media.is_none(), |d| {
                         d.child(note(
                             "Open a movie or episode and choose Watch together to start.",

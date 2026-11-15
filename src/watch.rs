@@ -16,6 +16,13 @@ const CLIENT: &str = concat!("Plaivo/", env!("CARGO_PKG_VERSION"));
 const FEED_EVERY: Duration = Duration::from_millis(400);
 const SAVE_AFTER: Duration = Duration::from_millis(600);
 
+pub struct Mismatch {
+    epoch: i64,
+    server: String,
+    key: String,
+    pub delta_ms: i64,
+}
+
 pub struct Watch {
     wt: Option<WatchTogether>,
     generation: u64,
@@ -25,6 +32,7 @@ pub struct Watch {
     pub resuming: bool,
     creating: bool,
     room_code: Option<String>,
+    pub mismatch: Option<Mismatch>,
     pub error: Option<SharedString>,
     epoch: Option<i64>,
     file: Option<(String, String)>,
@@ -66,7 +74,7 @@ impl Watch {
         cx.subscribe(
             &code,
             |this: &mut Plaivo, _, ev: &InputEvent, cx| match ev {
-                InputEvent::Submit(code) => this.watch_join(code.to_string(), cx),
+                InputEvent::Submit(code) => this.watch_join(code.to_string(), false, cx),
                 InputEvent::Changed(_) => {
                     if this.watch.error.take().is_some() {
                         cx.notify();
@@ -101,6 +109,7 @@ impl Watch {
             resuming: false,
             creating: false,
             room_code: None,
+            mismatch: None,
             error: None,
             epoch: None,
             file: None,
@@ -140,11 +149,11 @@ impl Watch {
     }
 }
 
-pub fn relays(setting: &str) -> Relays {
+pub fn relays(setting: &str) -> Option<Relays> {
     if setting.is_empty() {
-        Relays::public()
+        Some(Relays::public())
     } else {
-        Relays::custom(setting).unwrap_or_else(Relays::public)
+        Relays::custom(setting)
     }
 }
 
@@ -195,12 +204,12 @@ pub fn holds(
 
 impl Plaivo {
     pub fn watch_create(&mut self, cx: &mut Context<Self>) {
-        self.watch_start(None, cx);
+        self.watch_start(None, false, cx);
     }
 
-    pub fn watch_join(&mut self, code: String, cx: &mut Context<Self>) {
+    pub fn watch_join(&mut self, code: String, create: bool, cx: &mut Context<Self>) {
         match normalize_code(&code) {
-            Some(code) => self.watch_start(Some(code), cx),
+            Some(code) => self.watch_start(Some(code), create, cx),
             None => {
                 self.watch.error = Some("Enter the 6-character room code.".into());
                 cx.notify();
@@ -208,11 +217,19 @@ impl Plaivo {
         }
     }
 
-    fn watch_start(&mut self, code: Option<String>, cx: &mut Context<Self>) {
-        let w = &mut self.watch;
-        if w.busy() {
+    fn watch_start(&mut self, code: Option<String>, create: bool, cx: &mut Context<Self>) {
+        if self.watch.busy() {
             return;
         }
+        let Some(relays) = relays(&self.settings.watch_relay) else {
+            let text = "The custom relay address in Settings isn't valid.";
+            self.watch.error = Some(text.into());
+            if self.page != Page::Watch {
+                self.toast(text, cx);
+            }
+            return cx.notify();
+        };
+        let w = &mut self.watch;
         w.generation += 1;
         w.starting = true;
         w.creating = code.is_none();
@@ -223,7 +240,7 @@ impl Plaivo {
         let (old, tx) = (w.wt.take(), w.tx.clone());
         let (setting, relays, client, token) = (
             self.settings.watch_name.clone(),
-            relays(&self.settings.watch_relay),
+            relays,
             self.client.clone(),
             self.account.token.clone(),
         );
@@ -250,7 +267,7 @@ impl Plaivo {
                 });
                 if let Ok(wt) = &wt {
                     match code {
-                        Some(code) => wt.join(&code, false),
+                        Some(code) => wt.join(&code, create),
                         None => wt.create(),
                     }
                 }
@@ -450,6 +467,7 @@ impl Plaivo {
         if epoch != w.epoch {
             w.epoch = epoch;
             w.file = None;
+            w.mismatch = None;
             match on_epoch(&s) {
                 Bind::Resolve(media, epoch) => resolve = Some((*media, epoch)),
                 Bind::Own(server, key) => w.file = Some((server, key)),
@@ -492,16 +510,60 @@ impl Plaivo {
                         cx,
                     );
                 };
-                wt.set_match(
-                    epoch,
-                    match_for(it.duration.map(|d| d as i64), media.duration_ms),
-                );
-                w.file = Some((server.clone(), it.rating_key.clone()));
-                if this.playing_file() != Some((server.as_str(), it.rating_key.as_str())) {
-                    this.play(server, it.rating_key, cx);
+                let m = match_for(it.duration.map(|d| d as i64), media.duration_ms);
+                if let (MatchState::Mismatched, Some(delta_ms)) = (m.state, m.delta_ms) {
+                    w.mismatch = Some(Mismatch {
+                        epoch,
+                        server,
+                        key: it.rating_key,
+                        delta_ms,
+                    });
+                    if this.page != Page::Watch {
+                        this.toast(
+                            "Your copy is a different cut. Choose in Watch Together.",
+                            cx,
+                        );
+                    }
+                    return cx.notify();
                 }
+                wt.set_match(epoch, m);
+                this.watch_bind(epoch, server, it.rating_key, cx);
             },
         );
+    }
+
+    fn watch_bind(&mut self, epoch: i64, server: String, key: String, cx: &mut Context<Self>) {
+        if self.watch.epoch != Some(epoch) {
+            return;
+        }
+        self.watch.file = Some((server.clone(), key.clone()));
+        if self.playing_file() != Some((server.as_str(), key.as_str())) {
+            self.play(server, key, cx);
+        }
+    }
+
+    pub fn watch_answer_mismatch(&mut self, accept: bool, cx: &mut Context<Self>) {
+        let Some(m) = self.watch.mismatch.take() else {
+            return;
+        };
+        let state = if accept {
+            MatchState::Mismatched
+        } else {
+            MatchState::Unavailable
+        };
+        self.watch_call(|wt| {
+            wt.set_match(
+                m.epoch,
+                Match {
+                    state,
+                    delta_ms: Some(m.delta_ms),
+                },
+            )
+        });
+        if accept {
+            self.watch_bind(m.epoch, m.server, m.key, cx);
+        }
+        cx.notify();
     }
 
     fn watch_event(&mut self, event: Event, cx: &mut Context<Self>) {
@@ -509,12 +571,6 @@ impl Plaivo {
         let text = match event {
             Event::Error(_) => {
                 self.watch.resuming = false;
-                text
-            }
-            Event::Ended { reason, .. } => {
-                if let Some(code) = self.watch.room_code.take().filter(|_| reason.room_gone()) {
-                    self.watch_forget(&code, cx);
-                }
                 text
             }
             Event::Failed(ref e) => {
@@ -557,6 +613,15 @@ impl Plaivo {
             self.watch.file.as_ref(),
             self.playing_file(),
         )
+    }
+
+    // Pauses from outside the app (media keys, Now Playing, AirPods) go to the room, which then commands this player.
+    pub fn watch_relay_pause(&mut self, paused: bool) {
+        if paused {
+            self.watch_call(|wt| wt.pause());
+        } else {
+            self.watch_resume();
+        }
     }
 
     pub fn watch_resume(&mut self) {
@@ -807,8 +872,8 @@ mod tests {
 
     #[test]
     fn relay_setting_falls_back_to_public() {
-        assert!(!relays("").custom);
-        assert!(relays("https://relay.example.com").custom);
-        assert!(!relays("ftp://nope").custom);
+        assert!(!relays("").unwrap().custom);
+        assert!(relays("https://relay.example.com").unwrap().custom);
+        assert!(relays("ftp://nope").is_none());
     }
 }
