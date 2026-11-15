@@ -306,6 +306,7 @@ impl Plaivo {
             ),
             ("user-agent", "Plaivo"),
             ("audio-client-name", "Plaivo"),
+            ("media-controls", "yes"),
             ("config-dir", conf_dir.as_str()),
             ("config", "yes"),
             ("ytdl", "no"),
