@@ -344,7 +344,7 @@ private fun Rails(
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val playNow = LocalPlay.current
-    var active by remember { mutableStateOf(rows.firstOrNull()?.title) }
+    var active by remember { mutableStateOf(rows.firstOrNull()?.id) }
     val first = remember { FocusRequester() }
     LaunchedEffect(takeFocus) {
         if (takeFocus) {
@@ -359,32 +359,30 @@ private fun Rails(
             contentPadding = PaddingValues(top = 12.dp, bottom = 400.dp),
             userScrollEnabled = false,
         ) {
-            itemsIndexed(rows, key = { _, row -> row.title }) { index, row ->
+            itemsIndexed(rows, key = { _, row -> row.id }) { index, row ->
                 Column(
                     Modifier.onFocusChanged {
-                        if (it.hasFocus && active != row.title) {
-                            active = row.title
+                        if (it.hasFocus && active != row.id) {
+                            active = row.id
                             scope.launch { list.animateScrollToItem(index) }
                         }
                     }
                 ) {
-                    val isActive = row.title == active
+                    val isActive = row.id == active
                     Row(
                         Modifier.padding(start = Dims.edge).height(30.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        GlyphIcon(
-                            if (row.resume) Glyph.PlayCircle else Glyph.Sparkle,
-                            18.dp,
-                            Palette.text.copy(alpha = if (isActive) 1f else 0.54f),
-                        )
+                        if (row.resume)
+                            GlyphIcon(Glyph.PlayCircle, 18.dp, Palette.text.copy(alpha = if (isActive) 1f else 0.54f))
                         Text(
                             row.title,
                             fontSize = 17.sp,
                             fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold,
                             color = Palette.text.copy(alpha = if (isActive) 1f else 0.54f),
                         )
+                        if (row.source.isNotEmpty()) Text(row.source, fontSize = 13.sp, color = Palette.muted)
                     }
                     CompositionLocalProvider(LocalBringIntoViewSpec provides centerFocused) {
                         LazyRow(

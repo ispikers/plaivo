@@ -167,6 +167,7 @@ pub struct Hub {
     pub title: SharedString,
     pub key: SharedString,
     pub server: SharedString,
+    pub source: SharedString,
     pub resume: bool,
     pub wide: bool,
     pub items: Vec<Card>,
@@ -478,7 +479,10 @@ fn hub_rows<'a>(hubs: impl IntoIterator<Item = (&'a str, &'a plex::Hub)>, old: &
             let resume = h.is_continue();
             let scroll = old
                 .iter()
-                .find(|o| o.resume == resume && (resume || (o.key == h.key && o.title == h.title)))
+                .find(|o| {
+                    o.resume == resume
+                        && (resume || (o.server == server && o.key == h.key && o.title == h.title))
+                })
                 .map(|o| o.scroll.clone())
                 .unwrap_or_default();
             let items = h
@@ -493,6 +497,7 @@ fn hub_rows<'a>(hubs: impl IntoIterator<Item = (&'a str, &'a plex::Hub)>, old: &
                 title: h.title.clone().into(),
                 key: h.key.clone().into(),
                 server: server.to_owned().into(),
+                source: SharedString::default(),
                 resume,
                 wide,
                 items,
@@ -2059,6 +2064,7 @@ impl Plaivo {
                 title: row.title.to_owned().into(),
                 key: row.key.to_owned().into(),
                 server: home.id.clone().into(),
+                source: SharedString::default(),
                 resume: true,
                 wide: row.wide,
                 items: row
@@ -2083,6 +2089,9 @@ impl Plaivo {
             .collect();
         self.hero_index = self.hero_index.min(self.hero.len().saturating_sub(1));
         self.hubs = hub_rows(rows.iter().map(|h| (h.server.as_str(), &h.hub)), &self.hubs);
+        for (hub, row) in self.hubs.iter_mut().zip(&rows) {
+            hub.source = row.source.clone().into();
+        }
         let mut seen = HashSet::new();
         self.suggestions = rows
             .iter()

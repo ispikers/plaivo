@@ -299,8 +299,11 @@ private fun TouchRows(rows: List<MediaRow>, open: (MediaCard) -> Unit, openRow: 
 }
 
 fun LazyListScope.touchRows(rows: List<MediaRow>, open: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit) {
-    items(rows, key = { it.title }) { row -> TouchRow(row, open, openRow) }
+    items(rows, key = { it.id }) { row -> TouchRow(row, open, openRow) }
 }
+
+val MediaRow.id
+    get() = "$title|$source"
 
 @Composable
 private fun TouchRow(row: MediaRow, open: (MediaCard) -> Unit, openRow: (MediaRow) -> Unit) {
@@ -314,7 +317,7 @@ private fun TouchRow(row: MediaRow, open: (MediaCard) -> Unit, openRow: (MediaRo
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            GlyphIcon(if (row.resume) Glyph.PlayCircle else Glyph.Sparkle, 18.dp, Palette.text)
+            if (row.resume) GlyphIcon(Glyph.PlayCircle, 18.dp, Palette.text)
             Text(
                 row.title,
                 fontSize = 17.sp,
@@ -324,6 +327,7 @@ private fun TouchRow(row: MediaRow, open: (MediaCard) -> Unit, openRow: (MediaRo
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
+            if (row.source.isNotEmpty()) Text(row.source, fontSize = 13.sp, color = Palette.muted, maxLines = 1)
             if (more) GlyphIcon(Glyph.ChevronRight, 20.dp, Palette.text)
         }
         LazyRow(

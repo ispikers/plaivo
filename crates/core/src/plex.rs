@@ -803,6 +803,7 @@ pub struct LibraryHub {
     pub server: String,
     pub server_name: String,
     pub library: String,
+    pub source: String,
     pub hub: Hub,
 }
 
@@ -818,10 +819,9 @@ pub fn arrange_home(hubs: &[LibraryHub], servers: &[&str], settings: &Settings) 
             settings.library_rank(&h.library),
         )
     });
-    let titles: Vec<String> = rows.iter().map(|h| h.hub.title.clone()).collect();
-    for h in &mut rows {
-        if titles.iter().filter(|t| **t == h.hub.title).count() > 1 {
-            h.hub.title = format!("{} · {}", h.hub.title, h.server_name);
+    if rows.iter().any(|h| h.server != rows[0].server) {
+        for h in &mut rows {
+            h.source = h.server_name.clone();
         }
     }
     rows
@@ -1578,6 +1578,7 @@ impl Server {
                         server: self.id.clone(),
                         server_name: self.name.clone(),
                         library: library_key(&self.id, &d.key),
+                        source: String::new(),
                         hub,
                     })
                 })
@@ -3072,11 +3073,12 @@ mod tests {
     }
 
     #[test]
-    fn home_rows_follow_server_then_library_order_and_name_duplicates() {
+    fn home_rows_follow_server_then_library_order_and_name_servers_when_mixed() {
         let row = |server: &str, name: &str, section: &str, title: &str| LibraryHub {
             server: server.into(),
             server_name: name.into(),
             library: library_key(server, section),
+            source: String::new(),
             hub: Hub {
                 title: title.into(),
                 ..Default::default()
@@ -3094,17 +3096,23 @@ mod tests {
             hidden_libraries: vec!["a/3".into()],
             ..Default::default()
         };
-        let titles: Vec<String> = arrange_home(&hubs, &["a", "b"], &settings)
+        let rows: Vec<(String, String)> = arrange_home(&hubs, &["a", "b"], &settings)
             .into_iter()
-            .map(|h| h.hub.title)
+            .map(|h| (h.hub.title, h.source))
             .collect();
+        let row = |title: &str, source: &str| (title.to_owned(), source.to_owned());
         assert_eq!(
-            titles,
+            rows,
             [
-                "Recently Added in TV",
-                "Recently Added in Movies · Alpha",
-                "Recently Added in Movies · Beta",
+                row("Recently Added in TV", "Alpha"),
+                row("Recently Added in Movies", "Alpha"),
+                row("Recently Added in Movies", "Beta"),
             ]
+        );
+        assert!(
+            arrange_home(&hubs, &["a"], &settings)
+                .iter()
+                .all(|h| h.source.is_empty())
         );
     }
 

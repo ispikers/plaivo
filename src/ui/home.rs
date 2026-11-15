@@ -605,10 +605,11 @@ impl Plaivo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (AnyElement, [Range<usize>; 2]) {
-        let (title, resume, wide, key, server) = {
+        let (title, source, resume, wide, key, server) = {
             let h = &self.hub_vec(lib)[i];
             (
                 h.title.clone(),
+                h.source.clone(),
                 h.resume,
                 h.wide,
                 h.key.clone(),
@@ -666,16 +667,18 @@ impl Plaivo {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(icon(
-                            if resume {
-                                Icon::PlayCircle
-                            } else {
-                                Icon::Sparkle
-                            },
-                            24.,
-                            theme::text(),
-                        ))
+                        .when(resume, |d| {
+                            d.child(icon(Icon::PlayCircle, 24., theme::text()))
+                        })
                         .child(div().text_size(px(22.)).child(title.clone()))
+                        .when(!source.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .text_size(px(15.))
+                                    .text_color(theme::muted())
+                                    .child(source),
+                            )
+                        })
                         .when(!key.is_empty(), |d| {
                             d.cursor_pointer()
                                 .child(icon(Icon::ChevronRight, 22., theme::muted()))

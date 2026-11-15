@@ -456,6 +456,7 @@ pub struct LibraryPage {
 #[derive(uniffi::Record)]
 pub struct Row {
     pub server: String,
+    pub source: String,
     pub key: String,
     pub title: String,
     pub resume: bool,
@@ -1044,8 +1045,12 @@ impl Plaivo {
                 .collect(),
             rows: arranged
                 .iter()
-                .filter(|h| titles.insert(h.hub.title.clone()))
-                .filter_map(|h| Some(rows(find(&h.server)?, std::slice::from_ref(&h.hub), &prefs)))
+                .filter(|h| titles.insert((h.hub.title.clone(), h.source.clone())))
+                .filter_map(|h| {
+                    let mut row = rows(find(&h.server)?, std::slice::from_ref(&h.hub), &prefs);
+                    row.iter_mut().for_each(|r| r.source = h.source.clone());
+                    Some(row)
+                })
                 .flatten()
                 .collect(),
         })
@@ -1094,6 +1099,7 @@ impl Plaivo {
         )?;
         Some(Row {
             server: home_id.clone(),
+            source: String::new(),
             key: row.key.to_owned(),
             title: row.title.to_owned(),
             resume: true,
@@ -1386,6 +1392,7 @@ impl Plaivo {
         let owner = server_id.clone();
         let row = |title: &str, cards: Vec<Card>| Row {
             server: owner.clone(),
+            source: String::new(),
             key: String::new(),
             title: title.into(),
             resume: false,
@@ -2118,6 +2125,7 @@ fn rows(srv: &Server, hubs: &[Hub], prefs: &CardPrefs) -> Vec<Row> {
             let mut keys = HashSet::new();
             Row {
                 server: srv.id.clone(),
+                source: String::new(),
                 key: h.key.clone(),
                 title: h.title.clone(),
                 resume: h.is_continue(),
