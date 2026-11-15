@@ -3,4 +3,7 @@
     <issue id="all">
         <ignore path="build/generated/uniffi/**" />
     </issue>
+    <issue id="VectorRaster">
+        <ignore path="src/main/res/drawable/banner.xml" />
+    </issue>
 </lint>

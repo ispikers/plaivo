@@ -72,7 +72,8 @@ androidComponents.onVariants { variant ->
                 listOf("build", "-p", "plaivo-ffi", "--profile", profile) + overrides,
         )
         environment("PLAIVO_APP_VERSION", android.defaultConfig.versionName!!)
-        doFirst { environment("ANDROID_NDK_HOME", ndkDir.get().asFile.absolutePath) }
+        val ndk = ndkDir
+        doFirst { environment("ANDROID_NDK_HOME", ndk.get().asFile.absolutePath) }
     }
 
     val generateBindings = tasks.register<Exec>("generateBindings$name") {
@@ -92,9 +93,10 @@ val writeLicenseConfig = tasks.register("writeLicenseConfig") {
     description = "Writes AboutLibraries license texts for non-Maven dependencies."
     val sources = licenseTexts.mapValues { File(workspace, "licenses/${it.value}") }
     inputs.files(sources.values)
-    outputs.dir(licenseConfig)
+    val out = licenseConfig
+    outputs.dir(out)
     doLast {
-        val dir = licenseConfig.get().dir("licenses").asFile.apply { mkdirs() }
+        val dir = out.get().dir("licenses").asFile.apply { mkdirs() }
         sources.forEach { (id, file) ->
             File(dir, "$id.json").writeText(groovy.json.JsonOutput.toJson(mapOf("name" to id, "hash" to id, "spdxId" to id, "content" to file.readText().replace("\r\n", "\n").trim())))
         }
@@ -147,6 +149,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.tv:tv-material:1.1.0")
     implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.lifecycle:lifecycle-runtime:2.11.0")
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-ui:1.11.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
