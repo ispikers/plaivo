@@ -6,7 +6,7 @@ use crate::ui::library::Grid;
 use crate::ui::settings::{note, toggle_row};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    chip, icon, overlay_button, pill, progress_bar, round_button, row, section, tip,
+    NoContextMenu, chip, icon, overlay_button, pill, progress_bar, round_button, row, section, tip,
 };
 use gpui::{
     AnyElement, Context, Div, FontWeight, PathPromptOptions, PromptLevel, SharedString, Stateful,
@@ -237,6 +237,7 @@ impl Plaivo {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
+                .no_context_menu()
                 .bg(theme::tint(0.08))
                 .hover(|s| s.bg(theme::tint(0.16)))
                 .tooltip(tip(st.label("Download")))
@@ -285,6 +286,7 @@ impl Plaivo {
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
+                .no_context_menu()
                 .hover(|s| s.bg(theme::tint(0.08)))
                 .occlude()
                 .tooltip(tip(st.label("Download")))

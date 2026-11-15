@@ -9,6 +9,14 @@ use gpui::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+pub trait NoContextMenu: InteractiveElement + Sized {
+    fn no_context_menu(self) -> Self {
+        self.on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+    }
+}
+
+impl<T: InteractiveElement> NoContextMenu for T {}
+
 pub fn icon(i: Icon, size: f32, color: impl Into<Hsla>) -> Svg {
     svg()
         .path(i.path())
@@ -74,6 +82,7 @@ pub fn pill(
         .bg(bg)
         .when(!primary, |d| d.border_1().border_color(theme::outline()))
         .cursor_pointer()
+        .no_context_menu()
         .hover(move |s| {
             s.bg(if primary {
                 bg.opacity(0.88)
@@ -107,6 +116,7 @@ pub fn chip(
         .items_center()
         .flex_none()
         .cursor_pointer()
+        .no_context_menu()
         .text_size(px(14.))
         .when(selected, |d| {
             d.bg(theme::accent())
@@ -140,6 +150,7 @@ pub fn round_button(
         .justify_center()
         .bg(idle)
         .cursor_pointer()
+        .no_context_menu()
         .hover(move |s| s.bg(hover))
         .child(icon(i, icon_size, fg))
 }
@@ -607,6 +618,7 @@ impl Plaivo {
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
                             this.open_item_menu(
                                 menu_server.clone(),
                                 menu_key.clone(),

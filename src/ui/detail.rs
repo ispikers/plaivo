@@ -3,7 +3,8 @@ use crate::plex::{DISCOVER_ID, RatingSource};
 use crate::ui::home::{arrow_y, card_width, content_width};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    chip, icon, overlay_button, pill, progress_bar, round_button, scrollbar, skeleton, tip,
+    NoContextMenu, chip, icon, overlay_button, pill, progress_bar, round_button, scrollbar,
+    skeleton, tip,
 };
 use gpui::{
     AnyElement, Context, Div, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent, ObjectFit,
@@ -236,6 +237,7 @@ impl Plaivo {
             && it.plex_guid().is_some()
             && matches!(it.kind.as_str(), "movie" | "show");
         let menu_key = it.rating_key.clone();
+        let page_menu = (server.to_string(), it.rating_key.clone());
         let backdrop = self.picture(&art, Shape::Backdrop);
         let logo = self
             .image(&logo, Shape::Logo)
@@ -310,6 +312,7 @@ impl Plaivo {
             badge(chip_bg)
                 .id("rate-chip")
                 .cursor_pointer()
+                .no_context_menu()
                 .hover(|s| s.bg(theme::tint(0.16)))
                 .child(icon(
                     if user_stars.is_some() {
@@ -514,6 +517,7 @@ impl Plaivo {
                                     .child(eyebrow)
                                     .when_some(show_link, |d, nav| {
                                         d.cursor_pointer()
+                                            .no_context_menu()
                                             .hover(|s| s.text_color(theme::text()))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.navigate(nav.clone(), true, cx)
@@ -634,6 +638,7 @@ impl Plaivo {
                     .items_center()
                     .gap(px(6.))
                     .cursor_pointer()
+                    .no_context_menu()
                     .child(
                         div()
                             .w(px(72.))
@@ -724,6 +729,7 @@ impl Plaivo {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(theme::muted())
                                     .cursor_pointer()
+                                    .no_context_menu()
                                     .hover(|s| s.text_color(theme::text()))
                                     .child(if expanded { "Less" } else { "More" })
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -756,6 +762,13 @@ impl Plaivo {
         div()
             .size_full()
             .relative()
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    let (server, key) = page_menu.clone();
+                    this.open_item_menu(server, key, ev.position, cx)
+                }),
+            )
             .child(
                 div()
                     .id("detail")
@@ -784,6 +797,7 @@ impl Plaivo {
             .rounded(px(10.))
             .when_some(person, |d, nav| {
                 d.cursor_pointer()
+                    .no_context_menu()
                     .hover(|s| s.bg(theme::surface()))
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.navigate(nav.clone(), true, cx)),
@@ -852,6 +866,7 @@ impl Plaivo {
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
                     this.open_item_menu(menu_server.clone(), menu_key.clone(), ev.position, cx)
                 }),
             )
