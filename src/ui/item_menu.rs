@@ -502,6 +502,9 @@ impl Plaivo {
             Some(Nav::Home) => self.load_home(cx),
             _ => {}
         }
+        if !matches!(self.nav.last(), Some(Nav::Detail(..))) {
+            self.reload_detail(cx);
+        }
     }
 
     pub fn render_overlays(

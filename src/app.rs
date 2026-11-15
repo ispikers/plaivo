@@ -2389,6 +2389,13 @@ impl Plaivo {
         );
     }
 
+    pub fn reload_detail(&mut self, cx: &mut Context<Self>) {
+        if self.detail.as_ref().is_some_and(|d| d.item.kind != "person") {
+            let (server, key) = self.detail_id.clone();
+            self.load_detail(server, key, None, cx);
+        }
+    }
+
     fn clear_detail(&mut self) {
         self.detail = None;
         self.seasons.clear();

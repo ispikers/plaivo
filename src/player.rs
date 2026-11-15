@@ -1570,7 +1570,13 @@ impl Plaivo {
             return Self::detach(cx, job);
         }
         self.player.home_refreshed = Some(Instant::now());
-        Self::bg(cx, job, |this, _, cx| this.load_home(cx));
+        let stopped = state == "stopped";
+        Self::bg(cx, job, move |this, _, cx| {
+            this.load_home(cx);
+            if stopped {
+                this.reload_detail(cx);
+            }
+        });
     }
 
     // Quit can't wait on a dead server: local files skip the network, streams get a short grace period.
