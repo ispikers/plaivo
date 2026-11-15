@@ -193,7 +193,10 @@ impl Plaivo {
             });
         let local = *server != *DISCOVER_ID;
         let episode_nav = (local && it.kind == "episode").then(|| {
-            let [prev, next] = plaivo_core::detail::neighbours(&d.episodes, &it.rating_key);
+            let loading = Some(&self.detail_id.1)
+                .filter(|_| self.detail_id.0 == *server)
+                .unwrap_or(&it.rating_key);
+            let [prev, next] = plaivo_core::detail::neighbours(&d.episodes, loading);
             div()
                 .absolute()
                 .top(px(10.))

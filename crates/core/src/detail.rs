@@ -158,6 +158,22 @@ pub fn neighbours(episodes: &[Item], key: &str) -> [Option<String>; 2] {
     .map(|e| e.map(|e| e.rating_key.clone()))
 }
 
+pub fn all_neighbours(episodes: &[Item]) -> Vec<(String, [Option<String>; 2])> {
+    let mut out = Vec::with_capacity(episodes.len());
+    for special in [false, true] {
+        let keys: Vec<&str> = episodes
+            .iter()
+            .filter(|e| (e.parent_index == Some(0)) == special)
+            .map(|e| e.rating_key.as_str())
+            .collect();
+        for (i, k) in keys.iter().enumerate() {
+            let at = |j: Option<usize>| j.and_then(|j| keys.get(j)).map(|k| (*k).to_owned());
+            out.push(((*k).to_owned(), [at(i.checked_sub(1)), at(Some(i + 1))]));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +264,11 @@ mod tests {
         assert_eq!(keys("b1"), ["a2", ""]);
         assert_eq!(keys("sp1"), ["", "sp2"]);
         assert_eq!(keys("gone"), ["", ""]);
+        let all = all_neighbours(&eps);
+        assert_eq!(all.len(), eps.len());
+        for (key, pair) in all {
+            assert_eq!(pair, neighbours(&eps, &key), "{key}");
+        }
     }
 
     #[test]
