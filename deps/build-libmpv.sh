@@ -14,7 +14,7 @@ case "$(uname -s)" in
   MINGW*)
     ffmpeg_os=(--enable-d3d11va --enable-dxva2 --enable-openssl)
     placebo_os=(-Dd3d11=enabled)
-    mpv_os=(-Dd3d11=enabled -Dd3d-hwaccel=enabled -Dshaderc=enabled -Dspirv-cross=enabled -Dvulkan=enabled)
+    mpv_os=(-Dd3d11=enabled -Dd3d-hwaccel=enabled -Dshaderc=enabled -Dspirv-cross=enabled -Dvulkan=enabled -Dwin32-smtc=enabled)
     ;;
   Darwin)
     ffmpeg_os=(--enable-videotoolbox --enable-audiotoolbox --enable-securetransport --enable-iconv)
