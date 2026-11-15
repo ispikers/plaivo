@@ -49,33 +49,42 @@ android {
     }
 }
 
-androidComponents.onVariants { variant ->
-    variant.sources.java?.addStaticSourceDirectory("build/generated/uniffi")
-    variant.sources.jniLibs?.addStaticSourceDirectory("build/rust/jniLibs")
-}
-
 val workspace: File = rootProject.projectDir.parentFile
 val ndkDir = androidComponents.sdkComponents.ndkDirectory
 
-val buildRust = tasks.register<Exec>("buildRust") {
-    description = "Builds the plaivo-ffi Rust library for Android ABIs."
-    workingDir = workspace
-    val out = layout.buildDirectory.dir("rust/jniLibs").get().asFile.absolutePath
-    commandLine("cargo", "ndk", "-t", "arm64-v8a", "-t", "armeabi-v7a", "-P", "24", "-o", out, "build", "-p", "plaivo-ffi", "--release", "--config", "profile.release.strip=false", "--config", "profile.release.panic='unwind'")
-    environment("PLAIVO_APP_VERSION", android.defaultConfig.versionName!!)
-    doFirst { environment("ANDROID_NDK_HOME", ndkDir.get().asFile.absolutePath) }
-}
+androidComponents.onVariants { variant ->
+    val name = variant.name.replaceFirstChar { it.uppercase() }
+    val release = variant.buildType == "release"
+    val profile = if (release) "release" else "android-dev"
+    val jniLibs = "build/rust/${variant.name}/jniLibs"
+    val uniffi = "build/generated/uniffi/${variant.name}"
+    variant.sources.java?.addStaticSourceDirectory(uniffi)
+    variant.sources.jniLibs?.addStaticSourceDirectory(jniLibs)
 
-val generateBindings = tasks.register<Exec>("generateBindings") {
-    description = "Generates Kotlin UniFFI bindings from the Rust library."
-    dependsOn(buildRust)
-    workingDir = workspace
-    val lib = File(workspace, "target/aarch64-linux-android/release/libplaivo_ffi.so").absolutePath
-    val out = layout.buildDirectory.dir("generated/uniffi").get().asFile.absolutePath
-    commandLine("cargo", "run", "-q", "-p", "uniffi-bindgen", "--", "generate", "--library", lib, "--language", "kotlin", "--no-format", "--out-dir", out)
-}
+    val buildRust = tasks.register<Exec>("buildRust$name") {
+        description = "Builds the plaivo-ffi Rust library for Android ABIs with the $profile profile."
+        workingDir = workspace
+        val overrides =
+            if (release) listOf("--config", "profile.release.strip=false", "--config", "profile.release.panic='unwind'")
+            else emptyList()
+        commandLine(
+            listOf("cargo", "ndk", "-t", "arm64-v8a", "-t", "armeabi-v7a", "-P", "24", "-o", file(jniLibs).absolutePath) +
+                listOf("build", "-p", "plaivo-ffi", "--profile", profile) + overrides,
+        )
+        environment("PLAIVO_APP_VERSION", android.defaultConfig.versionName!!)
+        doFirst { environment("ANDROID_NDK_HOME", ndkDir.get().asFile.absolutePath) }
+    }
 
-tasks.named("preBuild") { dependsOn(generateBindings) }
+    val generateBindings = tasks.register<Exec>("generateBindings$name") {
+        description = "Generates Kotlin UniFFI bindings from the $profile Rust library."
+        dependsOn(buildRust)
+        workingDir = workspace
+        val lib = File(workspace, "target/aarch64-linux-android/$profile/libplaivo_ffi.so").absolutePath
+        commandLine("cargo", "run", "-q", "-p", "uniffi-bindgen", "--", "generate", "--library", lib, "--language", "kotlin", "--no-format", "--out-dir", file(uniffi).absolutePath)
+    }
+
+    tasks.matching { it.name == "pre${name}Build" }.configureEach { dependsOn(generateBindings) }
+}
 
 val licenseConfig = layout.buildDirectory.dir("generated/aboutLibrariesConfig")
 val licenseTexts = mapOf("Apache-2.0" to "Apache-2.0.txt", "LGPL-2.1-or-later" to "LGPL-2.1.txt")
