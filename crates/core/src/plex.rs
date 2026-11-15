@@ -225,6 +225,8 @@ pub struct Item {
     pub child_count: Option<u64>,
     pub studio: String,
     pub originally_available_at: String,
+    pub is_continuing_series: Option<bool>,
+    pub next_episode_originally_available_at: String,
     pub added_at: Option<i64>,
     pub last_viewed_at: Option<i64>,
     pub user_rating: Option<f64>,
@@ -1909,6 +1911,25 @@ impl Server {
                 &format!("/library/metadata/{key}/children?excludeAllLeaves=1"),
             )?
             .metadata)
+    }
+
+    pub fn seasons(&self, c: &Ctx, show: &mut Item, discover: Option<&Server>) -> R<Vec<Item>> {
+        let id = show
+            .guid
+            .strip_prefix("plex://show/")
+            .filter(|_| self.id != DISCOVER_ID);
+        let (seasons, airing) = std::thread::scope(|s| {
+            let airing = id.zip(discover).map(|(id, d)| {
+                s.spawn(move || d.get::<Container>(c, &format!("/library/metadata/{id}")))
+            });
+            let seasons = self.children(c, &show.rating_key);
+            (seasons, airing.and_then(|h| h.join().ok()?.ok()))
+        });
+        if let Some(d) = airing.and_then(|ct| ct.metadata.into_iter().next()) {
+            show.is_continuing_series = d.is_continuing_series;
+            show.next_episode_originally_available_at = d.next_episode_originally_available_at;
+        }
+        seasons
     }
 
     pub fn all_episodes(&self, c: &Ctx, show: &str) -> R<Vec<Item>> {

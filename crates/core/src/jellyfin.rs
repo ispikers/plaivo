@@ -79,6 +79,7 @@ struct Dto {
     child_count: Option<u64>,
     recursive_item_count: Option<u64>,
     premiere_date: String,
+    status: String,
     genres: Vec<String>,
     studios: Vec<Named>,
     image_tags: ImageTags,
@@ -458,6 +459,7 @@ impl Dto {
                 .map(|s| s.name)
                 .unwrap_or_default(),
             originally_available_at: self.premiere_date.get(..10).unwrap_or_default().to_owned(),
+            is_continuing_series: (self.status == "Continuing").then_some(true),
             genre: self.genres.into_iter().map(|tag| Tag { tag }).collect(),
             guids,
             ..Default::default()

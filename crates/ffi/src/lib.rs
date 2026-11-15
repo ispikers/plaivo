@@ -1177,7 +1177,7 @@ impl Plaivo {
             wanted = Some(std::mem::replace(&mut it, show).rating_key);
         }
         let seasons = if it.kind == "show" {
-            srv.children(&ctx, &it.rating_key)?
+            srv.seasons(&ctx, &mut it, self.server(DISCOVER_ID).ok().as_ref())?
         } else {
             Vec::new()
         };

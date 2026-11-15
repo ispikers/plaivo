@@ -95,6 +95,21 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
                 it.originally_available_at.clone()
             },
         ),
+        (
+            "Status",
+            match (
+                it.is_continuing_series,
+                it.next_episode_originally_available_at.is_empty(),
+            ) {
+                (_, false) => "Airing".into(),
+                (Some(true), true) => "Continuing".into(),
+                _ => String::new(),
+            },
+        ),
+        (
+            "Next episode",
+            it.next_episode_originally_available_at.clone(),
+        ),
     ];
     Summary {
         play_key,
@@ -198,5 +213,41 @@ mod tests {
         assert!(s.play_key.is_empty() && s.play_label.is_empty());
         assert_eq!(s.chips, ["Not in your library"]);
         assert_eq!(s.info, [("Studio", "A24".to_owned())]);
+    }
+
+    #[test]
+    fn shows_say_whether_they_are_airing() {
+        let status = |continuing, next: &str| {
+            let it = Item {
+                kind: "show".into(),
+                is_continuing_series: continuing,
+                next_episode_originally_available_at: next.into(),
+                ..Default::default()
+            };
+            summary(&it, true).info
+        };
+        assert_eq!(
+            status(Some(true), "2026-11-22"),
+            [
+                ("Status", "Airing".to_owned()),
+                ("Next episode", "2026-11-22".to_owned())
+            ]
+        );
+        assert_eq!(
+            status(Some(true), ""),
+            [("Status", "Continuing".to_owned())]
+        );
+        assert!(status(None, "").is_empty());
+        let it: Item = serde_json::from_str(
+            r#"{"isContinuingSeries":true,"nextEpisodeOriginallyAvailableAt":"2026-11-22"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                it.is_continuing_series,
+                it.next_episode_originally_available_at.as_str()
+            ),
+            (Some(true), "2026-11-22")
+        );
     }
 }

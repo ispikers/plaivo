@@ -2352,12 +2352,13 @@ impl Plaivo {
         }
         self.detail_id = (server.clone(), key.clone());
         let wanted = self.detail_id.clone();
+        let discover = self.server(DISCOVER_ID);
         self.load(
             cx,
             move |c| -> R<(Item, Vec<Item>)> {
-                let it = srv.metadata(c, &key)?;
+                let mut it = srv.metadata(c, &key)?;
                 let seasons = if it.kind == "show" {
-                    srv.children(c, &key)?
+                    srv.seasons(c, &mut it, discover.as_ref())?
                 } else {
                     Vec::new()
                 };
