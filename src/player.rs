@@ -307,6 +307,7 @@ impl Plaivo {
             ("user-agent", "Plaivo"),
             ("audio-client-name", "Plaivo"),
             ("media-controls", "yes"),
+            ("input-media-keys", "yes"),
             ("config-dir", conf_dir.as_str()),
             ("config", "yes"),
             ("ytdl", "no"),
@@ -341,6 +342,13 @@ impl Plaivo {
             }
             let _ = tx.unbounded_send(e);
         })?;
+        for (key, cmd) in [
+            ("PLAYONLY", "set pause no"),
+            ("PAUSEONLY", "set pause yes"),
+            ("PLAY", "cycle pause"),
+        ] {
+            mpv.command(&["keybind", key, cmd]);
+        }
         cx.spawn(async move |this, cx| {
             while let Some(e) = rx.next().await {
                 if this.update(cx, |this, cx| this.on_mpv(e, cx)).is_err() {
