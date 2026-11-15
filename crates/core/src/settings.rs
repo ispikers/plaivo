@@ -39,6 +39,7 @@ pub struct Settings {
     pub shader: String,
     pub library_order: Vec<String>,
     pub hidden_libraries: Vec<String>,
+    pub hidden_servers: Vec<String>,
     pub density: u32,
     pub theme: Theme,
     pub view_mode: ViewMode,
@@ -89,6 +90,7 @@ impl Default for Settings {
             shader: String::new(),
             library_order: Vec::new(),
             hidden_libraries: Vec::new(),
+            hidden_servers: Vec::new(),
             density: 3,
             theme: Theme::Dark,
             view_mode: ViewMode::Grid,
@@ -521,6 +523,27 @@ impl Settings {
         }
     }
 
+    pub fn server_hidden(&self, id: &str) -> bool {
+        self.hidden_servers.iter().any(|k| k == id)
+    }
+
+    pub fn sync_server_hidden<'a>(
+        &mut self,
+        server: &str,
+        libraries: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
+        let mut keys = libraries.into_iter().peekable();
+        let hidden = keys.peek().is_some() && keys.all(|k| self.library_hidden(k));
+        if hidden == self.server_hidden(server) {
+            return false;
+        }
+        self.hidden_servers.retain(|k| k != server);
+        if hidden {
+            self.hidden_servers.push(server.to_owned());
+        }
+        true
+    }
+
     pub fn move_library(&mut self, arranged: &[String], key: &str, step: isize) {
         let Some(i) = arranged.iter().position(|k| k == key) else {
             return;
@@ -880,6 +903,14 @@ mod tests {
         s.set_library_hidden("b/1", false);
         assert!(!s.library_hidden("b/1"));
         assert_eq!(library_key("srv", "4"), "srv/4");
+
+        s.set_library_hidden("a/1", true);
+        assert!(!s.sync_server_hidden("a", ["a/1", "a/2"]) && !s.server_hidden("a"));
+        s.set_library_hidden("a/2", true);
+        assert!(s.sync_server_hidden("a", ["a/1", "a/2"]) && s.server_hidden("a"));
+        assert!(!s.sync_server_hidden("a", ["a/1", "a/2"]));
+        assert!(s.sync_server_hidden("a", ["a/1", "a/2", "a/3"]) && !s.server_hidden("a"));
+        assert!(!s.sync_server_hidden("z", []) && !s.server_hidden("z"));
     }
 
     #[test]

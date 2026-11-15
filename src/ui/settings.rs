@@ -336,6 +336,7 @@ impl Plaivo {
             body = body.child(section(server.to_owned()).children(
                 rows.into_iter().enumerate().map(|(i, x)| {
                     let id = x.id.clone();
+                    let server = x.server.clone();
                     let hidden = self.settings.library_hidden(&id);
                     let mover = |n: usize, i_: Icon, step: isize, enabled: bool| {
                         let id = id.clone();
@@ -375,6 +376,7 @@ impl Plaivo {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.settings.set_library_hidden(&id, !hidden);
                         this.save_settings_soon(cx);
+                        this.sync_server_hidden(&server, cx);
                         cx.notify();
                     }))
                 }),

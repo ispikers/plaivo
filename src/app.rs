@@ -1036,7 +1036,15 @@ impl Plaivo {
 
     pub fn home_server(&self) -> Option<Server> {
         self.server(&self.settings.home_server)
+            .filter(|s| !self.settings.server_hidden(&s.id))
+            .or_else(|| self.active_servers().next().cloned())
             .or_else(|| self.servers.first().cloned())
+    }
+
+    pub fn active_servers(&self) -> impl Iterator<Item = &Server> {
+        self.servers
+            .iter()
+            .filter(|s| !self.settings.server_hidden(&s.id))
     }
 
     pub fn size_for(&self, shape: Shape) -> (u32, u32) {
@@ -1050,15 +1058,13 @@ impl Plaivo {
     fn image_url(&self, server: &str, path: &str, (w, h): (u32, u32)) -> Option<String> {
         if path.starts_with("http") {
             let resizer = |id: &str| {
-                self.servers
-                    .iter()
+                self.active_servers()
                     .find(|s| s.id == id && !s.is_jellyfin() && !plex::is_down(&s.id))
             };
             let proxy = resizer(server)
                 .or_else(|| resizer(&self.settings.home_server))
                 .or_else(|| {
-                    self.servers
-                        .iter()
+                    self.active_servers()
                         .find(|s| !s.is_jellyfin() && !plex::is_down(&s.id))
                 });
             return Some(match proxy {
@@ -1207,7 +1213,8 @@ impl Plaivo {
     }
 
     fn begin_splash(&mut self, cx: &mut Context<Self>) {
-        let jellyfin = self.account.jellyfin.clone();
+        let mut jellyfin = self.account.jellyfin.clone();
+        jellyfin.retain(|s| !self.settings.server_hidden(&s.id));
         self.splash = Some(Splash {
             servers: jellyfin
                 .iter()
@@ -1509,6 +1516,24 @@ impl Plaivo {
                 cx,
             );
         }
+        let (skipped, resources): (Vec<_>, Vec<_>) = resources.into_iter().partition(|r| {
+            self.settings.server_hidden(&r.client_identifier)
+                && self
+                    .account
+                    .servers
+                    .iter()
+                    .any(|s| s.id == r.client_identifier)
+        });
+        let kept: Vec<Server> = self
+            .account
+            .servers
+            .iter()
+            .filter(|s| skipped.iter().any(|r| r.client_identifier == s.id))
+            .cloned()
+            .collect();
+        if resources.is_empty() {
+            return self.discovery_done(kept, None, cx);
+        }
         let total = resources.len();
         if let Some(sp) = &mut self.splash {
             sp.servers.splice(
@@ -1518,7 +1543,7 @@ impl Plaivo {
                     .map(|r| (r.client_identifier.clone(), r.name.clone(), Status::Pending)),
             );
         }
-        self.probe = Some((Vec::new(), total, false));
+        self.probe = Some((kept, total, false));
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PROBE_WAIT).await;
             this.update(cx, |this, cx| this.probe_deadline(cx)).ok();
@@ -1625,7 +1650,7 @@ impl Plaivo {
         }
         self.sections
             .retain(|sec| self.servers.iter().any(|s| s.id == sec.server));
-        self.load_sections(cx);
+        self.load_sections(false, cx);
         let home = self.home_server();
         if previous_home.as_ref().map(|s| &s.id) != home.as_ref().map(|s| &s.id) {
             self.home_ready = false;
@@ -1650,13 +1675,19 @@ impl Plaivo {
         cx.notify();
     }
 
-    fn load_sections(&mut self, cx: &mut Context<Self>) {
-        for srv in self.servers.clone() {
+    pub fn load_sections(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        let servers: Vec<Server> = self
+            .servers
+            .iter()
+            .filter(|s| self.settings.server_hidden(&s.id) == hidden)
+            .cloned()
+            .collect();
+        for srv in servers {
             let id = srv.id.clone();
             self.load(
                 cx,
                 move |c| srv.sections(c),
-                move |this, r, _| match r {
+                move |this, r, cx| match r {
                     Ok(dirs) => {
                         this.sections.retain(|x| x.server != id);
                         this.sections.extend(dirs.into_iter().map(|d| SectionInfo {
@@ -1666,11 +1697,36 @@ impl Plaivo {
                             title: d.title.into(),
                             kind: d.kind,
                         }));
+                        this.sync_server_hidden(&id, cx);
                     }
                     Err(e) => log::warn!("sections for {id}: {e}"),
                 },
             );
         }
+    }
+
+    pub fn sync_server_hidden(&mut self, server: &str, cx: &mut Context<Self>) {
+        let libraries = self
+            .sections
+            .iter()
+            .filter(|x| x.server == server)
+            .map(|x| x.id.as_str());
+        let home = self.home_server().map(|s| s.id);
+        if !self.settings.sync_server_hidden(server, libraries) {
+            return;
+        }
+        log::info!(
+            "{server}: every library hidden: {}",
+            self.settings.server_hidden(server)
+        );
+        self.save_settings_soon(cx);
+        if !self.settings.server_hidden(server) {
+            self.discover(cx);
+        }
+        if self.home_server().map(|s| s.id) != home {
+            self.home_ready = false;
+        }
+        self.load_home(cx);
     }
 
     pub fn sections_in_order(&self, hidden: bool) -> Vec<(&str, Vec<&SectionInfo>)> {
@@ -1719,6 +1775,9 @@ impl Plaivo {
             Nav::Settings(category) => {
                 if self.settings_page != category || self.page != Page::Settings {
                     self.settings_scroll = ScrollHandle::new();
+                }
+                if category == Some(Category::Libraries) {
+                    self.load_sections(true, cx);
                 }
                 self.page = Page::Settings;
                 self.settings_page = category;
@@ -1894,7 +1953,7 @@ impl Plaivo {
     }
 
     pub fn refresh_home(&mut self, cx: &mut Context<Self>) {
-        self.load_sections(cx);
+        self.load_sections(false, cx);
         self.load_home(cx);
     }
 
@@ -1928,7 +1987,14 @@ impl Plaivo {
                 }
             },
         );
-        for other in self.servers.iter().filter(|s| s.id != home).cloned() {
+        self.remote_continue
+            .retain(|id, _| !self.settings.server_hidden(id));
+        let others: Vec<Server> = self
+            .active_servers()
+            .filter(|s| s.id != home)
+            .cloned()
+            .collect();
+        for other in others {
             let sid = other.id.clone();
             self.load(
                 cx,
@@ -2291,8 +2357,7 @@ impl Plaivo {
         }
         self.searching = true;
         let servers: Vec<Server> = self
-            .servers
-            .iter()
+            .active_servers()
             .filter(|s| !plex::is_down(&s.id))
             .cloned()
             .collect();
@@ -2691,8 +2756,7 @@ impl Plaivo {
     fn live_servers(&self) -> Vec<Server> {
         let home = self.home_server().map(|h| h.id).unwrap_or_default();
         let mut servers: Vec<Server> = self
-            .servers
-            .iter()
+            .active_servers()
             .filter(|s| !plex::is_down(&s.id))
             .cloned()
             .collect();

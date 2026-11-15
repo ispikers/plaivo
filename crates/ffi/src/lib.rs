@@ -76,6 +76,7 @@ pub struct Settings {
     pub shader: String,
     pub library_order: Vec<String>,
     pub hidden_libraries: Vec<String>,
+    pub hidden_servers: Vec<String>,
     pub density: u32,
     pub theme: Theme,
     pub view_mode: ViewMode,

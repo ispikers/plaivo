@@ -489,7 +489,8 @@ impl Plaivo {
     }
 
     fn watch_resolve(&mut self, media: Media, epoch: i64, cx: &mut Context<Self>) {
-        let (servers, c) = (self.servers.clone(), self.client.clone());
+        let servers: Vec<_> = self.active_servers().cloned().collect();
+        let c = self.client.clone();
         let theirs = media.clone();
         Self::bg(
             cx,
