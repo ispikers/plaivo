@@ -80,6 +80,7 @@ private val Action.glyph
             Action.ADD_TO_WATCHLIST -> Glyph.BookmarkAdd
             Action.REMOVE_FROM_WATCHLIST -> Glyph.Bookmark
             Action.DETAILS -> Glyph.Info
+            Action.SEASON -> Glyph.Tv
         }
 
 private fun downloadScopes(kind: String) =
@@ -188,7 +189,8 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit) {
                         )
                     m?.actions?.forEach { a ->
                         when (a) {
-                            Action.DETAILS -> Unit
+                            Action.DETAILS,
+                            Action.SEASON -> Unit
                             Action.DOWNLOAD ->
                                 if (saved) {
                                     SettingsRow(

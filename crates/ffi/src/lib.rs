@@ -174,6 +174,7 @@ pub enum Action {
     AddToWatchlist,
     RemoveFromWatchlist,
     Details,
+    Season,
 }
 
 #[derive(uniffi::Record)]
@@ -1396,6 +1397,7 @@ impl Plaivo {
         let ctx = menu::Context {
             local: server_id != DISCOVER_ID,
             details: false,
+            season: false,
             can_rate: srv.can_rate(),
             can_download: self.downloads.get().is_some(),
             signed_in: token.is_some(),

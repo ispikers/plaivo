@@ -160,6 +160,7 @@ fn action_icon(a: Action) -> Icon {
         Action::AddToWatchlist => Icon::BookmarkAdd,
         Action::RemoveFromWatchlist => Icon::Bookmark,
         Action::Details => Icon::Info,
+        Action::Season => Icon::Tv,
     }
 }
 
@@ -275,10 +276,12 @@ impl Plaivo {
         watchlisted: Option<bool>,
     ) -> Vec<(Icon, &'static str, Action)> {
         let local = server != DISCOVER_ID;
+        let here = self.page == Page::Detail
+            && self.detail_id == (server.to_owned(), it.rating_key.clone());
         let ctx = menu::Context {
             local,
-            details: !(self.page == Page::Detail
-                && self.detail_id == (server.to_owned(), it.rating_key.clone())),
+            details: !here,
+            season: here,
             can_rate: self.server(server).is_some_and(|s| s.can_rate()),
             can_download: self.downloads.is_some()
                 && !self.download_entries.iter().any(|e| {
@@ -345,6 +348,15 @@ impl Plaivo {
         let key = it.rating_key.clone();
         match act {
             Action::Details => self.navigate(Nav::Detail(server, key, None), true, cx),
+            Action::Season => self.navigate(
+                Nav::Detail(
+                    server,
+                    it.grandparent_rating_key.clone(),
+                    Some(it.parent_rating_key.clone()),
+                ),
+                true,
+                cx,
+            ),
             Action::FromStart => self.play_from_start(server, key, cx),
             Action::ClearProgress => {
                 let (Some(srv), c) = (self.server(&server), self.client.clone()) else {

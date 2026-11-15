@@ -15,6 +15,7 @@ pub enum Action {
     AddToWatchlist,
     RemoveFromWatchlist,
     Details,
+    Season,
 }
 
 impl Action {
@@ -32,6 +33,7 @@ impl Action {
             Action::AddToWatchlist => "Add to watchlist",
             Action::RemoveFromWatchlist => "Remove from watchlist",
             Action::Details => "View details",
+            Action::Season => "View season",
         }
     }
 }
@@ -39,6 +41,7 @@ impl Action {
 pub struct Context {
     pub local: bool,
     pub details: bool,
+    pub season: bool,
     pub can_rate: bool,
     pub can_download: bool,
     pub signed_in: bool,
@@ -50,6 +53,7 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
     let in_progress = c.local
         && it.view_offset.is_some_and(|o| o > 0)
         && matches!(it.kind.as_str(), "movie" | "episode");
+    let season = c.season && it.kind == "episode" && !it.parent_rating_key.is_empty();
     let mut v = Vec::new();
     if in_progress {
         v.extend([
@@ -60,6 +64,9 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
         ]);
         if c.details {
             v.push(Action::Details);
+        }
+        if season {
+            v.push(Action::Season);
         }
         return v;
     }
@@ -94,6 +101,9 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
     }
     if c.details {
         v.push(Action::Details);
+    }
+    if season {
+        v.push(Action::Season);
     }
     v
 }
@@ -165,11 +175,33 @@ mod tests {
         Context {
             local: true,
             details: true,
+            season: false,
             can_rate: true,
             can_download: true,
             signed_in: true,
             watchlisted: None,
         }
+    }
+
+    #[test]
+    fn episode_pages_offer_their_season() {
+        let ep = Item {
+            kind: "episode".into(),
+            parent_rating_key: "s1".into(),
+            ..Default::default()
+        };
+        let here = Context {
+            details: false,
+            season: true,
+            ..ctx()
+        };
+        assert_eq!(actions(&ep, &here).last(), Some(&Action::Season));
+        assert!(!actions(&ep, &ctx()).contains(&Action::Season));
+        let movie = Item {
+            kind: "movie".into(),
+            ..Default::default()
+        };
+        assert!(!actions(&movie, &here).contains(&Action::Season));
     }
 
     #[test]
