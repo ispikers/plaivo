@@ -42,6 +42,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -72,11 +73,18 @@ import uniffi.plaivo_ffi.Action
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.CastMember
 import uniffi.plaivo_ffi.Detail
+import uniffi.plaivo_ffi.EpisodeStep
 import uniffi.plaivo_ffi.RatingSource
 import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.discoverId
 
 private val rowShape = RoundedCornerShape(10.dp)
+
+enum class Step {
+    Previous,
+    Next,
+}
+
 private val TV_WIDTH = 960.dp
 private const val SUMMARY_LINES = 4
 
@@ -105,47 +113,114 @@ fun DetailScreen(
     openRow: (MediaRow) -> Unit,
     openPerson: (server: String, id: String, name: String) -> Unit,
     person: String? = null,
+    step: ((key: String) -> Unit)? = null,
     onChanged: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val play = LocalPlay.current
     var detail by remember { mutableStateOf<Detail?>(null) }
+    var loadedFor by remember { mutableStateOf<String?>(null) }
+    var carried by remember { mutableStateOf<Detail?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var season by remember { mutableStateOf<String?>(null) }
     var episodes by remember { mutableStateOf<List<MediaCard>>(emptyList()) }
     var episodesOf by remember { mutableStateOf<String?>(null) }
     var related by remember { mutableStateOf<List<MediaRow>>(emptyList()) }
     val focus = remember { FocusRequester() }
+    val discover = remember { discoverId() }
     fun fetch(cached: Boolean) =
         if (person != null) core.person(server, key, person, cached) else core.detail(server, key, cached)
-    LaunchedEffect(refresh) {
-        if (detail == null) io { runCatching { fetch(true) } }.onSuccess { detail = it }
-        io { runCatching { fetch(false) } }
-            .onSuccess {
-                detail = it
-                error = null
+    fun show(next: Detail) {
+        val prev = detail
+        if (loadedFor != key) {
+            carried = prev?.takeIf { it.server == discover && next.server != discover }
+            season = null
+        }
+        val owned = carried
+        detail =
+            when {
+                owned != null ->
+                    next.copy(
+                        title = owned.title,
+                        logo = owned.logo,
+                        backdrop = owned.backdrop,
+                        summary = owned.summary,
+                        genres = owned.genres,
+                        ratings = owned.ratings,
+                        info = owned.info,
+                        cast = owned.cast,
+                    )
+                prev != null &&
+                    prev.kind == "episode" &&
+                    next.kind == "episode" &&
+                    prev.server == next.server &&
+                    prev.showKey == next.showKey -> next.copy(logo = prev.logo, backdrop = prev.backdrop)
+                else -> next
             }
-            .onFailure { if (detail == null) error = it.message }
+        loadedFor = key
+        error = null
+    }
+    LaunchedEffect(key, refresh) {
+        if (loadedFor != key) io { runCatching { fetch(true) } }.onSuccess { show(it) }
+        io { runCatching { fetch(false) } }
+            .onSuccess { show(it) }
+            .onFailure {
+                if (loadedFor != key) {
+                    detail = null
+                    error = it.message
+                }
+            }
     }
     val d = detail
     val chosen = season ?: d?.season
     LaunchedEffect(d?.key) {
-        if (d != null && d.kind in setOf("movie", "show"))
-            io { runCatching { core.related(server, d.key) } }.onSuccess { related = it }
+        if (d == null) return@LaunchedEffect
+        if (d.kind !in setOf("movie", "show")) related = emptyList()
+        else io { runCatching { core.related(d.server, d.key) } }.onSuccess { related = it }
     }
     LaunchedEffect(chosen, refresh) {
-        if (chosen == null) return@LaunchedEffect
-        io { runCatching { core.episodes(server, chosen, true) } }
+        val srv = d?.server
+        if (chosen == null || srv == null) return@LaunchedEffect
+        io { runCatching { core.episodes(srv, chosen, true) } }
             .onSuccess { episodes = it }
             .onFailure { if (episodesOf != chosen) episodes = emptyList() }
         episodesOf = chosen
-        io { runCatching { core.episodes(server, chosen, false) } }.onSuccess { episodes = it }
+        io { runCatching { core.episodes(srv, chosen, false) } }.onSuccess { episodes = it }
     }
     val touch = LocalTouch.current
     LaunchedEffect(d != null) { if (d != null && !touch) runCatching { focus.requestFocus() } }
+    val stepper = step != null && d?.kind == "episode" && d.showKey.isNotEmpty()
+    var stepMap by remember { mutableStateOf<Map<String, EpisodeStep>>(emptyMap()) }
+    var stepped by remember { mutableStateOf<Step?>(null) }
+    val previousFocus = remember { FocusRequester() }
+    val nextFocus = remember { FocusRequester() }
+    LaunchedEffect(stepper, d?.server, d?.showKey) {
+        if (!stepper || d == null) return@LaunchedEffect
+        io {
+                runCatching { core.episodeSteps(d.server, d.showKey, true) }
+                    .recoverCatching { core.episodeSteps(d.server, d.showKey, false) }
+                    .getOrNull()
+            }
+            ?.let { list -> stepMap = list.associateBy { it.key } }
+    }
+    val target = stepMap[key]
+    LaunchedEffect(target) {
+        val n = target ?: return@LaunchedEffect
+        if (touch || stepped == null) return@LaunchedEffect
+        val order =
+            if (stepped == Step.Next) listOf(n.next to nextFocus, n.previous to previousFocus)
+            else listOf(n.previous to previousFocus, n.next to nextFocus)
+        order.firstOrNull { it.first != null }?.let { runCatching { it.second.requestFocus() } }
+    }
+    val steps: @Composable (Modifier) -> Unit = { modifier ->
+        EpisodeSteps(target, previousFocus, nextFocus, modifier) { k, f ->
+            stepped = f
+            step?.invoke(k)
+        }
+    }
     if (d == null) return Message(error ?: "Loading…")
-    val library = remember(d.server) { d.server != discoverId() }
+    val library = d.server != discover
     val isPerson = d.kind == "person"
     fun setWatched(on: Boolean) =
         scope.launch {
@@ -176,6 +251,7 @@ fun DetailScreen(
                             Modifier.fillMaxSize()
                                 .background(Brush.verticalGradient(0.4f to Color.Transparent, 1f to Palette.bg))
                         )
+                        if (stepper) steps(Modifier.align(Alignment.TopEnd).padding(12.dp))
                     }
                     Column(Modifier.padding(horizontal = edge), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (d.eyebrow.isNotEmpty())
@@ -228,16 +304,23 @@ fun DetailScreen(
                                 )
                             )
                     )
-                    if (sideInfo) {
+                    if (sideInfo || stepper) {
                         Column(
                             Modifier.align(Alignment.TopEnd)
-                                .padding(top = 40.dp, end = Dims.edge)
-                                .width(260.dp)
-                                .background(Palette.bg.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                                .padding(top = if (stepper) 16.dp else 40.dp, end = Dims.edge),
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            InfoRows(d)
+                            if (stepper) steps(Modifier)
+                            if (sideInfo)
+                                Column(
+                                    Modifier.width(260.dp)
+                                        .background(Palette.bg.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                        .padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    InfoRows(d)
+                                }
                         }
                     }
                     Column(
@@ -279,8 +362,8 @@ fun DetailScreen(
             }
         if (d.summary.isNotEmpty())
             item(key = "overview") {
-                var expanded by remember { mutableStateOf(false) }
-                var long by remember { mutableStateOf(false) }
+                var expanded by remember(d.key) { mutableStateOf(false) }
+                var long by remember(d.key) { mutableStateOf(false) }
                 Column(Modifier.padding(horizontal = edge)) {
                     SectionTitle(if (isPerson) "Biography" else "Overview", top = 0.dp)
                     Text(
@@ -317,7 +400,7 @@ fun DetailScreen(
                             p,
                             if (p.id.isEmpty()) null
                             else {
-                                { openPerson(d.server, p.id, p.name) }
+                                { openPerson(carried?.server ?: d.server, p.id, p.name) }
                             },
                         )
                     }
@@ -470,6 +553,58 @@ private fun RoundActions(
             onClick = toggleWatched,
         )
     RoundAction(Glyph.MoreVert, "More", onHint, modifier) { menu?.invoke(d.card()) }
+}
+
+@Composable
+private fun EpisodeSteps(
+    n: EpisodeStep?,
+    previousFocus: FocusRequester,
+    nextFocus: FocusRequester,
+    modifier: Modifier,
+    onStep: (String, Step) -> Unit,
+) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        StepButton(Glyph.ChevronLeft, "Previous episode", n?.previous, Modifier.focusRequester(previousFocus)) {
+            onStep(it, Step.Previous)
+        }
+        StepButton(Glyph.ChevronRight, "Next episode", n?.next, Modifier.focusRequester(nextFocus)) {
+            onStep(it, Step.Next)
+        }
+    }
+}
+
+@Composable
+private fun StepButton(glyph: Glyph, label: String, key: String?, modifier: Modifier, onClick: (String) -> Unit) {
+    val idle = Color.Black.copy(alpha = 0.3f)
+    val look = modifier.size(40.dp).alpha(if (key == null) 0.35f else 1f).semantics { contentDescription = label }
+    val icon: @Composable BoxScope.() -> Unit = {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { GlyphIcon(glyph, 24.dp, Color.White) }
+    }
+    if (LocalTouch.current) {
+        if (key == null) return Box(look.clip(CircleShape).background(idle), content = icon)
+        return Tap({ onClick(key) }, look, CircleShape, idle, Color.White, content = icon)
+    }
+    Surface(
+        onClick = { key?.let(onClick) },
+        enabled = key != null,
+        modifier = look,
+        shape = ClickableSurfaceDefaults.shape(CircleShape),
+        colors =
+            ClickableSurfaceDefaults.colors(
+                containerColor = idle,
+                contentColor = Color.White,
+                focusedContainerColor = Color.Black.copy(alpha = 0.5f),
+                focusedContentColor = Color.White,
+                disabledContainerColor = idle,
+                disabledContentColor = Color.White,
+            ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        border =
+            ClickableSurfaceDefaults.border(
+                focusedBorder = Border(BorderStroke(2.dp, Palette.text), inset = (-3).dp, shape = CircleShape)
+            ),
+        content = icon,
+    )
 }
 
 @Composable

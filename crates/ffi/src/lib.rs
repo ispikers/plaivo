@@ -251,6 +251,14 @@ pub struct Detail {
     pub trailer_key: Option<String>,
     pub photo: Option<String>,
     pub rows: Vec<Row>,
+    pub show_key: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct EpisodeStep {
+    pub key: String,
+    pub previous: Option<String>,
+    pub next: Option<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -1253,6 +1261,7 @@ impl Plaivo {
             trailer_key: it.trailer().map(|t| t.rating_key.clone()),
             photo: None,
             rows: Vec::new(),
+            show_key: it.grandparent_rating_key.clone(),
         })
     }
 
@@ -1347,6 +1356,7 @@ impl Plaivo {
             .into_iter()
             .filter(|r| !r.cards.is_empty())
             .collect(),
+            show_key: String::new(),
         })
     }
 
@@ -1371,6 +1381,31 @@ impl Plaivo {
                     e.originally_available_at.clone(),
                 ]),
                 ..card(&srv, e, true, &prefs)
+            })
+            .collect())
+    }
+
+    pub fn episode_steps(
+        &self,
+        server_id: String,
+        show_key: String,
+        cached: bool,
+    ) -> R<Vec<EpisodeStep>> {
+        let srv = self.server(&server_id)?;
+        let ctx = Ctx::new(
+            self.client.clone(),
+            if cached {
+                Source::Cache
+            } else {
+                Source::Network
+            },
+        );
+        Ok(detail::all_neighbours(&srv.all_episodes(&ctx, &show_key)?)
+            .into_iter()
+            .map(|(key, [previous, next])| EpisodeStep {
+                key,
+                previous,
+                next,
             })
             .collect())
     }

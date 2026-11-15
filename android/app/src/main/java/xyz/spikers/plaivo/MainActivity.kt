@@ -458,7 +458,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
             key(i) {
                 FullPage(onBack = { pages = pages.take(i) }) {
                     Box(if (touch) Modifier.safeDrawingPadding() else Modifier) {
-                        key(p) {
+                        key(if (p is SubPage.Detail) SubPage.Detail::class else p) {
                             when (p) {
                                 is SubPage.Hub -> HubListScreen(p.server, p.key, p.title, if (p.resume) play else open)
                                 is SubPage.Detail ->
@@ -469,6 +469,9 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                                         open,
                                         { row -> openRow(p.server, row) },
                                         openPerson,
+                                        step = { k ->
+                                            pages = pages.map { if (it === p) SubPage.Detail(p.server, k) else it }
+                                        },
                                     ) {
                                         changes++
                                     }
