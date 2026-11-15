@@ -1207,9 +1207,36 @@ impl Plaivo {
     }
 
     fn begin_splash(&mut self, cx: &mut Context<Self>) {
-        self.splash = Some(Splash::default());
+        let jellyfin = self.account.jellyfin.clone();
+        self.splash = Some(Splash {
+            servers: jellyfin
+                .iter()
+                .map(|s| (s.id.clone(), s.name.clone(), Status::Pending))
+                .collect(),
+            ..Default::default()
+        });
         self.nav = vec![Nav::Home];
         self.page = Page::Splash;
+        for srv in jellyfin {
+            let c = self.client.clone();
+            let uri = srv.uri.clone();
+            Self::bg(
+                cx,
+                move || plaivo_core::jellyfin::probe(&c, &uri),
+                move |this, r, _| {
+                    if let Err(e) = &r {
+                        log::warn!("jellyfin: {} unreachable: {e}", srv.name);
+                    }
+                    if let Some(row) = this
+                        .splash
+                        .as_mut()
+                        .and_then(|sp| sp.servers.iter_mut().find(|x| x.0 == srv.id))
+                    {
+                        row.2 = if r.is_ok() { Status::Ok } else { Status::Error };
+                    }
+                },
+            );
+        }
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SPLASH_TIMEOUT).await;
             this.update(cx, |this, cx| this.finish_splash(cx)).ok();
@@ -1484,10 +1511,12 @@ impl Plaivo {
         }
         let total = resources.len();
         if let Some(sp) = &mut self.splash {
-            sp.servers = resources
-                .iter()
-                .map(|r| (r.client_identifier.clone(), r.name.clone(), Status::Pending))
-                .collect();
+            sp.servers.splice(
+                0..0,
+                resources
+                    .iter()
+                    .map(|r| (r.client_identifier.clone(), r.name.clone(), Status::Pending)),
+            );
         }
         self.probe = Some((Vec::new(), total, false));
         cx.spawn(async move |this, cx| {
@@ -2390,7 +2419,11 @@ impl Plaivo {
     }
 
     pub fn reload_detail(&mut self, cx: &mut Context<Self>) {
-        if self.detail.as_ref().is_some_and(|d| d.item.kind != "person") {
+        if self
+            .detail
+            .as_ref()
+            .is_some_and(|d| d.item.kind != "person")
+        {
             let (server, key) = self.detail_id.clone();
             self.load_detail(server, key, None, cx);
         }
