@@ -494,7 +494,15 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
             }
         }
     }
-    menu?.let { CardMenu(it, onDismiss = { menu = null }, onChanged = { changes++ }) }
+    menu?.let { card ->
+        val here = (pages.lastOrNull() as? SubPage.Detail)?.let { it.server == card.server && it.key == card.key }
+        CardMenu(
+            card,
+            onDismiss = { menu = null },
+            onChanged = { changes++ },
+            onDetails = if (here == true) null else ({ pages = pages + SubPage.Detail(card.server, card.key) }),
+        )
+    }
 }
 
 sealed interface SubPage {

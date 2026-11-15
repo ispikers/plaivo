@@ -98,7 +98,7 @@ private fun downloadScopes(kind: String) =
     }
 
 @Composable
-fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit) {
+fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit, onDetails: (() -> Unit)?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val entries by DownloadQueue.entries.collectAsState()
@@ -189,7 +189,19 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit) {
                         )
                     m?.actions?.forEach { a ->
                         when (a) {
-                            Action.DETAILS,
+                            Action.DETAILS ->
+                                onDetails?.let { details ->
+                                    SettingsRow(
+                                        a.glyph,
+                                        actionLabel(a),
+                                        "",
+                                        mod(),
+                                        onClick = {
+                                            details()
+                                            onDismiss()
+                                        },
+                                    )
+                                }
                             Action.SEASON -> Unit
                             Action.DOWNLOAD ->
                                 if (saved) {
