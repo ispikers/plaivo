@@ -1,8 +1,8 @@
 use plaivo_core::downloads::{Downloads, State};
 use plaivo_core::menu::{self, Action};
 use plaivo_core::plex::{
-    self, Client, Ctx, DISCOVER_ID, Hub, Item, Picks, PlexUser, QUALITIES, SORTS, Server, Source,
-    fmt_bitrate, resolve_playable,
+    self, Client, Ctx, DISCOVER_ID, Hub, Item, LibraryHub, Picks, PlexUser, QUALITIES, SORTS,
+    Server, Source, fmt_bitrate, resolve_playable,
 };
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{
@@ -455,6 +455,7 @@ pub struct LibraryPage {
 
 #[derive(uniffi::Record)]
 pub struct Row {
+    pub server: String,
     pub key: String,
     pub title: String,
     pub resume: bool,
@@ -625,12 +626,20 @@ pub struct Plaivo {
     watch: Mutex<Option<watch::Session>>,
     watch_listener: OnceLock<Arc<dyn watch::WatchListener>>,
     continuing: Mutex<HashMap<String, Hub>>,
+    library_ids: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl Plaivo {
+    fn active_servers(&self) -> Vec<Server> {
+        let settings = self.settings.lock().unwrap();
+        let mut servers = self.account.lock().unwrap().all_servers();
+        servers.retain(|s| !settings.server_hidden(&s.id));
+        servers
+    }
+
     fn live_servers(&self) -> Vec<Server> {
         let home = self.settings.lock().unwrap().home_server.clone();
-        let mut servers = self.account.lock().unwrap().all_servers();
+        let mut servers = self.active_servers();
         servers.retain(|s| !plex::is_down(&s.id));
         servers.sort_by_key(|s| s.id != home);
         servers
@@ -728,6 +737,7 @@ impl Plaivo {
             watch: Mutex::new(None),
             watch_listener: OnceLock::new(),
             continuing: Mutex::new(HashMap::new()),
+            library_ids: Mutex::new(HashMap::new()),
         })
     }
 
@@ -854,13 +864,18 @@ impl Plaivo {
         self.settings.lock().unwrap().clone()
     }
 
-    pub fn set_settings(&self, settings: Settings) {
+    pub fn set_settings(&self, mut settings: Settings) {
+        let mut current = self.settings.lock().unwrap();
+        // Kotlin holds a copy that can predate a libraries() sync, so derive hidden_servers here instead of trusting it.
+        settings.hidden_servers = current.hidden_servers.clone();
+        for (server, ids) in self.library_ids.lock().unwrap().iter() {
+            settings.sync_server_hidden(server, ids.iter().map(String::as_str));
+        }
         settings.save();
         apply_log_level(&settings);
         let auto_remove = settings.auto_remove_watched;
-        let changed = std::mem::replace(&mut *self.settings.lock().unwrap(), settings)
-            .auto_remove_watched
-            != auto_remove;
+        let changed = std::mem::replace(&mut *current, settings).auto_remove_watched != auto_remove;
+        drop(current);
         if changed {
             self.with_downloads(|d| d.set_auto_remove_watched(auto_remove));
         }
@@ -937,6 +952,15 @@ impl Plaivo {
         };
         let resources = self.client.servers(&token)?;
         let previous = self.account.lock().unwrap().servers.clone();
+        let settings = self.settings.lock().unwrap().clone();
+        let (skipped, resources): (Vec<_>, Vec<_>) = resources.into_iter().partition(|r| {
+            settings.server_hidden(&r.client_identifier)
+                && previous.iter().any(|p| p.id == r.client_identifier)
+        });
+        let kept = previous
+            .iter()
+            .filter(|p| skipped.iter().any(|r| r.client_identifier == p.id))
+            .cloned();
         let connected: Vec<Server> = std::thread::scope(|s| {
             let probes: Vec<_> = resources
                 .iter()
@@ -964,6 +988,7 @@ impl Plaivo {
                             .cloned()
                     })
                 })
+                .chain(kept)
                 .collect()
         });
         let mut account = self.account.lock().unwrap();
@@ -975,7 +1000,6 @@ impl Plaivo {
     }
 
     pub fn home(&self, server_id: String, cached: bool) -> R<Home> {
-        let srv = self.server(&server_id)?;
         let ctx = Ctx::new(
             self.client.clone(),
             if cached {
@@ -984,32 +1008,54 @@ impl Plaivo {
                 Source::Network
             },
         );
-        let mut hubs = srv.hubs(&ctx).inspect_err(|_| {
-            if !cached && plex::is_down(&srv.id) {
-                self.continuing.lock().unwrap().remove(&srv.id);
+        let settings = self.settings.lock().unwrap().clone();
+        let mut servers = self.active_servers();
+        servers.sort_by_key(|s| s.id != server_id);
+        let results: Vec<Result<Vec<LibraryHub>, String>> = std::thread::scope(|s| {
+            let jobs: Vec<_> = servers
+                .iter()
+                .map(|srv| s.spawn(|| srv.home_hubs(&ctx, &settings)))
+                .collect();
+            jobs.into_iter()
+                .map(|j| j.join().unwrap_or_else(|_| Err("panicked".into())))
+                .collect()
+        });
+        let mut all = Vec::new();
+        let mut home_error = None;
+        for (srv, r) in servers.iter().zip(results) {
+            match r {
+                Ok(hubs) => all.extend(hubs),
+                Err(e) if srv.id == server_id => home_error = Some(e),
+                Err(e) => log::warn!("home rows for {}: {e}", srv.name),
             }
-        })?;
+        }
+        if let Some(e) = home_error.filter(|_| all.is_empty()) {
+            return Err(e.into());
+        }
+        let order: Vec<&str> = servers.iter().map(|s| s.id.as_str()).collect();
+        let arranged = plex::arrange_home(&all, &order, &settings);
         let prefs = self.card_prefs();
-        let hero = plex::pick_hero(&hubs)
-            .into_iter()
-            .map(|it| card(&srv, it, false, &prefs))
-            .collect();
-        let resume = hubs
-            .iter()
-            .position(Hub::is_continue)
-            .map(|i| hubs.remove(i))
-            .unwrap_or_default();
-        self.continuing
-            .lock()
-            .unwrap()
-            .insert(srv.id.clone(), resume);
+        let find = |id: &str| servers.iter().find(|s| s.id == id);
+        let mut titles = HashSet::new();
         Ok(Home {
-            hero,
-            rows: rows(&srv, &hubs, &prefs),
+            hero: plex::pick_hero(&arranged)
+                .into_iter()
+                .filter_map(|(id, it)| Some(card(find(id)?, it, false, &prefs)))
+                .collect(),
+            rows: arranged
+                .iter()
+                .filter(|h| titles.insert(h.hub.title.clone()))
+                .filter_map(|h| Some(rows(find(&h.server)?, std::slice::from_ref(&h.hub), &prefs)))
+                .flatten()
+                .collect(),
         })
     }
 
     pub fn refresh_continue(&self, server_id: String, cached: bool) {
+        if self.settings.lock().unwrap().server_hidden(&server_id) {
+            self.continuing.lock().unwrap().remove(&server_id);
+            return;
+        }
         let Ok(srv) = self.server(&server_id) else {
             return;
         };
@@ -1018,12 +1064,12 @@ impl Plaivo {
         } else {
             Source::Network
         };
-        match srv.continue_items(&Ctx::new(self.client.clone(), source)) {
-            Ok(metadata) => {
-                let hub = Hub {
-                    metadata,
-                    ..Default::default()
-                };
+        match srv.continue_watching(&Ctx::new(self.client.clone(), source)) {
+            Ok(mut hub) => {
+                let settings = self.settings.lock().unwrap();
+                hub.metadata
+                    .retain(|it| !settings.item_hidden(&server_id, it));
+                drop(settings);
                 self.continuing.lock().unwrap().insert(server_id, hub);
             }
             Err(_) if !cached && plex::is_down(&server_id) => {
@@ -1047,6 +1093,7 @@ impl Plaivo {
             &prefs,
         )?;
         Some(Row {
+            server: home_id.clone(),
             key: row.key.to_owned(),
             title: row.title.to_owned(),
             resume: true,
@@ -1109,10 +1156,20 @@ impl Plaivo {
                 Source::Network
             },
         );
-        std::thread::scope(|s| {
+        let disk = Ctx::new(self.client.clone(), Source::Cache);
+        let hidden = self.settings.lock().unwrap().hidden_servers.clone();
+        let sections: Vec<Section> = std::thread::scope(|s| {
             let jobs: Vec<_> = servers
                 .iter()
-                .map(|srv| (srv, s.spawn(|| srv.sections(&ctx))))
+                .map(|srv| {
+                    let (skip, disk, ctx) = (hidden.contains(&srv.id), &disk, &ctx);
+                    // A hidden server is only fetched when its sections were never cached, so it can still be unhidden.
+                    let job = s.spawn(move || match skip {
+                        true => srv.sections(disk).or_else(|_| srv.sections(ctx)),
+                        false => srv.sections(ctx),
+                    });
+                    (srv, job)
+                })
                 .collect();
             jobs.into_iter()
                 .filter_map(|(srv, job)| {
@@ -1135,7 +1192,25 @@ impl Plaivo {
                     })
                 })
                 .collect()
-        })
+        });
+        let mut settings = self.settings.lock().unwrap();
+        let mut known = self.library_ids.lock().unwrap();
+        let mut changed = false;
+        for srv in &servers {
+            let ids: Vec<String> = sections
+                .iter()
+                .filter(|x| x.server == srv.id)
+                .map(|x| x.id.clone())
+                .collect();
+            changed |= settings.sync_server_hidden(&srv.id, ids.iter().map(String::as_str));
+            if !ids.is_empty() {
+                known.insert(srv.id.clone(), ids);
+            }
+        }
+        if changed {
+            settings.save();
+        }
+        sections
     }
 
     pub fn library_page(
@@ -1308,7 +1383,9 @@ impl Plaivo {
             .iter()
             .chain(&known_for)
             .find_map(|c| c.backdrop.clone());
+        let owner = server_id.clone();
         let row = |title: &str, cards: Vec<Card>| Row {
+            server: owner.clone(),
             key: String::new(),
             title: title.into(),
             resume: false,
@@ -1507,7 +1584,7 @@ impl Plaivo {
     }
 
     pub fn search(&self, query: String) -> Vec<Card> {
-        let mut servers = self.account.lock().unwrap().all_servers();
+        let mut servers = self.active_servers();
         servers.retain(|s| !plaivo_core::plex::is_down(&s.id));
         let ctx = Ctx::new(self.client.clone(), Source::Live);
         let prefs = self.card_prefs();
@@ -1929,6 +2006,19 @@ pub fn set_playback_quality(mut settings: Settings, library: String, kbps: u32) 
 }
 
 #[uniffi::export]
+pub fn hide_library(
+    mut settings: Settings,
+    server: String,
+    libraries: Vec<String>,
+    id: String,
+    hidden: bool,
+) -> Settings {
+    settings.set_library_hidden(&id, hidden);
+    settings.sync_server_hidden(&server, libraries.iter().map(String::as_str));
+    settings
+}
+
+#[uniffi::export]
 pub fn move_library(
     mut settings: Settings,
     arranged: Vec<String>,
@@ -2027,6 +2117,7 @@ fn rows(srv: &Server, hubs: &[Hub], prefs: &CardPrefs) -> Vec<Row> {
             let wide = prefs.wide_hub(h);
             let mut keys = HashSet::new();
             Row {
+                server: srv.id.clone(),
                 key: h.key.clone(),
                 title: h.title.clone(),
                 resume: h.is_continue(),

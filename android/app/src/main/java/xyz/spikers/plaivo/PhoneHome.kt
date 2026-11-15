@@ -72,6 +72,7 @@ fun PhoneHome(
     server: ServerInfo?,
     serversLoaded: Boolean,
     refresh: Int,
+    layout: Any?,
     open: (MediaCard) -> Unit,
     openRow: (String, MediaRow) -> Unit,
     onRefresh: () -> Unit,
@@ -82,7 +83,7 @@ fun PhoneHome(
     onSignOut: () -> Unit,
 ) {
     var refreshing by remember { mutableStateOf(false) }
-    val home = rememberHomeRows(server, serversLoaded, refresh) { refreshing = false }
+    val home = rememberHomeRows(server, serversLoaded, refresh, layout) { refreshing = false }
     val rows = home.rows
     val pull = {
         refreshing = true
@@ -122,7 +123,7 @@ fun PhoneHome(
                             Message(message, openDownloads.takeIf { failed })
                         }
                     }
-                touchRows(rows, open) { row -> server?.let { openRow(it.id, row) } }
+                touchRows(rows, open) { row -> openRow(row.server, row) }
             }
         }
     }

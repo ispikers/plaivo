@@ -355,8 +355,8 @@ pub struct Plaivo {
     pub hero_index: usize,
     hero_task: Option<Task<()>>,
     pub hubs: Vec<Hub>,
-    home_continue: plex::Hub,
-    remote_continue: HashMap<String, Vec<Item>>,
+    home_rows: Vec<plex::LibraryHub>,
+    remote_continue: HashMap<String, plex::Hub>,
     pub home_error: Option<SharedString>,
     pub home_ready: bool,
     pub suggestions: Vec<Card>,
@@ -471,9 +471,9 @@ pub fn card_for(it: &Item, wide: bool, server: &str) -> Card {
     }
 }
 
-fn hub_rows(hubs: &[plex::Hub], server: &str, old: &[Hub]) -> Vec<Hub> {
-    hubs.iter()
-        .map(|h| {
+fn hub_rows<'a>(hubs: impl IntoIterator<Item = (&'a str, &'a plex::Hub)>, old: &[Hub]) -> Vec<Hub> {
+    hubs.into_iter()
+        .map(|(server, h)| {
             let wide = wide_hub(h);
             let resume = h.is_continue();
             let scroll = old
@@ -748,7 +748,7 @@ impl Plaivo {
             hero_index: 0,
             hero_task: None,
             hubs: Vec::new(),
-            home_continue: plex::Hub::default(),
+            home_rows: Vec::new(),
             remote_continue: HashMap::new(),
             home_error: None,
             home_ready: false,
@@ -1697,7 +1697,9 @@ impl Plaivo {
                             title: d.title.into(),
                             kind: d.kind,
                         }));
-                        this.sync_server_hidden(&id, cx);
+                        if this.sync_server_hidden(&id, cx) {
+                            this.load_home(cx);
+                        }
                     }
                     Err(e) => log::warn!("sections for {id}: {e}"),
                 },
@@ -1705,7 +1707,7 @@ impl Plaivo {
         }
     }
 
-    pub fn sync_server_hidden(&mut self, server: &str, cx: &mut Context<Self>) {
+    pub fn sync_server_hidden(&mut self, server: &str, cx: &mut Context<Self>) -> bool {
         let libraries = self
             .sections
             .iter()
@@ -1713,7 +1715,7 @@ impl Plaivo {
             .map(|x| x.id.as_str());
         let home = self.home_server().map(|s| s.id);
         if !self.settings.sync_server_hidden(server, libraries) {
-            return;
+            return false;
         }
         log::info!(
             "{server}: every library hidden: {}",
@@ -1726,7 +1728,7 @@ impl Plaivo {
         if self.home_server().map(|s| s.id) != home {
             self.home_ready = false;
         }
-        self.load_home(cx);
+        true
     }
 
     pub fn sections_in_order(&self, hidden: bool) -> Vec<(&str, Vec<&SectionInfo>)> {
@@ -1958,7 +1960,7 @@ impl Plaivo {
     }
 
     pub fn load_home(&mut self, cx: &mut Context<Self>) {
-        let Some(srv) = self.home_server() else {
+        let Some(home) = self.home_server() else {
             return;
         };
         self.home_error = None;
@@ -1967,41 +1969,48 @@ impl Plaivo {
             self.hero.clear();
             self.hubs.clear();
         }
-        let id = srv.id.clone();
-        let home = id.clone();
-        self.load(
-            cx,
-            move |c| srv.hubs(c),
-            move |this, r, cx| {
-                if this.home_server().map(|h| h.id) != Some(id.clone()) {
-                    return;
-                }
-                match r {
-                    Ok(hubs) => this.build_home(&id, hubs, cx),
-                    Err(e) if !this.home_ready => {
-                        let name = this.server(&id).map(|x| x.name).unwrap_or_default();
+        let active: Vec<Server> = self.active_servers().cloned().collect();
+        self.home_rows
+            .retain(|h| active.iter().any(|s| s.id == h.server));
+        self.remote_continue
+            .retain(|id, _| active.iter().any(|s| s.id == *id));
+        for srv in active {
+            let (sid, settings, fetch) = (srv.id.clone(), self.settings.clone(), srv.clone());
+            let is_home = sid == home.id;
+            self.load(
+                cx,
+                move |c| fetch.home_hubs(c, &settings),
+                move |this, r, cx| match r {
+                    Ok(rows) => {
+                        this.home_rows.retain(|h| h.server != sid);
+                        this.home_rows.extend(rows);
+                        if this.home_ready || is_home || this.home_error.is_some() {
+                            this.build_home(cx);
+                        }
+                    }
+                    Err(e) if is_home && !this.home_ready && this.home_rows.is_empty() => {
+                        let name = this.server(&sid).map(|x| x.name).unwrap_or_default();
                         this.home_error = Some(format!("Could not reach {name}: {e}").into());
                         this.finish_splash(cx);
                     }
-                    Err(e) => log::warn!("home refresh failed: {e}"),
-                }
-            },
-        );
-        self.remote_continue
-            .retain(|id, _| !self.settings.server_hidden(id));
-        let others: Vec<Server> = self
-            .active_servers()
-            .filter(|s| s.id != home)
-            .cloned()
-            .collect();
-        for other in others {
-            let sid = other.id.clone();
+                    Err(e) if is_home && !this.home_ready => {
+                        log::warn!("home rows for {sid}: {e}");
+                        this.build_home(cx);
+                    }
+                    Err(e) => log::warn!("home rows for {sid}: {e}"),
+                },
+            );
+            let sid = srv.id.clone();
             self.load(
                 cx,
-                move |c| other.continue_items(c),
+                move |c| srv.continue_watching(c),
                 move |this, r, _| {
                     match r {
-                        Ok(items) => this.remote_continue.insert(sid.clone(), items),
+                        Ok(mut hub) => {
+                            hub.metadata
+                                .retain(|it| !this.settings.item_hidden(&sid, it));
+                            this.remote_continue.insert(sid.clone(), hub)
+                        }
                         Err(_) => this.remote_continue.remove(&sid),
                     };
                     if this.home_ready {
@@ -2012,16 +2021,27 @@ impl Plaivo {
         }
     }
 
+    fn home_order(&self) -> Vec<&str> {
+        let home = self.home_server().map(|s| s.id);
+        let mut ids: Vec<&str> = self.active_servers().map(|s| s.id.as_str()).collect();
+        ids.sort_by_key(|id| Some(*id) != home.as_deref());
+        ids
+    }
+
     fn apply_continue(&mut self) {
         let Some(home) = self.home_server() else {
             return;
         };
+        let none = plex::Hub::default();
         let row = plex::continue_row(
             &home.id,
-            &self.home_continue,
-            self.servers
-                .iter()
-                .filter_map(|s| Some((s.id.as_str(), &self.remote_continue.get(&s.id)?[..]))),
+            self.remote_continue.get(&home.id).unwrap_or(&none),
+            self.servers.iter().filter_map(|s| {
+                Some((
+                    s.id.as_str(),
+                    &self.remote_continue.get(&s.id)?.metadata[..],
+                ))
+            }),
             &card_prefs(),
         );
         let old = self
@@ -2055,28 +2075,26 @@ impl Plaivo {
         );
     }
 
-    fn build_home(&mut self, server: &str, hubs: Vec<plex::Hub>, cx: &mut Context<Self>) {
-        self.hero = plex::pick_hero(&hubs)
+    pub fn build_home(&mut self, cx: &mut Context<Self>) {
+        let rows = plex::arrange_home(&self.home_rows, &self.home_order(), &self.settings);
+        self.hero = plex::pick_hero(&rows)
             .into_iter()
-            .map(|it| hero_card(it, server))
+            .map(|(server, it)| hero_card(it, server))
             .collect();
         self.hero_index = self.hero_index.min(self.hero.len().saturating_sub(1));
-        self.hubs = hub_rows(&hubs, server, &self.hubs);
+        self.hubs = hub_rows(rows.iter().map(|h| (h.server.as_str(), &h.hub)), &self.hubs);
         let mut seen = HashSet::new();
-        self.suggestions = hubs
+        self.suggestions = rows
             .iter()
-            .filter(|h| !h.is_continue())
-            .flat_map(|h| h.metadata.iter())
-            .filter(|it| {
-                matches!(it.kind.as_str(), "movie" | "show") && seen.insert(it.rating_key.clone())
+            .flat_map(|h| h.hub.metadata.iter().map(|it| (h.server.as_str(), it)))
+            .filter(|(server, it)| {
+                matches!(it.kind.as_str(), "movie" | "show")
+                    && seen.insert((*server, it.rating_key.as_str()))
             })
             .take(SUGGESTIONS)
-            .map(|it| card_for(it, false, server))
+            .map(|(server, it)| card_for(it, false, server))
             .collect();
-        self.home_continue = hubs
-            .into_iter()
-            .find(plex::Hub::is_continue)
-            .unwrap_or_default();
+        self.home_error = None;
         self.apply_continue();
         self.home_ready = true;
         for c in self.hero.clone().iter().take(2) {
@@ -2169,8 +2187,7 @@ impl Plaivo {
                 match r {
                     Ok(hubs) => {
                         this.lib_hubs = Some(hub_rows(
-                            &hubs,
-                            &key.0,
+                            hubs.iter().map(|h| (key.0.as_str(), h)),
                             this.lib_hubs.as_deref().unwrap_or_default(),
                         ))
                     }
@@ -2986,15 +3003,12 @@ mod tests {
             title: title.into(),
             ..Default::default()
         };
-        let old = hub_rows(&[hub("a", "/a", "A"), hub("b", "/b", "B")], "s", &[]);
+        let rows = |hubs: &[plex::Hub], old: &[Hub]| hub_rows(hubs.iter().map(|h| ("s", h)), old);
+        let old = rows(&[hub("a", "/a", "A"), hub("b", "/b", "B")], &[]);
         old[1].scroll.set_offset(point(px(0.), px(-40.)));
-        let mut shifted = hub_rows(
-            &[hub("continueWatching", "", "Continue Watching")],
-            "s",
-            &[],
-        );
+        let mut shifted = rows(&[hub("continueWatching", "", "Continue Watching")], &[]);
         shifted.extend(old);
-        let new = hub_rows(&[hub("a", "/a", "A"), hub("b", "/b", "B")], "s", &shifted);
+        let new = rows(&[hub("a", "/a", "A"), hub("b", "/b", "B")], &shifted);
         let offsets: Vec<_> = new.iter().map(|h| h.scroll.offset().y).collect();
         assert_eq!(offsets, [px(0.), px(-40.)]);
     }

@@ -56,7 +56,7 @@ impl Plaivo {
     pub fn render_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let offline = self
             .home_server()
-            .filter(|s| crate::plex::is_down(&s.id))
+            .filter(|s| self.hubs.is_empty() && crate::plex::is_down(&s.id))
             .map(|s| SharedString::from(format!("Can't reach {} right now.", s.name)));
         if let Some(e) = self.home_error.clone().or(offline) {
             return div()

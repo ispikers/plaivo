@@ -168,7 +168,7 @@ impl Plaivo {
 
     pub fn watch_resolve(&self, epoch: i64) -> Option<WatchItem> {
         let media = self.watch_media(epoch)?;
-        let servers = self.account.lock().unwrap().all_servers();
+        let servers = self.active_servers();
         find_copy(&media, &servers, &self.client).map(|(server, it)| {
             let m = match_for(it.duration.map(|d| d as i64), media.duration_ms);
             WatchItem {

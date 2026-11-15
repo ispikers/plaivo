@@ -83,13 +83,14 @@ fun HomeScreen(
     server: ServerInfo?,
     serversLoaded: Boolean,
     refresh: Int,
+    layout: Any?,
     takeFocus: Boolean,
     onFocusTaken: () -> Unit,
     play: (MediaCard) -> Unit,
     openRow: (MediaRow) -> Unit,
     openDownloads: () -> Unit,
 ) {
-    val home = rememberHomeRows(server, serversLoaded, refresh)
+    val home = rememberHomeRows(server, serversLoaded, refresh, layout)
     when {
         server == null ->
             Message(if (serversLoaded) "No reachable server" else "Loading…", openDownloads.takeIf { serversLoaded })
@@ -126,17 +127,23 @@ class HomeRows {
 }
 
 @Composable
-fun rememberHomeRows(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, onLoaded: () -> Unit = {}): HomeRows {
+fun rememberHomeRows(
+    server: ServerInfo?,
+    serversLoaded: Boolean,
+    refresh: Int,
+    layout: Any?,
+    onLoaded: () -> Unit = {},
+): HomeRows {
     val home = remember(server?.id) { HomeRows() }
     var retriedAfterDiscovery by remember(server?.id, refresh) { mutableStateOf(false) }
     LaunchedEffect(serversLoaded, home.error) { if (serversLoaded && home.error != null) retriedAfterDiscovery = true }
-    LaunchedEffect(server?.id, refresh, retriedAfterDiscovery) {
+    LaunchedEffect(server?.id, refresh, layout, retriedAfterDiscovery) {
         if (server != null) {
             val id = server.id
-            val others = io { core.servers() }.map { it.id }.filter { it != id }
+            val servers = io { core.servers() }.map { it.id }
             if (home.rows.isEmpty()) {
                 val cached = coroutineScope {
-                    others.forEach { launch { io { core.refreshContinue(it, true) } } }
+                    servers.forEach { launch { io { core.refreshContinue(it, true) } } }
                     io { runCatching { core.home(id, true) } }
                 }
                 cached.onSuccess {
@@ -146,7 +153,7 @@ fun rememberHomeRows(server: ServerInfo?, serversLoaded: Boolean, refresh: Int, 
                     }
                 }
             }
-            others.forEach {
+            servers.forEach {
                 launch {
                     io { core.refreshContinue(it, false) }
                     home.showResume(core.continueRow(id))

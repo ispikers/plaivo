@@ -523,6 +523,11 @@ impl Settings {
         }
     }
 
+    pub fn item_hidden(&self, server: &str, it: &Item) -> bool {
+        !it.library_section_id.is_empty()
+            && self.library_hidden(&library_key(server, &it.library_section_id))
+    }
+
     pub fn server_hidden(&self, id: &str) -> bool {
         self.hidden_servers.iter().any(|k| k == id)
     }

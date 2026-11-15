@@ -79,6 +79,7 @@ import uniffi.plaivo_ffi.Status
 import uniffi.plaivo_ffi.SubtitleMode
 import uniffi.plaivo_ffi.Theme as CoreTheme
 import uniffi.plaivo_ffi.ViewMode
+import uniffi.plaivo_ffi.hideLibrary
 import uniffi.plaivo_ffi.languageName
 import uniffi.plaivo_ffi.languages
 import uniffi.plaivo_ffi.moveLibrary
@@ -462,13 +463,9 @@ fun SettingsScreen(
                                             if (hidden) "Hidden" else "Shown",
                                             Modifier.weight(1f).takeFocus(lib.id == ids.firstOrNull()),
                                             onClick = {
-                                                onEdit {
-                                                    it.copy(
-                                                        hiddenLibraries =
-                                                            if (hidden) it.hiddenLibraries - lib.id
-                                                            else it.hiddenLibraries + lib.id
-                                                    )
-                                                }
+                                                val siblings =
+                                                    libraries.filter { it.server == lib.server }.map { it.id }
+                                                onEdit { hideLibrary(it, lib.server, siblings, lib.id, !hidden) }
                                             },
                                         ) {
                                             Switch(!hidden)

@@ -553,7 +553,7 @@ pub fn sections(srv: &Server, c: &Ctx) -> R<Vec<Directory>> {
         .collect())
 }
 
-pub fn continue_items(srv: &Server, c: &Ctx) -> R<Vec<Item>> {
+pub fn continue_watching(srv: &Server, c: &Ctx) -> R<Hub> {
     let u = &srv.user_id;
     let (resume, next_up) = std::thread::scope(|s| {
         let next_up = s.spawn(|| {
@@ -572,44 +572,25 @@ pub fn continue_items(srv: &Server, c: &Ctx) -> R<Vec<Item>> {
         );
         (resume, next_up.join().ok().and_then(Result::ok))
     });
-    Ok(continue_hub(resume?, next_up.unwrap_or_default(), "").metadata)
+    Ok(continue_hub(resume?, next_up.unwrap_or_default(), ""))
 }
 
-pub fn hubs(srv: &Server, c: &Ctx) -> R<Vec<Hub>> {
+pub fn recently_added(srv: &Server, c: &Ctx, view: &Directory) -> R<Hub> {
     let u = &srv.user_id;
-    let (views, cont, latest) = std::thread::scope(|s| {
-        let cont = s.spawn(|| continue_items(srv, c));
-        let views = sections(srv, c);
-        let latest: Vec<_> = views
-            .iter()
-            .flatten()
-            .map(|v| {
-                let path = format!("/Items/Latest?userId={u}&ParentId={}&Limit=20&GroupItems=true&Fields={LIST_FIELDS}", v.key);
-                s.spawn(move || get::<Vec<Dto>>(srv, c, &path))
-            })
-            .collect();
-        let ok =
-            |r: std::thread::Result<R<Vec<Item>>>| r.ok().and_then(Result::ok).unwrap_or_default();
-        (
-            views,
-            ok(cont.join()),
-            latest
-                .into_iter()
-                .map(|j| j.join().ok().and_then(Result::ok).unwrap_or_default())
-                .collect::<Vec<_>>(),
-        )
-    });
-    let views = views?;
-    let mut hubs = vec![continue_hub(cont, Vec::new(), "")];
-    hubs.extend(views.into_iter().zip(latest).map(|(v, dtos)| Hub {
-        title: format!("Recently Added in {}", v.title),
-        key: format!("latest:{}", v.key),
-        id: format!("latest.{}", v.key),
-        kind: v.kind,
-        metadata: dtos.into_iter().map(Dto::into_item).collect(),
-    }));
-    hubs.retain(|h| !h.metadata.is_empty());
-    Ok(hubs)
+    let path = format!(
+        "/Items/Latest?userId={u}&ParentId={}&Limit=20&GroupItems=true&Fields={LIST_FIELDS}",
+        view.key
+    );
+    Ok(Hub {
+        title: format!("Recently Added in {}", view.title),
+        key: format!("latest:{}", view.key),
+        id: format!("latest.{}", view.key),
+        kind: view.kind.clone(),
+        metadata: get::<Vec<Dto>>(srv, c, &path)?
+            .into_iter()
+            .map(Dto::into_item)
+            .collect(),
+    })
 }
 
 fn sort_params(sort: &str) -> (&'static str, &'static str) {

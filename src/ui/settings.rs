@@ -377,6 +377,7 @@ impl Plaivo {
                         this.settings.set_library_hidden(&id, !hidden);
                         this.save_settings_soon(cx);
                         this.sync_server_hidden(&server, cx);
+                        this.load_home(cx);
                         cx.notify();
                     }))
                 }),
@@ -393,6 +394,9 @@ impl Plaivo {
             .collect();
         self.settings.move_library(&arranged, id, step);
         self.save_settings_soon(cx);
+        if self.home_ready {
+            self.build_home(cx);
+        }
         cx.notify();
     }
 

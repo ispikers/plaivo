@@ -318,7 +318,15 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
         serversLoaded = true
         libraries = io { core.libraries(false) }
     }
-    val home = servers.firstOrNull { it.id == settings.homeServer } ?: servers.firstOrNull()
+    val visible =
+        remember(servers, libraries, settings.hiddenLibraries) {
+            servers.filter { s ->
+                val own = libraries.filter { it.server == s.id }
+                own.isEmpty() || own.any { it.id !in settings.hiddenLibraries }
+            }
+        }
+    val home = visible.firstOrNull { it.id == settings.homeServer } ?: visible.firstOrNull() ?: servers.firstOrNull()
+    val homeLayout = settings.hiddenLibraries to settings.libraryOrder
     val arranged =
         remember(libraries, settings.libraryOrder) { core.arrangeLibraries(libraries, settings.libraryOrder) }
     val shown =
@@ -378,6 +386,7 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                                 home,
                                 serversLoaded,
                                 refresh + changes,
+                                homeLayout,
                                 open,
                                 openRow,
                                 { changes++ },
@@ -418,10 +427,11 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                                 home,
                                 serversLoaded,
                                 refresh + changes,
+                                homeLayout,
                                 focusHome,
                                 { focusHome = false },
                                 open,
-                                { row -> home?.let { openRow(it.id, row) } },
+                                { row -> openRow(row.server, row) },
                             ) {
                                 screen = Screen.Downloads
                             }

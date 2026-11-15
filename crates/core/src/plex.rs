@@ -7,7 +7,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use crate::settings::CardPrefs;
+use crate::settings::{CardPrefs, Settings, library_key};
 use crate::{first, jellyfin, join, store, watch_together};
 
 pub type R<T> = Result<T, String>;
@@ -180,7 +180,7 @@ struct People {
     metadata: Vec<PersonInfo>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 #[serde(default)]
 pub struct Hub {
     pub title: String,
@@ -785,19 +785,46 @@ impl From<User> for PlexUser {
 
 const HERO_MAX: usize = 6;
 
-pub fn pick_hero(hubs: &[Hub]) -> Vec<&Item> {
+pub fn pick_hero(hubs: &[LibraryHub]) -> Vec<(&str, &Item)> {
     let mut seen = HashSet::new();
     hubs.iter()
-        .filter(|h| h.id.contains("recentlyAdded") || h.id.contains("featured"))
-        .chain(hubs)
-        .flat_map(|h| &h.metadata)
-        .filter(|it| {
+        .flat_map(|h| h.hub.metadata.iter().map(|it| (h.server.as_str(), it)))
+        .filter(|(_, it)| {
             !first(&[&it.art, &it.grandparent_art]).is_empty()
                 && matches!(it.kind.as_str(), "movie" | "show")
         })
-        .filter(|it| seen.insert(it.rating_key.as_str()))
+        .filter(|&(server, it)| seen.insert((server, it.rating_key.as_str())))
         .take(HERO_MAX)
         .collect()
+}
+
+#[derive(Clone, Default)]
+pub struct LibraryHub {
+    pub server: String,
+    pub server_name: String,
+    pub library: String,
+    pub hub: Hub,
+}
+
+pub fn arrange_home(hubs: &[LibraryHub], servers: &[&str], settings: &Settings) -> Vec<LibraryHub> {
+    let mut rows: Vec<LibraryHub> = hubs
+        .iter()
+        .filter(|h| servers.contains(&h.server.as_str()) && !settings.library_hidden(&h.library))
+        .cloned()
+        .collect();
+    rows.sort_by_key(|h| {
+        (
+            servers.iter().position(|s| *s == h.server),
+            settings.library_rank(&h.library),
+        )
+    });
+    let titles: Vec<String> = rows.iter().map(|h| h.hub.title.clone()).collect();
+    for h in &mut rows {
+        if titles.iter().filter(|t| **t == h.hub.title).count() > 1 {
+            h.hub.title = format!("{} · {}", h.hub.title, h.server_name);
+        }
+    }
+    rows
 }
 
 struct Resume<'a> {
@@ -1464,32 +1491,6 @@ impl Server {
         }
     }
 
-    pub fn hubs(&self, c: &Ctx) -> R<Vec<Hub>> {
-        if self.is_jellyfin() {
-            return jellyfin::hubs(self, c);
-        }
-        let (hubs, cont) = std::thread::scope(|s| {
-            let cont = s.spawn(|| self.continue_hub(c));
-            (
-                self.get::<Container>(c, "/hubs?count=20&includeLibraryPlaylists=0"),
-                cont.join(),
-            )
-        });
-        let mut hubs = hubs?.hub;
-        hubs.retain(|h| {
-            !h.metadata.is_empty()
-                && !h.is_continue()
-                && matches!(
-                    h.kind.as_str(),
-                    "movie" | "show" | "season" | "episode" | "mixed" | "clip"
-                )
-        });
-        if let Ok(Ok(Some(h))) = cont {
-            hubs.insert(0, h);
-        }
-        Ok(hubs)
-    }
-
     fn continue_hub(&self, c: &Ctx) -> R<Option<Hub>> {
         Ok(self
             .get::<Container>(c, "/hubs/continueWatching?count=20&includeGuids=1")?
@@ -1498,14 +1499,11 @@ impl Server {
             .find(|h| !h.metadata.is_empty()))
     }
 
-    pub fn continue_items(&self, c: &Ctx) -> R<Vec<Item>> {
+    pub fn continue_watching(&self, c: &Ctx) -> R<Hub> {
         if self.is_jellyfin() {
-            return jellyfin::continue_items(self, c);
+            return jellyfin::continue_watching(self, c);
         }
-        Ok(self
-            .continue_hub(c)?
-            .map(|h| h.metadata)
-            .unwrap_or_default())
+        Ok(self.continue_hub(c)?.unwrap_or_default())
     }
 
     pub fn sections(&self, c: &Ctx) -> R<Vec<Directory>> {
@@ -1540,6 +1538,53 @@ impl Server {
             start,
             size,
         )
+    }
+
+    pub fn recently_added(&self, c: &Ctx, section: &Directory) -> R<Hub> {
+        if self.is_jellyfin() {
+            return jellyfin::recently_added(self, c, section);
+        }
+        let movies = section.kind == "movie";
+        let key = format!(
+            "/hubs/home/recentlyAdded?type={}&sectionID={}",
+            if movies { 1 } else { 2 },
+            section.key
+        );
+        Ok(Hub {
+            title: format!("Recently Added in {}", section.title),
+            id: format!("recentlyAdded.{}", section.key),
+            kind: if movies { "movie" } else { "mixed" }.into(),
+            metadata: self.paged(c, &key, 0, 20)?.0,
+            key,
+        })
+    }
+
+    pub fn home_hubs(&self, c: &Ctx, settings: &Settings) -> R<Vec<LibraryHub>> {
+        let mut sections = self.sections(c)?;
+        sections.retain(|d| !settings.library_hidden(&library_key(&self.id, &d.key)));
+        let hubs = std::thread::scope(|s| {
+            let jobs: Vec<_> = sections
+                .iter()
+                .map(|d| (d, s.spawn(|| self.recently_added(c, d))))
+                .collect();
+            jobs.into_iter()
+                .filter_map(|(d, job)| {
+                    let hub = job
+                        .join()
+                        .unwrap_or_else(|_| Err("panicked".into()))
+                        .inspect_err(|e| log::warn!("recently added in {}: {e}", d.title))
+                        .ok()?;
+                    Some(LibraryHub {
+                        server: self.id.clone(),
+                        server_name: self.name.clone(),
+                        library: library_key(&self.id, &d.key),
+                        hub,
+                    })
+                })
+                .filter(|h| !h.hub.metadata.is_empty())
+                .collect()
+        });
+        Ok(hubs)
     }
 
     pub fn section_hubs(&self, c: &Ctx, key: &str, kind: &str) -> R<Vec<Hub>> {
@@ -2979,36 +3024,88 @@ mod tests {
     }
 
     #[test]
-    fn hero_prefers_recently_added_and_skips_unfit_items() {
+    fn hero_takes_movies_and_shows_with_art_in_row_order() {
         let it = |key: &str, kind: &str, art: &str| Item {
             rating_key: key.into(),
             kind: kind.into(),
             art: art.into(),
             ..Default::default()
         };
-        let continuing = [it("ep", "episode", "/a"), it("m1", "movie", "/a")];
-        let recent = [
-            it("m2", "movie", "/a"),
-            it("bare", "movie", ""),
-            it("m1", "movie", "/a"),
-        ];
-        let shows: Vec<Item> = (0..8).map(|i| it(&format!("s{i}"), "show", "/a")).collect();
-        let hub = |id: &str, items: Vec<Item>| Hub {
-            id: id.into(),
-            metadata: items,
+        let row = |server: &str, items: Vec<Item>| LibraryHub {
+            server: server.into(),
+            hub: Hub {
+                metadata: items,
+                ..Default::default()
+            },
             ..Default::default()
         };
+        let shows: Vec<Item> = (0..8).map(|i| it(&format!("s{i}"), "show", "/a")).collect();
         let hubs = [
-            hub("home.continue", continuing.to_vec()),
-            hub("home.movies.recentlyAdded", recent.to_vec()),
-            hub("home.ondeck", shows),
+            row(
+                "a",
+                vec![
+                    it("ep", "episode", "/a"),
+                    it("m2", "movie", "/a"),
+                    it("bare", "movie", ""),
+                    it("m2", "movie", "/a"),
+                ],
+            ),
+            row("b", vec![it("m2", "movie", "/a")]),
+            row("a", shows),
         ];
-        let keys: Vec<&str> = pick_hero(&hubs)
+        let picked: Vec<(&str, &str)> = pick_hero(&hubs)
             .iter()
-            .map(|i| i.rating_key.as_str())
+            .map(|(s, i)| (*s, i.rating_key.as_str()))
             .collect();
-        assert_eq!(keys, ["m2", "m1", "s0", "s1", "s2", "s3"]);
+        assert_eq!(
+            picked,
+            [
+                ("a", "m2"),
+                ("b", "m2"),
+                ("a", "s0"),
+                ("a", "s1"),
+                ("a", "s2"),
+                ("a", "s3")
+            ]
+        );
         assert!(pick_hero(&[]).is_empty());
+    }
+
+    #[test]
+    fn home_rows_follow_server_then_library_order_and_name_duplicates() {
+        let row = |server: &str, name: &str, section: &str, title: &str| LibraryHub {
+            server: server.into(),
+            server_name: name.into(),
+            library: library_key(server, section),
+            hub: Hub {
+                title: title.into(),
+                ..Default::default()
+            },
+        };
+        let hubs = [
+            row("b", "Beta", "1", "Recently Added in Movies"),
+            row("a", "Alpha", "1", "Recently Added in Movies"),
+            row("a", "Alpha", "2", "Recently Added in TV"),
+            row("a", "Alpha", "3", "Recently Added in Anime"),
+            row("gone", "Gone", "1", "Recently Added in Old"),
+        ];
+        let settings = Settings {
+            library_order: vec!["a/2".into(), "a/1".into()],
+            hidden_libraries: vec!["a/3".into()],
+            ..Default::default()
+        };
+        let titles: Vec<String> = arrange_home(&hubs, &["a", "b"], &settings)
+            .into_iter()
+            .map(|h| h.hub.title)
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Recently Added in TV",
+                "Recently Added in Movies · Alpha",
+                "Recently Added in Movies · Beta",
+            ]
+        );
     }
 
     #[test]
