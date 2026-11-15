@@ -670,18 +670,39 @@ impl Plaivo {
                         .when(resume, |d| {
                             d.child(icon(Icon::PlayCircle, 24., theme::text()))
                         })
-                        .child(div().text_size(px(22.)).child(title.clone()))
-                        .when(!source.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .text_size(px(15.))
-                                    .text_color(theme::muted())
-                                    .child(source),
-                            )
-                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_end()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .text_size(px(22.))
+                                        .line_height(px(22.))
+                                        .child(title.clone()),
+                                )
+                                .when(!source.is_empty(), |d| {
+                                    // 1px lifts the smaller font onto the title's baseline.
+                                    d.child(
+                                        div()
+                                            .text_size(px(15.))
+                                            .line_height(px(15.))
+                                            .mb(px(1.))
+                                            .text_color(theme::muted())
+                                            .child(source.clone()),
+                                    )
+                                })
+                                .when(!key.is_empty(), |d| {
+                                    d.child(if source.is_empty() {
+                                        icon(Icon::ChevronRight, 22., theme::muted())
+                                    } else {
+                                        // Sized to the label it follows; the glyph's own side padding stands in for the gap.
+                                        icon(Icon::ChevronRight, 16., theme::muted()).ml(px(-4.))
+                                    })
+                                }),
+                        )
                         .when(!key.is_empty(), |d| {
                             d.cursor_pointer()
-                                .child(icon(Icon::ChevronRight, 22., theme::muted()))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.navigate(
                                         crate::app::Nav::Hub(

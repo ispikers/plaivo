@@ -379,10 +379,16 @@ private fun Rails(
                         Text(
                             row.title,
                             fontSize = 17.sp,
-                            fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold,
                             color = Palette.text.copy(alpha = if (isActive) 1f else 0.54f),
+                            modifier = Modifier.alignByBaseline(),
                         )
-                        if (row.source.isNotEmpty()) Text(row.source, fontSize = 13.sp, color = Palette.muted)
+                        if (row.source.isNotEmpty())
+                            Text(
+                                row.source,
+                                fontSize = 12.sp,
+                                color = Palette.muted,
+                                modifier = Modifier.alignByBaseline(),
+                            )
                     }
                     CompositionLocalProvider(LocalBringIntoViewSpec provides centerFocused) {
                         LazyRow(
