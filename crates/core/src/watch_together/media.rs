@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 pub const PLAIVO_EXT: &str = "app.plaivo";
-const NAMESPACES: [&str; 8] = [
+pub(crate) const NAMESPACES: [&str; 8] = [
     "imdb", "tmdb", "tvdb", "plex", "anilist", "anidb", "kitsu", "mal",
 ];
 
@@ -66,6 +66,13 @@ pub struct PlaivoExt {
 
 impl Media {
     pub fn parse(mut v: Value) -> Option<Self> {
+        let has_null = |o: &Value| {
+            o.as_object()
+                .is_some_and(|m| m.values().any(Value::is_null))
+        };
+        if has_null(&v) || has_null(&v["series"]) || has_null(&v["file"]) {
+            return None;
+        }
         normalize_ints(&mut v);
         serde_json::from_value::<Media>(v)
             .ok()
@@ -164,6 +171,7 @@ pub fn ids_from_guids<'a>(guids: impl IntoIterator<Item = &'a str>) -> BTreeMap<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::watch_together::protocol::tests::{assert_none_failed, vectors};
 
     fn movie() -> Media {
         Media {
@@ -237,6 +245,31 @@ mod tests {
             item: "1/../../accounts".into(),
         });
         assert_eq!(m.plaivo(), None);
+    }
+
+    #[test]
+    fn media_check_vectors() {
+        let cases = vectors("media-check");
+        let mut failures = Vec::new();
+        for case in &cases {
+            let name = case["name"].as_str().unwrap();
+            let want = case["expect"]["valid"].as_bool().unwrap();
+            let got = match (&case["input"], name.ends_with("(send)")) {
+                // serde_json refuses an unpaired surrogate escape, so the frame is dropped on receipt and can't be built to send.
+                (Value::Null, true) => continue,
+                (Value::Null, false) => false,
+                (i, false) => Media::parse(i["media"].clone()).is_some(),
+                (i, true) => {
+                    let mut v = i["media"].clone();
+                    normalize_ints(&mut v);
+                    serde_json::from_value::<Media>(v).is_ok_and(|m| m.check(true).is_ok())
+                }
+            };
+            if got != want {
+                failures.push(format!("{name}: valid want {want}, got {got}"));
+            }
+        }
+        assert_none_failed("media-check", cases.len(), &failures);
     }
 
     #[test]

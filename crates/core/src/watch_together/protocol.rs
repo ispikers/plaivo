@@ -403,7 +403,9 @@ pub(crate) mod tests {
             .map(|l| {
                 serde_json::from_str(l).unwrap_or_else(|_| {
                     let expect = &l[l.rfind("\"expect\":").unwrap() + 9..l.len() - 1];
-                    serde_json::json!({"name": l, "input": null, "expect": serde_json::from_str::<Value>(expect).unwrap()})
+                    let head = format!("{}}}", &l[..l.find(",\"input\":").unwrap()]);
+                    let name = serde_json::from_str::<Value>(&head).map_or(l.into(), |h| h["name"].clone());
+                    serde_json::json!({"name": name, "input": null, "expect": serde_json::from_str::<Value>(expect).unwrap()})
                 })
             })
             .collect()
@@ -569,6 +571,45 @@ pub(crate) mod tests {
                 case["name"]
             );
         }
+    }
+
+    pub(crate) fn assert_none_failed(table: &str, total: usize, failures: &[String]) {
+        assert!(
+            failures.is_empty(),
+            "{table}: {} of {total} cases fail:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn names_vectors() {
+        // A &str can't hold an unpaired surrogate, so serde_json refuses these lines.
+        let unrepresentable = [
+            "name: unpaired high surrogate",
+            "name: unpaired low surrogate",
+            "name: two high surrogates",
+            "client: unpaired surrogate in the version",
+        ];
+        let cases = vectors("names");
+        let mut failures = Vec::new();
+        for case in &cases {
+            let name = case["name"].as_str().unwrap();
+            if unrepresentable.contains(&name) {
+                continue;
+            }
+            let i = &case["input"];
+            let value = i["value"].as_str().unwrap();
+            let got = match i["field"].as_str().unwrap() {
+                "name" => valid_text(value, NAME_MAX),
+                _ => valid_client(value),
+            };
+            let want = case["expect"]["valid"].as_bool().unwrap();
+            if got != want {
+                failures.push(format!("{name}: valid want {want}, got {got}"));
+            }
+        }
+        assert_none_failed("names", cases.len(), &failures);
     }
 
     #[test]

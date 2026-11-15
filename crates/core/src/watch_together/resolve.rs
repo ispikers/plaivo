@@ -1,9 +1,9 @@
-use super::media::{Media, MediaFile, MediaKind, PlaivoExt, Series, ids_from_guids};
+use super::media::{Media, MediaFile, MediaKind, NAMESPACES, PlaivoExt, Series, ids_from_guids};
 use super::protocol::{Match, MatchState, forbidden};
 use crate::plex::{Client, Ctx, Item, Server, Source};
 use std::collections::{BTreeMap, HashSet};
 
-pub const SAME_LENGTH_MS: i64 = 2000;
+pub const SAME_LENGTH_MS: i64 = 1500;
 const CANDIDATES: usize = 5;
 const PARALLEL: usize = 4;
 
@@ -26,13 +26,18 @@ pub fn item_ids(it: &Item) -> BTreeMap<String, String> {
     )
 }
 
-pub fn shares_id(ids: &BTreeMap<String, String>, it: &Item) -> Option<bool> {
-    let ours = item_ids(it);
-    let common: Vec<bool> = ids
+fn id_match(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> Option<bool> {
+    let common: Vec<bool> = NAMESPACES
         .iter()
-        .filter_map(|(ns, v)| ours.get(ns).map(|w| v.eq_ignore_ascii_case(w)))
+        .filter_map(|ns| Some((a.get(*ns)?, b.get(*ns)?)))
+        .filter(|(x, y)| !x.is_empty() && !y.is_empty())
+        .map(|(x, y)| x == y)
         .collect();
     (!common.is_empty()).then(|| common.contains(&true))
+}
+
+pub fn shares_id(ids: &BTreeMap<String, String>, it: &Item) -> Option<bool> {
+    id_match(ids, &item_ids(it))
 }
 
 pub fn title_key(s: &str) -> String {
@@ -42,7 +47,7 @@ pub fn title_key(s: &str) -> String {
         .collect()
 }
 
-pub fn same_title(a: &str, b: &str) -> bool {
+pub fn same_name(a: &str, b: &str) -> bool {
     let a = title_key(a);
     !a.is_empty() && a == title_key(b)
 }
@@ -153,7 +158,10 @@ impl<'a> Target<'a> {
     fn matches(&self, it: &Item) -> bool {
         it.kind == self.kind
             && shares_id(self.ids, it).unwrap_or_else(|| {
-                self.year.is_some() && self.year == it.year && same_title(self.title, &it.title)
+                self.year
+                    .zip(it.year)
+                    .is_some_and(|(a, b)| (a - b).abs() <= 1)
+                    && same_name(self.title, &it.title)
             })
     }
 }
@@ -164,9 +172,11 @@ pub fn pick_episode<'a>(episodes: &'a [Item], m: &Media) -> Option<&'a Item> {
         .find(|e| shares_id(&m.ids, e) == Some(true))
         .or_else(|| {
             let (season, episode) = (m.season?, m.episode?);
-            episodes
-                .iter()
-                .find(|e| e.parent_index == Some(season) && e.index == Some(episode))
+            episodes.iter().find(|e| {
+                e.parent_index == Some(season)
+                    && e.index == Some(episode)
+                    && shares_id(&m.ids, e) != Some(false)
+            })
         })
 }
 
@@ -253,6 +263,7 @@ fn first_on(
 mod tests {
     use super::*;
     use crate::plex::{Guid, Media as PlexMedia, Part};
+    use crate::watch_together::protocol::tests::{assert_none_failed, vectors};
 
     fn guids(ids: &[&str]) -> Vec<Guid> {
         ids.iter().map(|id| Guid { id: (*id).into() }).collect()
@@ -386,10 +397,16 @@ mod tests {
             title: "ARRIVAL".into(),
             ..movie()
         }));
-        assert!(!t.matches(&Item {
+        assert!(t.matches(&Item {
             guids: vec![],
             guid: String::new(),
             year: Some(2017),
+            ..movie()
+        }));
+        assert!(!t.matches(&Item {
+            guids: vec![],
+            guid: String::new(),
+            year: Some(2018),
             ..movie()
         }));
         assert!(!t.matches(&Item {
@@ -418,13 +435,19 @@ mod tests {
             pick_episode(&episodes, &m).map(|e| e.rating_key.as_str()),
             Some("b")
         );
+        let mut numbered = episode(2, 1, "c");
+        numbered.guids = guids(&["tvdb://111"]);
+        m.ids = ids(&[("tvdb", "222")]);
+        m.season = Some(2);
+        m.episode = Some(1);
+        assert!(pick_episode(&[numbered], &m).is_none());
         m.ids.clear();
         m.episode = Some(9);
         assert!(pick_episode(&episodes, &m).is_none());
     }
 
     #[test]
-    fn lengths_within_two_seconds_count_as_the_same_file() {
+    fn lengths_within_a_second_and_a_half_count_as_the_same_file() {
         assert_eq!(
             match_for(Some(6_961_000), 6_960_000),
             Match {
@@ -445,14 +468,63 @@ mod tests {
         );
     }
 
+    fn same_title(a: &Media, b: &Media) -> bool {
+        if a.kind != b.kind {
+            return false;
+        }
+        match a.kind {
+            MediaKind::Movie => id_match(&a.ids, &b.ids) == Some(true),
+            MediaKind::Episode => id_match(&a.ids, &b.ids).unwrap_or_else(|| {
+                matches!((&a.series, &b.series), (Some(x), Some(y)) if id_match(&x.ids, &y.ids) == Some(true))
+                    && a.season.is_some()
+                    && a.season == b.season
+                    && a.episode.is_some()
+                    && a.episode == b.episode
+            }),
+            MediaKind::Video => match (&a.file, &b.file) {
+                (Some(x), Some(y)) => same_file(x, y),
+                _ => false,
+            },
+        }
+    }
+
+    fn same_file(a: &MediaFile, b: &MediaFile) -> bool {
+        let eq = |x: &Option<String>, y: &Option<String>| {
+            x.as_ref()
+                .zip(y.as_ref())
+                .is_some_and(|(x, y)| x.eq_ignore_ascii_case(y))
+        };
+        eq(&a.oshash, &b.oshash)
+            || (a.size_bytes.is_some() && a.size_bytes == b.size_bytes && eq(&a.name, &b.name))
+    }
+
+    #[test]
+    fn same_title_vectors() {
+        let cases = vectors("same-title");
+        let mut failures = Vec::new();
+        for case in &cases {
+            let name = case["name"].as_str().unwrap();
+            let a = Media::parse(case["input"]["a"].clone()).unwrap();
+            let b = Media::parse(case["input"]["b"].clone()).unwrap();
+            let want = case["expect"]["same"].as_bool().unwrap();
+            for (label, x, y) in [("", &a, &b), (" (swapped)", &b, &a)] {
+                let got = same_title(x, y);
+                if got != want {
+                    failures.push(format!("{name}{label}: same want {want}, got {got}"));
+                }
+            }
+        }
+        assert_none_failed("same-title", cases.len(), &failures);
+    }
+
     #[test]
     fn text_is_cleaned_to_protocol_text() {
         assert_eq!(clean("a\tb\n\u{202E}c", 99), "a b c");
         assert_eq!(clean("abcdef", 3), "abc");
-        assert!(same_title(
+        assert!(same_name(
             "Spider-Man: No Way Home",
             "spider man no way home"
         ));
-        assert!(!same_title("", ""));
+        assert!(!same_name("", ""));
     }
 }
