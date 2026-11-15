@@ -169,8 +169,11 @@ impl Plaivo {
             .and_then(|m| m.delta_ms)
             .filter(|d| *d != offset);
         let adjusting = s.media.is_some()
-            && s.match_
-                .is_some_and(|m| matches!(m.state, MatchState::Matched | MatchState::Mismatched));
+            && s.match_.is_some_and(|m| match m.state {
+                MatchState::Mismatched => true,
+                MatchState::Matched => offset != 0,
+                _ => false,
+            });
         let step = |id: &'static str, label: &'static str, ms: i64| {
             pill(id, label, None, false).on_click(
                 cx.listener(move |this, _, _, _| this.watch_call(|wt| wt.set_offset(offset + ms))),

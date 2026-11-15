@@ -374,8 +374,11 @@ fn view(s: &PartyState) -> WatchState {
             .unwrap_or_default(),
         offset_ms: s.offset_ms,
         adjustable: s.media.is_some()
-            && s.match_
-                .is_some_and(|m| matches!(m.state, MatchState::Matched | MatchState::Mismatched)),
+            && s.match_.is_some_and(|m| match m.state {
+                MatchState::Mismatched => true,
+                MatchState::Matched => s.offset_ms != 0,
+                _ => false,
+            }),
         mismatch_ms: s
             .match_
             .filter(|m| m.state == MatchState::Mismatched)
