@@ -269,6 +269,7 @@ pub struct DetailView {
 
 #[derive(Clone)]
 pub struct CastMember {
+    pub server: SharedString,
     pub id: String,
     pub name: SharedString,
     pub role: SharedString,
@@ -381,6 +382,7 @@ pub struct Plaivo {
     pub playback_draft: Option<crate::ui::playback_rules::PlaybackDraft>,
     pub detail_id: (String, String),
     owned_check: Option<String>,
+    owned_swap: Option<(String, String)>,
     pub seasons: Vec<Choice>,
     pub season_items: Vec<Item>,
     pub season: Option<String>,
@@ -773,6 +775,7 @@ impl Plaivo {
             playback_draft: None,
             detail_id: Default::default(),
             owned_check: None,
+            owned_swap: None,
             seasons: Vec::new(),
             season_items: Vec::new(),
             season: None,
@@ -2345,7 +2348,9 @@ impl Plaivo {
             return;
         };
         if self.detail_id != (server.clone(), key.clone()) {
-            if self.sibling_episode(&server, &key) {
+            if self.sibling_episode(&server, &key)
+                || self.owned_swap.as_ref() == Some(&(server.clone(), key.clone()))
+            {
                 self.summary_expanded = false;
             } else {
                 self.clear_detail();
@@ -2395,6 +2400,7 @@ impl Plaivo {
         self.detail_shelves.clear();
         self.summary_expanded = false;
         self.owned_check = None;
+        self.owned_swap = None;
     }
 
     fn load_person(&mut self, server: String, id: String, name: String, cx: &mut Context<Self>) {
@@ -2501,11 +2507,14 @@ impl Plaivo {
             .as_ref()
             .filter(|d| d.item.rating_key == it.rating_key)
             .and_then(|d| d.watchlisted);
+        let owned_swap =
+            self.owned_swap.as_ref() == Some(&(server.to_owned(), it.rating_key.clone()));
         let same_show = self.detail.as_ref().filter(|d| {
-            *d.server == *server
-                && d.item.kind == "episode"
-                && it.kind == "episode"
-                && d.item.grandparent_rating_key == it.grandparent_rating_key
+            owned_swap
+                || *d.server == *server
+                    && d.item.kind == "episode"
+                    && it.kind == "episode"
+                    && d.item.grandparent_rating_key == it.grandparent_rating_key
         });
         let (episodes, art, logo) = match same_show {
             Some(d) => (d.episodes.clone(), d.art.clone(), d.logo.clone()),
@@ -2522,7 +2531,7 @@ impl Plaivo {
             .map(|d| std::mem::take(&mut d.related))
             .unwrap_or_default();
         let fresh = related.is_empty();
-        self.detail = Some(DetailView {
+        let mut view = DetailView {
             logo,
             ratings: it
                 .rating_labels()
@@ -2540,6 +2549,7 @@ impl Plaivo {
                 .iter()
                 .take(40)
                 .map(|p| CastMember {
+                    server: server.to_owned().into(),
                     id: p.id.clone(),
                     name: p.tag.clone().into(),
                     role: p.role.clone().into(),
@@ -2568,7 +2578,16 @@ impl Plaivo {
             art,
             is_show: it.kind == "show",
             item: it.clone(),
-        });
+        };
+        if let Some(prev) = self.detail.as_mut().filter(|_| owned_swap) {
+            view.title = std::mem::take(&mut prev.title);
+            view.summary = std::mem::take(&mut prev.summary);
+            view.genres = std::mem::take(&mut prev.genres);
+            view.ratings = std::mem::take(&mut prev.ratings);
+            view.info = std::mem::take(&mut prev.info);
+            view.cast = std::mem::take(&mut prev.cast);
+        }
+        self.detail = Some(view);
         if fresh {
             self.load_related(server, &it, cx);
         }
@@ -2652,6 +2671,7 @@ impl Plaivo {
                 if this.page != Page::Detail || this.detail_id != (DISCOVER_ID.to_owned(), key) {
                     return;
                 }
+                this.owned_swap = Some((server.clone(), local.rating_key.clone()));
                 let nav = Nav::Detail(server, local.rating_key, None);
                 if let Some(last) = this.nav.last_mut() {
                     *last = nav.clone();

@@ -774,10 +774,8 @@ impl Plaivo {
     fn cast_card(&mut self, i: usize, p: &CastMember, cx: &mut Context<Self>) -> AnyElement {
         let image = self.picture(&p.thumb, Shape::Poster);
         let side = CAST_W - 6.;
-        let server = self.detail.as_ref().map(|d| d.server.to_string());
-        let person = server
-            .filter(|_| !p.id.is_empty())
-            .map(|s| Nav::Person(s, p.id.clone(), p.name.to_string()));
+        let person = (!p.id.is_empty())
+            .then(|| Nav::Person(p.server.to_string(), p.id.clone(), p.name.to_string()));
         div()
             .id(("cast", i))
             .w(px(CAST_W))
