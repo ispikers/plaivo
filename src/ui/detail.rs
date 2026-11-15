@@ -191,6 +191,39 @@ impl Plaivo {
                 )
             });
         let local = *server != *DISCOVER_ID;
+        let episode_nav = (local && it.kind == "episode").then(|| {
+            let [prev, next] = plaivo_core::detail::neighbours(&d.episodes, &it.rating_key);
+            div()
+                .absolute()
+                .top(px(10.))
+                .right(px(24.))
+                .flex()
+                .gap(px(8.))
+                .children(
+                    [
+                        ("prev-episode", Icon::ChevronLeft, prev),
+                        ("next-episode", Icon::ChevronRight, next),
+                    ]
+                    .map(|(id, i, key)| {
+                        let idle = theme::black(0.3);
+                        let hover = if key.is_some() {
+                            theme::black(0.5)
+                        } else {
+                            idle
+                        };
+                        let b = overlay_button(id, i, 36., 24., idle, hover, rgb(0xFFFFFF));
+                        match key {
+                            Some(k) => {
+                                let nav = Nav::Detail(server.to_string(), k, None);
+                                b.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_episode(nav.clone(), cx)
+                                }))
+                            }
+                            None => b.opacity(0.35).cursor_default(),
+                        }
+                    }),
+                )
+        });
         let library = local && matches!(it.kind.as_str(), "movie" | "episode" | "show" | "season");
         let watched = it.watched();
         let trailer = it.trailer().map(|t| t.rating_key.clone());
@@ -460,6 +493,7 @@ impl Plaivo {
                     )),
             )
             .when(cw >= 1000., |d| d.children(info_panel))
+            .children(episode_nav)
             .child(
                 div()
                     .relative()

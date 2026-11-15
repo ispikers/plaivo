@@ -145,6 +145,19 @@ pub fn pick_season(show: &Item, seasons: &[Item], wanted: Option<&str>) -> Optio
         })
 }
 
+pub fn neighbours(episodes: &[Item], key: &str) -> [Option<String>; 2] {
+    let Some(i) = episodes.iter().position(|e| e.rating_key == key) else {
+        return [None, None];
+    };
+    let special = episodes[i].parent_index == Some(0);
+    let same = |e: &&Item| (e.parent_index == Some(0)) == special;
+    [
+        episodes[..i].iter().rev().find(same),
+        episodes[i + 1..].iter().find(same),
+    ]
+    .map(|e| e.map(|e| e.rating_key.clone()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +226,28 @@ mod tests {
         assert!(s.play_key.is_empty() && s.play_label.is_empty());
         assert_eq!(s.chips, ["Not in your library"]);
         assert_eq!(s.info, [("Studio", "A24".to_owned())]);
+    }
+
+    #[test]
+    fn episodes_step_across_seasons_but_not_into_specials() {
+        let ep = |key: &str, season| Item {
+            rating_key: key.into(),
+            parent_index: Some(season),
+            ..Default::default()
+        };
+        let eps = [
+            ep("sp1", 0),
+            ep("a1", 1),
+            ep("a2", 1),
+            ep("b1", 2),
+            ep("sp2", 0),
+        ];
+        let keys = |k| neighbours(&eps, k).map(|n| n.unwrap_or_default());
+        assert_eq!(keys("a1"), ["", "a2"]);
+        assert_eq!(keys("a2"), ["a1", "b1"]);
+        assert_eq!(keys("b1"), ["a2", ""]);
+        assert_eq!(keys("sp1"), ["", "sp2"]);
+        assert_eq!(keys("gone"), ["", ""]);
     }
 
     #[test]

@@ -264,6 +264,7 @@ pub struct DetailView {
     pub related: Vec<(SharedString, Vec<Card>)>,
     pub watchlisted: Option<bool>,
     pub photo: Option<Thumb>,
+    pub episodes: Rc<Vec<Item>>,
 }
 
 #[derive(Clone)]
@@ -2344,8 +2345,12 @@ impl Plaivo {
             return;
         };
         if self.detail_id != (server.clone(), key.clone()) {
-            self.clear_detail();
-            self.owned_check = (server == DISCOVER_ID).then(|| key.clone());
+            if self.sibling_episode(&server, &key) {
+                self.summary_expanded = false;
+            } else {
+                self.clear_detail();
+                self.owned_check = (server == DISCOVER_ID).then(|| key.clone());
+            }
         }
         if season.is_some() {
             self.season = season;
@@ -2496,6 +2501,20 @@ impl Plaivo {
             .as_ref()
             .filter(|d| d.item.rating_key == it.rating_key)
             .and_then(|d| d.watchlisted);
+        let same_show = self.detail.as_ref().filter(|d| {
+            *d.server == *server
+                && d.item.kind == "episode"
+                && it.kind == "episode"
+                && d.item.grandparent_rating_key == it.grandparent_rating_key
+        });
+        let (episodes, art, logo) = match same_show {
+            Some(d) => (d.episodes.clone(), d.art.clone(), d.logo.clone()),
+            None => (
+                Rc::default(),
+                thumb(server, first(&[&it.art, &it.grandparent_art])),
+                thumb(server, it.logo()),
+            ),
+        };
         let related = self
             .detail
             .as_mut()
@@ -2504,7 +2523,7 @@ impl Plaivo {
             .unwrap_or_default();
         let fresh = related.is_empty();
         self.detail = Some(DetailView {
-            logo: thumb(server, it.logo()),
+            logo,
             ratings: it
                 .rating_labels()
                 .into_iter()
@@ -2530,6 +2549,7 @@ impl Plaivo {
             extras,
             related,
             watchlisted,
+            episodes,
             photo: None,
             server: server.to_owned().into(),
             eyebrow: summary.eyebrow.into(),
@@ -2545,7 +2565,7 @@ impl Plaivo {
             play_label: summary.play_label.into(),
             play_key: summary.play_key.into(),
             progress: summary.progress,
-            art: thumb(server, first(&[&it.art, &it.grandparent_art])),
+            art,
             is_show: it.kind == "show",
             item: it.clone(),
         });
@@ -2641,8 +2661,53 @@ impl Plaivo {
         );
     }
 
+    fn load_neighbours(&mut self, server: &str, it: &Item, cx: &mut Context<Self>) {
+        let Some(srv) = self.server(server).filter(|_| {
+            server != DISCOVER_ID
+                && it.kind == "episode"
+                && !it.grandparent_rating_key.is_empty()
+                && !self.sibling_episode(server, &it.rating_key)
+        }) else {
+            return;
+        };
+        let (server, key, show) = (
+            server.to_owned(),
+            it.rating_key.clone(),
+            it.grandparent_rating_key.clone(),
+        );
+        self.load(
+            cx,
+            move |c| srv.all_episodes(c, &show),
+            move |this, r, cx| {
+                if let (Some(d), Ok(eps)) = (
+                    this.detail
+                        .as_mut()
+                        .filter(|d| d.item.rating_key == key && *d.server == server),
+                    r,
+                ) {
+                    d.episodes = Rc::new(eps);
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    fn sibling_episode(&self, server: &str, key: &str) -> bool {
+        self.detail
+            .as_ref()
+            .is_some_and(|d| *d.server == *server && d.episodes.iter().any(|e| e.rating_key == key))
+    }
+
+    pub fn open_episode(&mut self, nav: Nav, cx: &mut Context<Self>) {
+        if let Some(last) = self.nav.last_mut() {
+            *last = nav.clone();
+        }
+        self.navigate(nav, false, cx);
+    }
+
     fn load_related(&mut self, server: &str, it: &Item, cx: &mut Context<Self>) {
         self.fetch_watchlisted(it, cx);
+        self.load_neighbours(server, it, cx);
         if self.owned_check.take_if(|k| *k == it.rating_key).is_some() {
             self.open_owned_copy(it, cx);
         }
