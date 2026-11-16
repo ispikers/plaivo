@@ -1496,7 +1496,7 @@ impl Plaivo {
     ) -> impl IntoElement {
         let list = div()
             .id(title)
-            .flex_1()
+            .flex_grow_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&scroll)
@@ -1592,13 +1592,7 @@ impl Plaivo {
     }
 
     fn render_tracks(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let vh = f32::from(window.viewport_size().height);
-        let rows = self
-            .player
-            .audio_tracks
-            .len()
-            .max(self.player.sub_tracks.len()) as f32;
-        let list_h = (32. + 16. + 52. + rows * 50.).min(vh - 220.).max(172.);
+        let max_h = f32::from(window.viewport_size().height) - 120.;
         let (audio, subs) = (
             self.player.audio_tracks.clone(),
             self.player.sub_tracks.clone(),
@@ -1607,14 +1601,13 @@ impl Plaivo {
         let sub_scroll = scroll_handle("Subtitles", window, cx);
         self.panel_shell("tracks", Panel::Tracks, cx)
             .w(px(640.))
-            .h(px(53. + list_h))
+            .max_h(px(max_h))
             .child(
                 div()
-                    .flex_1()
                     .min_h_0()
                     .flex()
                     .child(self.track_column("Audio", "aid", &audio, audio_scroll, cx))
-                    .child(div().w(px(1.)).h_full().bg(theme::outline()))
+                    .child(div().w(px(1.)).bg(theme::outline()))
                     .child(self.track_column("Subtitles", "sid", &subs, sub_scroll, cx)),
             )
     }
