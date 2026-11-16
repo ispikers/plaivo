@@ -28,8 +28,11 @@ pub fn content_width(this: &Plaivo, window: &Window) -> f32 {
     f32::from(window.viewport_size().width) - sidebar
 }
 
+const HUB_TITLE: f32 = 34.;
+const HUB_GAP: f32 = 4.;
+
 pub fn arrow_y(w: f32, wide: bool, pad: f32) -> f32 {
-    (w - 2. * pad) * if wide { 9. / 32. } else { 0.75 } - 24. + pad
+    art_height(w, wide, pad) / 2. - 24. + pad
 }
 
 fn set_hover(slot: &mut Option<ShelfKey>, key: ShelfKey, on: bool) {
@@ -40,16 +43,23 @@ fn set_hover(slot: &mut Option<ShelfKey>, key: ShelfKey, on: bool) {
     }
 }
 
-pub fn card_height(w: f32, wide: bool, pad: f32) -> f32 {
+pub fn art_height(w: f32, wide: bool, pad: f32) -> f32 {
     let art = w - 2. * pad;
-    (if wide { art * 9. / 16. } else { art * 1.5 }) + 40. + 2. * pad
+    if wide { art * 9. / 16. } else { art * 1.5 }
+}
+
+pub fn card_height(w: f32, wide: bool, pad: f32) -> f32 {
+    art_height(w, wide, pad) + 40. + 2. * pad
+}
+
+pub fn card_columns(content_w: f32, wide: bool, scale: f32) -> usize {
+    let extent = (if content_w >= 1100. { 210. } else { 160. }) * scale;
+    let extent = if wide { extent * 1.8 } else { extent };
+    plaivo_core::grid_columns(content_w - 16., extent, 0.) as usize
 }
 
 pub fn card_width(content_w: f32, wide: bool, scale: f32) -> f32 {
-    let cw = content_w - 16.;
-    let extent = (if content_w >= 1100. { 210. } else { 160. }) * scale;
-    let extent = if wide { extent * 1.8 } else { extent };
-    cw / plaivo_core::grid_columns(cw, extent, 0.) as f32
+    (content_w - 16.) / card_columns(content_w, wide, scale) as f32
 }
 
 impl Plaivo {
@@ -541,7 +551,7 @@ impl Plaivo {
             .map(|i| {
                 let wide = self.hub_vec(lib)[i].wide;
                 let w = card_width(cw, wide, self.settings.card_scale());
-                let height = 38. + card_height(w, wide, self.settings.card_pad());
+                let height = HUB_TITLE + HUB_GAP + card_height(w, wide, self.settings.card_pad());
                 let band = |above: f32, below: f32| {
                     top + height > scrolled - above * vh && top < scrolled + below * vh
                 };
@@ -572,11 +582,6 @@ impl Plaivo {
         let wide = i == 0;
         let w = card_width(cw, wide, self.settings.card_scale());
         let pad = self.settings.card_pad();
-        let art_h = if wide {
-            (w - 2. * pad) * 9. / 16.
-        } else {
-            (w - 2. * pad) * 1.5
-        };
         div()
             .flex()
             .flex_col()
@@ -588,7 +593,7 @@ impl Plaivo {
                 div().w(px(w)).flex_none().p(px(pad)).child(
                     div()
                         .w(px(w - 2. * pad))
-                        .h(px(art_h))
+                        .h(px(art_height(w, wide, pad)))
                         .rounded(px(8.))
                         .bg(theme::surface()),
                 )
@@ -659,64 +664,70 @@ impl Plaivo {
             .id(("hub", i))
             .flex()
             .flex_col()
-            .gap(px(4.))
+            .gap(px(HUB_GAP))
             .child(
-                div().h(px(34.)).pl(px(12.)).flex().items_center().child(
-                    div()
-                        .id(("hub-title", i))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .when(resume, |d| {
-                            d.child(icon(Icon::PlayCircle, 24., theme::text()))
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .items_end()
-                                .gap(px(8.))
-                                .child(
-                                    div()
-                                        .text_size(px(22.))
-                                        .line_height(px(22.))
-                                        .child(title.clone()),
-                                )
-                                .when(!source.is_empty(), |d| {
-                                    // 1px lifts the smaller font onto the title's baseline.
-                                    d.child(
+                div()
+                    .h(px(HUB_TITLE))
+                    .pl(px(12.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .id(("hub-title", i))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .when(resume, |d| {
+                                d.child(icon(Icon::PlayCircle, 24., theme::text()))
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_end()
+                                    .gap(px(8.))
+                                    .child(
                                         div()
-                                            .text_size(px(15.))
-                                            .line_height(px(15.))
-                                            .mb(px(1.))
-                                            .text_color(theme::muted())
-                                            .child(source.clone()),
+                                            .text_size(px(22.))
+                                            .line_height(px(22.))
+                                            .child(title.clone()),
                                     )
-                                })
-                                .when(!key.is_empty(), |d| {
-                                    d.child(if source.is_empty() {
-                                        icon(Icon::ChevronRight, 22., theme::muted())
-                                    } else {
-                                        // Sized to the label it follows; the glyph's own side padding stands in for the gap.
-                                        icon(Icon::ChevronRight, 16., theme::muted()).ml(px(-4.))
+                                    .when(!source.is_empty(), |d| {
+                                        // 1px lifts the smaller font onto the title's baseline.
+                                        d.child(
+                                            div()
+                                                .text_size(px(15.))
+                                                .line_height(px(15.))
+                                                .mb(px(1.))
+                                                .text_color(theme::muted())
+                                                .child(source.clone()),
+                                        )
                                     })
-                                }),
-                        )
-                        .when(!key.is_empty(), |d| {
-                            d.cursor_pointer()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.navigate(
-                                        crate::app::Nav::Hub(
-                                            server.to_string(),
-                                            key.to_string(),
-                                            title.to_string(),
-                                            resume,
-                                        ),
-                                        true,
-                                        cx,
-                                    )
-                                }))
-                        }),
-                ),
+                                    .when(!key.is_empty(), |d| {
+                                        d.child(if source.is_empty() {
+                                            icon(Icon::ChevronRight, 22., theme::muted())
+                                        } else {
+                                            // Sized to the label it follows; the glyph's own side padding stands in for the gap.
+                                            icon(Icon::ChevronRight, 16., theme::muted())
+                                                .ml(px(-4.))
+                                        })
+                                    }),
+                            )
+                            .when(!key.is_empty(), |d| {
+                                d.cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.navigate(
+                                            crate::app::Nav::Hub(
+                                                server.to_string(),
+                                                key.to_string(),
+                                                title.to_string(),
+                                                resume,
+                                            ),
+                                            true,
+                                            cx,
+                                        )
+                                    }))
+                            }),
+                    ),
             )
             .child(row)
             .into_any_element();
@@ -732,10 +743,21 @@ mod tests {
     fn cards_fill_the_row_exactly() {
         for cw in [800., 1300., 1700.] {
             for wide in [false, true] {
-                let w = card_width(cw, wide, if wide { 1. } else { 1.3 });
-                let n = ((cw - 16.) / w).round();
-                assert!(((cw - 16.) - n * w).abs() < 0.01, "{cw} {wide}");
+                let scale = if wide { 1. } else { 1.3 };
+                let n = card_columns(cw, wide, scale) as f32;
+                assert!(
+                    ((cw - 16.) - n * card_width(cw, wide, scale)).abs() < 0.01,
+                    "{cw} {wide}"
+                );
             }
         }
+    }
+
+    #[test]
+    fn cards_are_art_plus_caption() {
+        assert_eq!(art_height(106., false, 3.), 150.);
+        assert_eq!(art_height(166., true, 3.), 90.);
+        assert_eq!(card_height(166., true, 3.), 136.);
+        assert_eq!(arrow_y(106., false, 3.), 54.);
     }
 }

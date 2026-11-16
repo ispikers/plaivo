@@ -1,7 +1,7 @@
 use crate::app::{Card, LIB_TABS, LibTab, Listing, Nav, Plaivo, Shape};
 use crate::plex::SORTS;
 use crate::settings::ViewMode;
-use crate::ui::home::{card_height, card_width, content_width};
+use crate::ui::home::{card_columns, card_height, card_width, content_width};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
     backdrop, chip, floating, icon, list_with_scrollbar, round_button, scrollbar, shadow,
@@ -56,7 +56,7 @@ impl Plaivo {
             return self.list(scroll, cx);
         }
         let w = card_width(cw, false, self.settings.card_scale());
-        let cols = ((cw - 16.) / w).round().max(1.) as usize;
+        let cols = card_columns(cw, false, self.settings.card_scale());
         let count = self.grid_len(g);
         let rows = count.div_ceil(cols);
         let row_h = card_height(w, false, self.settings.card_pad());

@@ -1,4 +1,5 @@
 use crate::app::{Card, Choice, Plaivo, Shape};
+use crate::ui::home::{art_height, card_height};
 use crate::ui::theme::{self, Icon};
 use gpui::{
     AnyElement, App, Bounds, BoxShadow, ClickEvent, Context, DispatchPhase, Div, ElementId,
@@ -545,7 +546,7 @@ impl Plaivo {
     ) -> AnyElement {
         let pad = self.settings.card_pad();
         let art_w = width - 2. * pad;
-        let art_h = if wide { art_w * 9. / 16. } else { art_w * 1.5 };
+        let art_h = art_height(width, wide, pad);
         let check = card.watched && self.settings.watched_indicators;
         let image = self.picture(&card.thumb, if wide { Shape::Wide } else { Shape::Poster });
         let placeholder = card.key.is_empty();
@@ -646,7 +647,7 @@ impl Plaivo {
         div()
             .id(id.into())
             .w(px(width))
-            .h(px(art_h + 40. + 2. * pad))
+            .h(px(card_height(width, wide, pad)))
             .flex_none()
             .p(px(pad))
             .rounded(px(8.))
