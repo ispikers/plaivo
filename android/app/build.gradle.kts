@@ -54,8 +54,7 @@ val ndkDir = androidComponents.sdkComponents.ndkDirectory
 
 androidComponents.onVariants { variant ->
     val name = variant.name.replaceFirstChar { it.uppercase() }
-    val release = variant.buildType == "release"
-    val profile = if (release) "release" else "android-dev"
+    val profile = if (variant.buildType == "release") "android-release" else "android-dev"
     val jniLibs = "build/rust/${variant.name}/jniLibs"
     val uniffi = "build/generated/uniffi/${variant.name}"
     variant.sources.java?.addStaticSourceDirectory(uniffi)
@@ -64,12 +63,9 @@ androidComponents.onVariants { variant ->
     val buildRust = tasks.register<Exec>("buildRust$name") {
         description = "Builds the plaivo-ffi Rust library for Android ABIs with the $profile profile."
         workingDir = workspace
-        val overrides =
-            if (release) listOf("--config", "profile.release.strip=false", "--config", "profile.release.panic='unwind'")
-            else emptyList()
         commandLine(
             listOf("cargo", "ndk", "-t", "arm64-v8a", "-t", "armeabi-v7a", "-P", "24", "-o", file(jniLibs).absolutePath) +
-                listOf("build", "-p", "plaivo-ffi", "--profile", profile) + overrides,
+                listOf("build", "-p", "plaivo-ffi", "--profile", profile),
         )
         environment("PLAIVO_APP_VERSION", android.defaultConfig.versionName!!)
         val ndk = ndkDir
