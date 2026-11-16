@@ -868,8 +868,6 @@ impl Plaivo {
 
     pub fn set_settings(&self, mut settings: Settings) {
         let mut current = self.settings.lock().unwrap();
-        // Kotlin holds a copy that can predate a libraries() sync, so derive hidden_servers here instead of trusting it.
-        settings.hidden_servers = current.hidden_servers.clone();
         for (server, ids) in self.library_ids.lock().unwrap().iter() {
             settings.sync_server_hidden(server, ids.iter().map(String::as_str));
         }
@@ -2619,6 +2617,27 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn set_settings_hides_and_unhides_an_unlisted_server() {
+        use super::{Plaivo, hide_server};
+        let dir = std::env::temp_dir().join(format!("plaivo-ffi-hide-{}", std::process::id()));
+        let core = Plaivo::new(
+            dir.join("config").display().to_string(),
+            dir.join("cache").display().to_string(),
+        );
+        core.library_ids
+            .lock()
+            .unwrap()
+            .insert("listed".into(), vec!["listed/1".into()]);
+        core.set_settings(hide_server(core.settings(), "off".into(), true));
+        assert!(core.settings().server_hidden("off"));
+        core.set_settings(hide_server(core.settings(), "listed".into(), true));
+        assert!(core.settings().library_hidden("listed/1"));
+        core.set_settings(hide_server(core.settings(), "off".into(), false));
+        assert!(!core.settings().server_hidden("off") && core.settings().server_hidden("listed"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
