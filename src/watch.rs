@@ -6,9 +6,9 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{AppContext, Context, Entity, SharedString};
 use plaivo_core::watch_together::{
-    Connection, Event, Match, MatchState, Media, PartyError, PartyState, Phase, PlaivoExt,
-    PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, describe, display_name, find_copy,
-    match_for, normalize_code,
+    Connection, Event, Match, MatchState, Media, PartyState, Phase, PlaivoExt, PlayerCommand,
+    PlayerFeed, Relays, Update, WatchTogether, describe, display_name, find_copy, match_for,
+    normalize_code,
 };
 use std::time::{Duration, Instant};
 
@@ -25,10 +25,11 @@ pub struct Mismatch {
 
 pub struct Watch {
     wt: Option<WatchTogether>,
+    built_for: (String, String),
     generation: u64,
     tx: UnboundedSender<(u64, Update)>,
     pub state: PartyState,
-    pub starting: bool,
+    pending: bool,
     pub resuming: bool,
     creating: bool,
     room_code: Option<String>,
@@ -36,7 +37,6 @@ pub struct Watch {
     pub error: Option<SharedString>,
     epoch: Option<i64>,
     file: Option<(String, String)>,
-    share: Option<(Media, i64)>,
     last_feed: Option<Instant>,
     attached: bool,
     pub custom_relay: bool,
@@ -89,10 +89,11 @@ impl Watch {
         .detach();
         Self {
             wt: None,
+            built_for: Default::default(),
             generation: 0,
             tx,
             state: PartyState::default(),
-            starting: false,
+            pending: false,
             resuming: false,
             creating: false,
             room_code: None,
@@ -100,7 +101,6 @@ impl Watch {
             error: None,
             epoch: None,
             file: None,
-            share: None,
             last_feed: None,
             attached: false,
             custom_relay: !relay.is_empty(),
@@ -126,7 +126,11 @@ impl Watch {
     }
 
     pub fn busy(&self) -> bool {
-        self.starting || self.in_room() || self.state.connection == Connection::Connecting
+        self.pending || self.in_room() || self.state.connection == Connection::Connecting
+    }
+
+    fn can_share(&self) -> bool {
+        self.creating || self.state.is_host()
     }
 
     pub fn shutdown(&mut self) {
@@ -203,62 +207,44 @@ impl Plaivo {
             }
             return cx.notify();
         };
+        let name = display_name(
+            self.watch
+                .account_name
+                .as_deref()
+                .into_iter()
+                .chain(self.account.jellyfin.first().map(|s| s.user.as_str())),
+        );
+        let built_for = (name, self.settings.watch_relay.clone());
         let w = &mut self.watch;
-        w.generation += 1;
-        w.starting = true;
+        if w.wt.is_none() || w.built_for != built_for {
+            if let Some(old) = w.wt.take() {
+                Self::detach(cx, move || drop(old));
+            }
+            w.generation += 1;
+            let (generation, tx) = (w.generation, w.tx.clone());
+            match WatchTogether::new(&built_for.0, CLIENT, relays, move |u| {
+                let _ = tx.unbounded_send((generation, u));
+            }) {
+                Ok(wt) => {
+                    w.wt = Some(wt);
+                    w.built_for = built_for;
+                }
+                Err(e) => {
+                    log::warn!("watch together: could not start: {e:?}");
+                    w.error = Some("Couldn't start Watch Together.".into());
+                    return cx.notify();
+                }
+            }
+        }
+        let Some(wt) = &w.wt else { return };
+        match &code {
+            Some(code) => wt.join(code, create),
+            None => wt.create(),
+        }
+        w.pending = true;
         w.creating = code.is_none();
-        w.room_code = code.clone();
+        w.room_code = code;
         w.error = None;
-        w.share = None;
-        let generation = w.generation;
-        let (old, tx) = (w.wt.take(), w.tx.clone());
-        let (relays, client, token) = (relays, self.client.clone(), self.account.token.clone());
-        let (jellyfin, mut account) = (
-            self.account.jellyfin.first().map(|s| s.user.clone()),
-            w.account_name.clone(),
-        );
-        Self::bg(
-            cx,
-            move || {
-                drop(old);
-                if account.is_none() {
-                    account = token.and_then(|t| client.user(&t).ok().map(|u| u.name));
-                }
-                let name = display_name(account.as_deref().into_iter().chain(jellyfin.as_deref()));
-                let wt = WatchTogether::new(&name, CLIENT, relays, move |u| {
-                    let _ = tx.unbounded_send((generation, u));
-                });
-                if let Ok(wt) = &wt {
-                    match code {
-                        Some(code) => wt.join(&code, create),
-                        None => wt.create(),
-                    }
-                }
-                (wt, account)
-            },
-            move |this, (wt, account): (Result<WatchTogether, PartyError>, Option<String>), cx| {
-                if this.watch.generation != generation {
-                    return Self::detach(cx, move || drop(wt));
-                }
-                if account.is_some() {
-                    this.watch.account_name = account;
-                }
-                this.watch.starting = false;
-                match wt {
-                    Ok(wt) => {
-                        if let Some((media, at)) = this.watch.share.take() {
-                            wt.set_media(media, at);
-                        }
-                        this.watch.wt = Some(wt);
-                    }
-                    Err(e) => {
-                        log::warn!("watch together: could not start: {e:?}");
-                        this.watch.creating = false;
-                        this.watch.error = Some("Couldn't start Watch Together.".into());
-                    }
-                }
-            },
-        );
         cx.notify();
     }
 
@@ -269,14 +255,7 @@ impl Plaivo {
     }
 
     pub fn watch_leave(&mut self, cx: &mut Context<Self>) {
-        if self.watch.starting {
-            self.watch.generation += 1;
-            self.watch.starting = false;
-            self.watch.creating = false;
-        }
-        if let Some(wt) = &self.watch.wt {
-            wt.leave();
-        }
+        self.watch_call(WatchTogether::leave);
         cx.notify();
     }
 
@@ -351,8 +330,8 @@ impl Plaivo {
         position_ms: i64,
         cx: &mut Context<Self>,
     ) {
-        let w = &mut self.watch;
-        if !(w.creating || (w.wt.is_some() && w.state.is_host())) {
+        let w = &self.watch;
+        if !w.can_share() {
             return;
         }
         let hint = PlaivoExt {
@@ -392,10 +371,8 @@ impl Plaivo {
                 let Some(media) = media else {
                     return this.toast("This video can't be shared with the room.", cx);
                 };
-                let w = &mut this.watch;
-                match &w.wt {
-                    Some(wt) => wt.set_media(media, position_ms.max(0)),
-                    None => w.share = Some((media, position_ms.max(0))),
+                if this.watch.can_share() {
+                    this.watch_call(|wt| wt.set_media(media, position_ms.max(0)));
                 }
             },
         );
@@ -405,6 +382,7 @@ impl Plaivo {
         if generation != self.watch.generation {
             return;
         }
+        self.watch.pending = false;
         match update {
             Update::Player(command) => self.watch_command(command),
             Update::State(state) => self.watch_state(*state, cx),
