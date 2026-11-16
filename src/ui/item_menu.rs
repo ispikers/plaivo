@@ -295,22 +295,33 @@ impl Plaivo {
         ) else {
             return;
         };
-        let (c, key) = (self.client.clone(), it.rating_key.clone());
+        let c = self.client.clone();
         Self::bg(
             cx,
-            move || c.watchlisted(&token, &guid),
+            {
+                let guid = guid.clone();
+                move || c.watchlisted(&token, &guid)
+            },
             move |this, r, _| match r {
-                Ok(on) => this.set_watchlisted_state(&key, on),
-                Err(e) => log::debug!("watchlist state for {key}: {e}"),
+                Ok(on) => this.set_watchlisted_state(&guid, on),
+                Err(e) => log::debug!("watchlist state for {guid}: {e}"),
             },
         );
     }
 
-    fn set_watchlisted_state(&mut self, key: &str, on: bool) {
-        if let Some(d) = self.detail.as_mut().filter(|d| d.item.rating_key == key) {
+    fn set_watchlisted_state(&mut self, guid: &str, on: bool) {
+        if let Some(d) = self
+            .detail
+            .as_mut()
+            .filter(|d| d.item.plex_guid() == Some(guid))
+        {
             d.watchlisted = Some(on);
         }
-        if let Some(m) = self.menu.as_mut().filter(|m| m.key == key) {
+        if let Some(m) = self
+            .menu
+            .as_mut()
+            .filter(|m| m.item.as_ref().and_then(Item::plex_guid) == Some(guid))
+        {
             m.watchlisted = Some(on);
         }
     }
@@ -503,10 +514,13 @@ impl Plaivo {
                 let c = self.client.clone();
                 Self::bg(
                     cx,
-                    move || c.set_watchlisted(&token, &guid, on),
+                    {
+                        let guid = guid.clone();
+                        move || c.set_watchlisted(&token, &guid, on)
+                    },
                     move |this, r, cx| match r {
                         Ok(()) => {
-                            this.set_watchlisted_state(&key, on);
+                            this.set_watchlisted_state(&guid, on);
                             this.toast(act.done().unwrap_or_default(), cx);
                         }
                         Err(e) => this.toast(format!("Could not update the watchlist: {e}"), cx),
