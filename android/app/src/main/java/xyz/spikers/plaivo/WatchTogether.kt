@@ -3,7 +3,6 @@ package xyz.spikers.plaivo
 import android.app.Activity
 import android.app.Application
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -128,20 +127,17 @@ object Watch : WatchListener {
         main.post { player?.follow(command) }
     }
 
-    fun deviceName(): String =
-        android.provider.Settings.Global.getString(App.instance.contentResolver, "device_name") ?: Build.MODEL
-
     fun create() {
         roomCode = null
         background.launch {
-            runCatching { core.watchCreate(deviceName()) }.onFailure { main.post { toast(it.message) } }
+            runCatching { core.watchCreate() }.onFailure { main.post { toast(it.message) } }
         }
     }
 
     fun join(code: String, create: Boolean = false) {
         roomCode = code
         background.launch {
-            runCatching { core.watchJoin(code, create, deviceName()) }.onFailure { main.post { toast(it.message) } }
+            runCatching { core.watchJoin(code, create) }.onFailure { main.post { toast(it.message) } }
         }
     }
 
@@ -150,7 +146,7 @@ object Watch : WatchListener {
         if (create) roomCode = null
         background.launch {
             runCatching {
-                    if (create) core.watchCreate(deviceName())
+                    if (create) core.watchCreate()
                     core.watchShare(card.server, card.key)
                 }
                 .onFailure { main.post { toast(it.message) } }

@@ -317,7 +317,7 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit, onDe
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MenuFrame(subpage: Boolean, onBack: () -> Unit, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+fun MenuFrame(subpage: Boolean, onBack: () -> Unit, onDismiss: () -> Unit, content: @Composable () -> Unit) {
     if (!LocalTouch.current) Dialog(onDismissRequest = { if (subpage) onBack() else onDismiss() }, content = content)
     else
         ModalBottomSheet(

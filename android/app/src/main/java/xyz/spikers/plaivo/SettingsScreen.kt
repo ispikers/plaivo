@@ -10,6 +10,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -45,12 +46,14 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -80,6 +83,7 @@ import uniffi.plaivo_ffi.SubtitleMode
 import uniffi.plaivo_ffi.Theme as CoreTheme
 import uniffi.plaivo_ffi.ViewMode
 import uniffi.plaivo_ffi.hideLibrary
+import uniffi.plaivo_ffi.hideServer
 import uniffi.plaivo_ffi.languageName
 import uniffi.plaivo_ffi.languages
 import uniffi.plaivo_ffi.moveLibrary
@@ -87,26 +91,95 @@ import uniffi.plaivo_ffi.subtitleColors
 import uniffi.plaivo_ffi.subtitleModeLabel
 import uniffi.plaivo_ffi.validRelay
 
+private enum class Picker {
+    Theme,
+    Relay,
+    Quality,
+    HomeServer,
+    RuleQuality,
+}
+
+private val PREVIEW_HEIGHT = 120.dp
+
+// Mirrors the player's CaptionStyleCompat: outline and background box can both show.
+@Composable
+private fun SubtitlePreview(s: Settings) {
+    val color = runCatching { Color(("FF" + s.subtitleColor).toLong(16)) }.getOrDefault(Color.White)
+    val size = (16f * s.subtitleSize.toFloat() / 100f).sp
+    val lift = (100 - s.subtitlePosition.toInt().coerceAtMost(100)) / 100f
+    val back = s.subtitleBackground.toInt().coerceAtMost(100) / 100f
+    val text = "Subtitles will look like this"
+    Box(
+        Modifier.fillMaxWidth().height(PREVIEW_HEIGHT).clip(RoundedCornerShape(12.dp)).background(Color(0xFF242833)),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Box(
+            Modifier.padding(bottom = 10.dp + PREVIEW_HEIGHT * lift)
+                .background(Color.Black.copy(alpha = back))
+                .padding(horizontal = 6.dp)
+        ) {
+            if (s.subtitleOutline > 0u)
+                Text(
+                    text,
+                    color = Color.Black,
+                    fontSize = size,
+                    fontWeight = FontWeight.SemiBold,
+                    style = TextStyle(drawStyle = Stroke(width = 6f)),
+                )
+            Text(text, color = color, fontSize = size, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun PickRow(label: String, detail: String, selected: Boolean, focus: FocusRequester, onPick: () -> Unit) {
+    SettingsRow(null, label, detail, if (selected) Modifier.focusRequester(focus) else Modifier, selected, onPick) {
+        Radio(selected)
+    }
+}
+
+@Composable
+private fun ChoiceModal(
+    title: String,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.(FocusRequester) -> Unit,
+) {
+    val touch = LocalTouch.current
+    val shape = RoundedCornerShape(16.dp)
+    val first = remember { FocusRequester() }
+    MenuFrame(false, onDismiss, onDismiss) {
+        Column(
+            if (touch) Modifier.verticalScroll(rememberScrollState()).padding(Dims.gutter, 0.dp, Dims.gutter, 16.dp)
+            else
+                Modifier.width(460.dp)
+                    .background(Palette.bg, shape)
+                    .border(1.dp, Palette.outline, shape)
+                    .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Palette.text, maxLines = 1)
+            content(first)
+        }
+    }
+    if (!touch) LaunchedEffect(Unit) { runCatching { first.requestFocus() } }
+}
+
 private enum class Category(val title: String, val glyph: Glyph, val parent: Category? = null) {
     General("General", Glyph.Settings),
     Libraries("Manage libraries", Glyph.Sort, General),
     Appearance("Appearance", Glyph.Palette),
-    Theme("Theme", Glyph.Palette, Appearance),
     Playback("Playback", Glyph.PlayCircle),
-    PlaybackOverride("Override", Glyph.Sort, Playback),
+    PlaybackOverride("Playback override", Glyph.Sort, Playback),
     PlaybackOverrideLibraries("Libraries", Glyph.Sort, PlaybackOverride),
-    PlaybackOverrideQuality("Quality", Glyph.HighQuality, PlaybackOverride),
     AudioSubtitles("Audio & Subtitles", Glyph.Subtitles),
     AudioLanguage("Audio language", Glyph.Subtitles, AudioSubtitles),
     SubtitleLanguage("Subtitle language", Glyph.Subtitles, AudioSubtitles),
-    Override("Override", Glyph.Sort, AudioSubtitles),
+    Override("Language override", Glyph.Sort, AudioSubtitles),
     OverrideLibraries("Libraries", Glyph.Sort, Override),
     OverrideAudio("Audio languages", Glyph.Subtitles, Override),
     OverrideSubtitles("Subtitle languages", Glyph.Subtitles, Override),
     Services("Services", Glyph.Check),
-    WatchTogether("Watch Together", Glyph.Group),
     Downloads("Downloads", Glyph.Download),
-    Connections("Connections", Glyph.Link),
     Advanced("Advanced", Glyph.Build),
     About("About", Glyph.Info),
 }
@@ -263,8 +336,8 @@ fun SettingsScreen(
     val quality = settings.quality.toInt()
     val qualityLabel =
         qualities.firstOrNull { it.kbps.toInt() == quality }?.let { "${it.label} · ${it.bitrate}" } ?: "Original"
-    var category by rememberSaveable { mutableStateOf(if (connections) Category.Connections else null) }
-    LaunchedEffect(connections) { if (connections) category = Category.Connections }
+    var category by rememberSaveable { mutableStateOf(if (connections) Category.General else null) }
+    LaunchedEffect(connections) { if (connections) category = Category.General }
     var draft by remember { mutableStateOf<Pair<Int?, LanguageRule>?>(null) }
     var playbackDraft by remember { mutableStateOf<Pair<Int?, PlaybackRule>?>(null) }
     fun qualityName(kbps: UInt?) =
@@ -278,6 +351,7 @@ fun SettingsScreen(
     var cacheCleared by remember { mutableStateOf(false) }
     val first = remember { FocusRequester() }
     var fromLicenses by rememberSaveable { mutableStateOf(false) }
+    var picker by rememberSaveable { mutableStateOf<Picker?>(null) }
     fun open(c: Category?) {
         navigated = true
         fromLicenses = false
@@ -322,6 +396,112 @@ fun SettingsScreen(
     BackHandler(enabled = category != null && (focused || touch)) { open(category?.parent) }
     LaunchedEffect(category) { if (navigated && !touch) runCatching { first.requestFocus() } }
     fun Modifier.takeFocus(take: Boolean) = if (take) focusRequester(first) else this
+    val close = { picker = null }
+    when (picker) {
+        Picker.Theme ->
+            ChoiceModal("Theme", close) { focus ->
+                CoreTheme.entries.forEach { t ->
+                    val selected = t == settings.theme
+                    SettingsRow(
+                        null,
+                        t.label,
+                        "",
+                        if (selected) Modifier.focusRequester(focus) else Modifier,
+                        selected,
+                        {
+                            onEdit { it.copy(theme = t) }
+                            close()
+                        },
+                        leading = { ThemeSwatch(t) },
+                    ) {
+                        Radio(selected)
+                    }
+                }
+            }
+        Picker.Relay ->
+            ChoiceModal("Watch Together relay", close) { focus ->
+                var custom by remember { mutableStateOf(settings.watchRelay.isNotBlank()) }
+                SettingsRow(
+                    null,
+                    "Public relays",
+                    "",
+                    if (!custom) Modifier.focusRequester(focus) else Modifier,
+                    !custom,
+                    {
+                        onEdit { it.copy(watchRelay = "") }
+                        close()
+                    },
+                ) {
+                    Radio(!custom)
+                }
+                SettingsRow(
+                    null,
+                    "Custom relay",
+                    "",
+                    if (custom) Modifier.focusRequester(focus) else Modifier,
+                    custom,
+                    { custom = true },
+                ) {
+                    Radio(custom)
+                }
+                if (custom) {
+                    var url by remember { mutableStateOf(settings.watchRelay) }
+                    Field(
+                        url,
+                        { v ->
+                            url = v
+                            onEdit { it.copy(watchRelay = v.trim()) }
+                        },
+                        "https://relay.example.com",
+                        KeyboardType.Uri,
+                        ImeAction.Done,
+                        close,
+                    )
+                    if (url.isNotBlank() && !validRelay(url))
+                        Note("That address isn't valid. It needs to start with http:// or https://")
+                }
+            }
+        Picker.Quality ->
+            ChoiceModal("Default quality", close) { focus ->
+                val original = qualities.none { it.kbps.toInt() == quality }
+                PickRow("Original", "Direct play, no transcoding", original, focus) {
+                    onEdit { it.copy(quality = 0u) }
+                    close()
+                }
+                qualities.forEach { q ->
+                    PickRow(q.label, q.bitrate, q.kbps.toInt() == quality, focus) {
+                        onEdit { it.copy(quality = q.kbps) }
+                        close()
+                    }
+                }
+            }
+        Picker.HomeServer ->
+            ChoiceModal("Home server", close) { focus ->
+                servers.forEach { s ->
+                    PickRow(
+                        s.name,
+                        if (s.jellyfin) "Jellyfin" else if (s.owned) "Owned" else "Shared with you",
+                        s.id == home?.id,
+                        focus,
+                    ) {
+                        onEdit { it.copy(homeServer = s.id) }
+                        close()
+                    }
+                }
+            }
+        Picker.RuleQuality ->
+            ChoiceModal("Quality", close) { focus ->
+                playbackDraft?.let { (index, r) ->
+                    (listOf(null, 0u) + qualities.map { it.kbps }).forEach { kbps ->
+                        PickRow(qualityName(kbps), "", r.quality == kbps, focus) {
+                            playbackDraft = index to r.copy(quality = kbps)
+                            close()
+                        }
+                    }
+                }
+            }
+        null -> {}
+    }
     fun syncLanguages() =
         scope.launch {
             val before = settings.languages
@@ -363,38 +543,34 @@ fun SettingsScreen(
                         .forEach { c ->
                             val summary =
                                 when (c) {
-                                    Category.General -> home?.let { "Home server: ${it.name}" } ?: "No home server"
+                                    Category.General -> {
+                                        fun count(n: Int) = if (n == 1) "1 server" else "$n servers"
+                                        val plex =
+                                            if (core.signedIn()) count(servers.count { !it.jellyfin })
+                                            else "Not signed in"
+                                        val server = home?.let { "Home server: ${it.name}" } ?: "No home server"
+                                        "$server · Plex: $plex · Jellyfin: ${count(jellyfin.size)}"
+                                    }
                                     Category.Libraries,
                                     Category.AudioLanguage,
                                     Category.SubtitleLanguage,
-                                    Category.Theme,
                                     Category.Override,
                                     Category.OverrideLibraries,
                                     Category.PlaybackOverride,
                                     Category.PlaybackOverrideLibraries,
-                                    Category.PlaybackOverrideQuality,
                                     Category.OverrideAudio,
                                     Category.OverrideSubtitles -> ""
                                     Category.AudioSubtitles ->
                                         "Audio: ${languageName(settings.audioLanguage)} · Subtitles: ${settings.subtitleMode.label}"
                                     Category.Appearance ->
-                                        "Theme: ${settings.theme.label} · Density: ${densityLabel(settings.density)}"
+                                        "Theme: ${settings.theme.label} · Library density: ${densityLabel(settings.density)}"
                                     Category.Playback ->
                                         "Default quality: $qualityLabel · Autoplay ${onOff(settings.autoplayNext)}"
                                     Category.Services ->
                                         Service.entries.joinToString(" · ") {
                                             "${it.title}: ${trackers.getValue(it).label}"
                                         }
-                                    Category.WatchTogether ->
-                                        "Name: ${settings.watchName.ifBlank { Watch.deviceName() }} · Relay: ${if (settings.watchRelay.isBlank()) "Public" else "Custom"}"
                                     Category.Downloads -> "Auto-remove watched ${onOff(settings.autoRemoveWatched)}"
-                                    Category.Connections -> {
-                                        fun count(n: Int) = if (n == 1) "1 server" else "$n servers"
-                                        val plex =
-                                            if (core.signedIn()) count(servers.count { !it.jellyfin })
-                                            else "Not signed in"
-                                        "Plex: $plex · Jellyfin: ${count(jellyfin.size)}"
-                                    }
                                     Category.Advanced -> "Image cache · Debug logging ${onOff(settings.debugLogging)}"
                                     Category.About -> "Version $version"
                                 }
@@ -414,31 +590,79 @@ fun SettingsScreen(
                         }
                 Category.General -> {
                     SectionTitle("Home server")
-                    servers.forEach { s ->
-                        val selected = s.id == home?.id
+                    if (home != null)
                         SettingsRow(
                             Glyph.Server,
-                            s.name,
-                            if (s.jellyfin) "Jellyfin" else if (s.owned) "Owned" else "Shared with you",
-                            Modifier.takeFocus(selected),
-                            selected,
-                            { onEdit { it.copy(homeServer = s.id) } },
-                        ) {
-                            if (selected) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
-                        }
-                    }
-                    if (servers.isEmpty())
+                            home.name,
+                            "Home shows Continue Watching and recommendations from this server",
+                            Modifier.takeFocus(true),
+                            onClick = { picker = Picker.HomeServer },
+                        )
+                    else
                         SettingsRow(
                             Glyph.Server,
                             "No servers found",
-                            "Add Plex or Jellyfin servers under Connections",
+                            "Sign in to Plex or add a Jellyfin server below",
                             Modifier.takeFocus(true),
                         )
-                    SectionTitle("Sidebar")
+                    SectionTitle("Plex")
+                    if (core.signedIn()) {
+                        SettingsRow(Glyph.Person, "Plex account", "Signed in")
+                        SettingsRow(Glyph.Logout, "Sign out", "Removes this device's Plex sign-in", onClick = onSignOut)
+                    } else {
+                        SettingsRow(
+                            Glyph.Person,
+                            "Sign in with Plex",
+                            "Link this device at plex.tv/link",
+                            Modifier,
+                            onClick = onPlexSignIn,
+                        )
+                    }
+                    SectionTitle("Jellyfin")
+                    jellyfin.forEach { s ->
+                        key(s.id) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                SettingsRow(
+                                    Glyph.Server,
+                                    s.name,
+                                    listOf(s.user, s.address).filter { it.isNotEmpty() }.joinToString(" · "),
+                                    Modifier.weight(1f),
+                                )
+                                MoveButton(Glyph.Close, true) {
+                                    scope.launch {
+                                        io { core.removeJellyfin(s.id) }
+                                        jellyfin = core.jellyfinServers()
+                                        onServersChanged()
+                                        runCatching { addServerFocus.requestFocus() }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    SettingsRow(
+                        Glyph.Add,
+                        "Add server",
+                        "Sign in with a username and password, or Quick Connect",
+                        Modifier.focusRequester(addServerFocus),
+                        onClick = { adding = true },
+                    ) {
+                        GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
+                    }
+                    SectionTitle("Watch Together")
+                    SettingsRow(
+                        Glyph.Group,
+                        "Relay",
+                        settings.watchRelay.ifBlank { "Public relays" },
+                        onClick = { picker = Picker.Relay },
+                    )
+                    SectionTitle("Libraries")
                     SettingsRow(
                         Glyph.Sort,
                         "Manage libraries",
-                        "Reorder and hide the libraries in the sidebar",
+                        "Choose which libraries and servers Plaivo uses, and their order",
                         onClick = { open(Category.Libraries) },
                     ) {
                         GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
@@ -480,7 +704,25 @@ fun SettingsScreen(
                                 }
                             }
                         }
-                    if (libraries.isEmpty())
+                    val unlisted = servers.filter { s -> libraries.none { it.server == s.id } }
+                    unlisted.forEachIndexed { i, s ->
+                        val hidden = s.id in settings.hiddenServers
+                        SectionTitle(s.name)
+                        SettingsRow(
+                            Glyph.Server,
+                            "All libraries",
+                            if (hidden) "Hidden · Plaivo won't connect to this server"
+                            else "Couldn't connect, so its libraries aren't listed",
+                            Modifier.takeFocus(libraries.isEmpty() && i == 0),
+                            onClick = {
+                                onEdit { hideServer(it, s.id, !hidden) }
+                                if (hidden) onServersChanged()
+                            },
+                        ) {
+                            Switch(!hidden)
+                        }
+                    }
+                    if (libraries.isEmpty() && unlisted.isEmpty())
                         SettingsRow(
                             Glyph.Sort,
                             "No libraries yet",
@@ -495,10 +737,8 @@ fun SettingsScreen(
                         "Theme",
                         settings.theme.label,
                         Modifier.takeFocus(true),
-                        onClick = { open(Category.Theme) },
-                    ) {
-                        GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
-                    }
+                        onClick = { picker = Picker.Theme },
+                    )
                     SectionTitle("Library & cards")
                     SettingsRow(
                         Glyph.Sort,
@@ -559,28 +799,43 @@ fun SettingsScreen(
                         Switch(settings.watchedIndicators)
                     }
                 }
-                Category.Theme ->
-                    CoreTheme.entries.forEach { t ->
-                        val selected = t == settings.theme
+                Category.Playback -> {
+                    SectionTitle("Video")
+                    SettingsRow(
+                        Glyph.HighQuality,
+                        "Default quality",
+                        qualityLabel,
+                        Modifier.takeFocus(true),
+                        onClick = { picker = Picker.Quality },
+                    )
+                    SectionTitle("Overrides")
+                    settings.playbackRules.forEachIndexed { i, r ->
                         SettingsRow(
-                            null,
-                            t.label,
-                            "",
-                            Modifier.takeFocus(selected),
-                            selected,
-                            { onEdit { it.copy(theme = t) } },
-                            leading = { ThemeSwatch(t) },
+                            Glyph.Sort,
+                            ruleTargets(r.libraries, libraries),
+                            r.quality?.let { "Quality: ${qualityName(it)}" } ?: "Uses your defaults",
+                            onClick = {
+                                playbackDraft = i to r
+                                open(Category.PlaybackOverride)
+                            },
                         ) {
-                            Radio(selected)
+                            GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
                         }
                     }
-                Category.Playback -> {
+                    SettingsRow(
+                        Glyph.Add,
+                        "Add override",
+                        "Pick libraries and the quality to use",
+                        onClick = {
+                            playbackDraft = null to PlaybackRule(emptyList(), null, null)
+                            open(Category.PlaybackOverride)
+                        },
+                    )
                     SectionTitle("Up next")
                     SettingsRow(
                         Glyph.PlayCircle,
                         "Autoplay next episode",
                         "Plays the next episode in the queue when one ends",
-                        Modifier.takeFocus(true),
                         onClick = { onEdit { it.copy(autoplayNext = !it.autoplayNext) } },
                     ) {
                         Switch(settings.autoplayNext)
@@ -645,52 +900,6 @@ fun SettingsScreen(
                     ) {
                         Value("${settings.seekLarge} s")
                     }
-                    SectionTitle("Default quality")
-                    val original = qualities.none { it.kbps.toInt() == quality }
-                    SettingsRow(
-                        null,
-                        "Original",
-                        "Direct play, no transcoding",
-                        selected = original,
-                        onClick = { onEdit { it.copy(quality = 0u) } },
-                    ) {
-                        if (original) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
-                    }
-                    qualities.forEach { q ->
-                        val selected = q.kbps.toInt() == quality
-                        SettingsRow(
-                            null,
-                            q.label,
-                            q.bitrate,
-                            selected = selected,
-                            onClick = { onEdit { it.copy(quality = q.kbps) } },
-                        ) {
-                            if (selected) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
-                        }
-                    }
-                    SectionTitle("Overrides")
-                    settings.playbackRules.forEachIndexed { i, r ->
-                        SettingsRow(
-                            Glyph.Sort,
-                            ruleTargets(r.libraries, libraries),
-                            r.quality?.let { "Quality: ${qualityName(it)}" } ?: "Uses your defaults",
-                            onClick = {
-                                playbackDraft = i to r
-                                open(Category.PlaybackOverride)
-                            },
-                        ) {
-                            GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
-                        }
-                    }
-                    SettingsRow(
-                        Glyph.Add,
-                        "Add override",
-                        "Pick libraries and the quality to use",
-                        onClick = {
-                            playbackDraft = null to PlaybackRule(emptyList(), null, null)
-                            open(Category.PlaybackOverride)
-                        },
-                    )
                 }
                 Category.PlaybackOverride ->
                     playbackDraft?.let { (index, r) ->
@@ -708,10 +917,8 @@ fun SettingsScreen(
                             null,
                             "Quality",
                             qualityName(r.quality),
-                            onClick = { open(Category.PlaybackOverrideQuality) },
-                        ) {
-                            GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
-                        }
+                            onClick = { picker = Picker.RuleQuality },
+                        )
                         SettingsRow(
                             Glyph.Check,
                             "Save",
@@ -749,22 +956,6 @@ fun SettingsScreen(
                     playbackDraft?.let { (index, r) ->
                         LibraryPicker(libraries, r.libraries, { Modifier.takeFocus(it) }) {
                             playbackDraft = index to r.copy(libraries = it)
-                        }
-                    }
-                Category.PlaybackOverrideQuality ->
-                    playbackDraft?.let { (index, r) ->
-                        (listOf(null, 0u) + qualities.map { it.kbps }).forEachIndexed { i, kbps ->
-                            val on = r.quality == kbps
-                            SettingsRow(
-                                null,
-                                qualityName(kbps),
-                                "",
-                                Modifier.takeFocus(i == 0),
-                                on,
-                                { playbackDraft = index to r.copy(quality = kbps) },
-                            ) {
-                                if (on) GlyphIcon(Glyph.Check, 20.dp, Palette.text)
-                            }
                         }
                     }
                 Category.AudioSubtitles -> {
@@ -818,6 +1009,7 @@ fun SettingsScreen(
                         },
                     )
                     SectionTitle("Subtitle style")
+                    SubtitlePreview(settings)
                     SettingsRow(
                         null,
                         "Size",
@@ -1049,51 +1241,6 @@ fun SettingsScreen(
                         }
                     }
                 }
-                Category.WatchTogether -> {
-                    SectionTitle("Display name")
-                    var name by remember { mutableStateOf(settings.watchName) }
-                    Field(
-                        name,
-                        { v ->
-                            name = v.take(32)
-                            onEdit { it.copy(watchName = name.trim()) }
-                        },
-                        Watch.deviceName(),
-                        KeyboardType.Text,
-                        ImeAction.Done,
-                        {},
-                        Modifier.takeFocus(true),
-                    )
-                    SectionTitle("Relay")
-                    var custom by remember { mutableStateOf(settings.watchRelay.isNotBlank()) }
-                    SettingsRow(
-                        Glyph.Link,
-                        "Relay",
-                        if (custom) "Your own openwatchparty relay" else "The public openwatchparty relays",
-                        onClick = {
-                            custom = !custom
-                            if (!custom) onEdit { it.copy(watchRelay = "") }
-                        },
-                    ) {
-                        Value(if (custom) "Custom" else "Public")
-                    }
-                    if (custom) {
-                        var url by remember { mutableStateOf(settings.watchRelay) }
-                        Field(
-                            url,
-                            { v ->
-                                url = v
-                                onEdit { it.copy(watchRelay = v.trim()) }
-                            },
-                            "https://relay.example.com",
-                            KeyboardType.Uri,
-                            ImeAction.Done,
-                            {},
-                        )
-                        if (url.isNotBlank() && !validRelay(url))
-                            Note("That address isn't valid. It needs to start with http:// or https://")
-                    }
-                }
                 Category.Downloads -> {
                     SectionTitle("Location")
                     val root = DownloadQueue.root
@@ -1111,59 +1258,11 @@ fun SettingsScreen(
                         Switch(settings.autoRemoveWatched)
                     }
                 }
-                Category.Connections -> {
-                    SectionTitle("Plex")
-                    if (core.signedIn()) {
-                        SettingsRow(Glyph.Person, "Plex account", "Signed in", Modifier.takeFocus(true))
-                        SettingsRow(Glyph.Logout, "Sign out", "Removes this device's Plex sign-in", onClick = onSignOut)
-                    } else {
-                        SettingsRow(
-                            Glyph.Person,
-                            "Sign in with Plex",
-                            "Link this device at plex.tv/link",
-                            Modifier.takeFocus(true),
-                            onClick = onPlexSignIn,
-                        )
-                    }
-                    SectionTitle("Jellyfin")
-                    jellyfin.forEach { s ->
-                        key(s.id) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                SettingsRow(
-                                    Glyph.Server,
-                                    s.name,
-                                    listOf(s.user, s.address).filter { it.isNotEmpty() }.joinToString(" · "),
-                                    Modifier.weight(1f),
-                                )
-                                MoveButton(Glyph.Close, true) {
-                                    scope.launch {
-                                        io { core.removeJellyfin(s.id) }
-                                        jellyfin = core.jellyfinServers()
-                                        onServersChanged()
-                                        runCatching { addServerFocus.requestFocus() }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    SettingsRow(
-                        Glyph.Add,
-                        "Add server",
-                        "Sign in with a username and password, or Quick Connect",
-                        Modifier.focusRequester(addServerFocus),
-                        onClick = { adding = true },
-                    ) {
-                        GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
-                    }
-                }
                 Category.Advanced -> {
                     SectionTitle("Storage")
                     SettingsRow(
                         Glyph.Refresh,
-                        "Clear image cache",
+                        "Clear cache",
                         if (cacheCleared) "Cleared" else "Removes cached artwork and library data",
                         Modifier.takeFocus(true),
                         onClick = {
@@ -1196,7 +1295,6 @@ fun SettingsScreen(
                         "Version $version",
                         modifier = Modifier.takeFocus(!fromLicenses),
                     )
-                    SettingsRow(Glyph.Check, "Trakt", "Plaivo uses Trakt but is not endorsed or certified by Trakt")
                     SettingsRow(
                         Glyph.Info,
                         "Open-source licenses",
@@ -1206,6 +1304,7 @@ fun SettingsScreen(
                     ) {
                         GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
                     }
+                    Note("Plaivo uses Trakt but is not endorsed or certified by Trakt.")
                 }
             }
         }
