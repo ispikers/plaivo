@@ -180,12 +180,11 @@ pub enum PlayState {
 }
 
 impl PlayState {
-    pub fn parse(state: &str) -> Option<Self> {
-        match state {
-            "playing" => Some(Self::Playing),
-            "paused" => Some(Self::Paused),
-            "stopped" => Some(Self::Stopped),
-            _ => None,
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Playing => "playing",
+            Self::Paused => "paused",
+            Self::Stopped => "stopped",
         }
     }
 }
@@ -931,13 +930,8 @@ mod tests {
             .is_none()
         );
         assert_eq!(
-            ["playing", "paused", "stopped", "buffering"].map(PlayState::parse),
-            [
-                Some(PlayState::Playing),
-                Some(PlayState::Paused),
-                Some(PlayState::Stopped),
-                None
-            ]
+            [PlayState::Playing, PlayState::Paused, PlayState::Stopped].map(PlayState::as_str),
+            ["playing", "paused", "stopped"]
         );
     }
 

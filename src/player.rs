@@ -595,7 +595,7 @@ impl Plaivo {
             None => remote_tracks(&srv, &media, opened.transcode.as_ref(), opened.picks),
         };
         if self.playing() {
-            self.report("stopped", cx);
+            self.report(PlayState::Stopped, cx);
             self.end_transcode(cx);
         }
         self.player.server = Some(srv);
@@ -836,7 +836,7 @@ impl Plaivo {
         if card.key.as_ref() == self.player.key {
             return;
         }
-        self.report("stopped", cx);
+        self.report(PlayState::Stopped, cx);
         self.player.switching = true;
         self.player.advancing = true;
         self.play(card.server.to_string(), card.key.to_string(), cx);
@@ -1655,8 +1655,8 @@ impl Plaivo {
         self.player.active
     }
 
-    fn report(&mut self, state: &str, cx: &mut Context<Self>) -> bool {
-        let refresh = state == "stopped" || (self.player.mini && self.home_stale());
+    fn report(&mut self, state: PlayState, cx: &mut Context<Self>) -> bool {
+        let refresh = state == PlayState::Stopped || (self.player.mini && self.home_stale());
         let Some(job) = self.report_job(state, true) else {
             return false;
         };
@@ -1665,7 +1665,7 @@ impl Plaivo {
             return false;
         }
         self.player.home_refreshed = Some(Instant::now());
-        let stopped = state == "stopped";
+        let stopped = state == PlayState::Stopped;
         Self::bg(cx, job, move |this, _, cx| {
             this.load_home(cx);
             if stopped {
@@ -1677,7 +1677,7 @@ impl Plaivo {
 
     // Quit can't wait on a dead server: local files skip the network, streams get a short grace period.
     pub fn report_stopped_blocking(&mut self) {
-        let Some(job) = self.report_job("stopped", !self.player.local) else {
+        let Some(job) = self.report_job(PlayState::Stopped, !self.player.local) else {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1688,7 +1688,11 @@ impl Plaivo {
         let _ = rx.recv_timeout(QUIT_REPORT_WAIT);
     }
 
-    fn report_job(&mut self, state: &str, network: bool) -> Option<impl FnOnce() + Send + 'static> {
+    fn report_job(
+        &mut self,
+        state: PlayState,
+        network: bool,
+    ) -> Option<impl FnOnce() + Send + 'static> {
         let srv = self.player.server.clone()?;
         if !self.playing() || self.player.key.is_empty() || self.player.stop_sent {
             return None;
@@ -1696,24 +1700,22 @@ impl Plaivo {
         let c = self.client.clone();
         let p = &mut self.player;
         p.last_report = Some(Instant::now());
-        p.stop_sent = state == "stopped";
+        p.stop_sent = state == PlayState::Stopped;
         let offline = self.downloads.clone().filter(|_| p.local);
-        let (key, state, t, d, session) = (
+        let (key, t, d, session) = (
             p.key.clone(),
-            state.to_owned(),
             (p.time * 1000.0) as u64,
             (p.duration * 1000.0) as u64,
             p.transcode.clone(),
         );
-        if let Some(m) = &p.tracker
-            && let Some(s) = PlayState::parse(&state)
-        {
-            self.services.trackers.on_progress(m, s, t, d);
+        if let Some(m) = &p.tracker {
+            self.services.trackers.on_progress(m, state, t, d);
         }
+        let state = state.as_str();
         Some(move || {
-            let synced = network && srv.timeline(&c, &key, &state, t, d, session.as_deref());
+            let synced = network && srv.timeline(&c, &key, state, t, d, session.as_deref());
             if let Some(downloads) = offline {
-                downloads.record_progress(&srv.id, &key, &state, t, d, synced);
+                downloads.record_progress(&srv.id, &key, state, t, d, synced);
             }
         })
     }
@@ -1740,9 +1742,9 @@ impl Plaivo {
                     .is_none_or(|r| r.elapsed() > Duration::from_secs(10))
                 {
                     let state = if self.player.paused {
-                        "paused"
+                        PlayState::Paused
                     } else {
-                        "playing"
+                        PlayState::Playing
                     };
                     self.report(state, cx);
                 }
@@ -1781,7 +1783,14 @@ impl Plaivo {
             }
             mpv::Event::Pause(p) => {
                 self.player.paused = p;
-                self.report(if p { "paused" } else { "playing" }, cx);
+                self.report(
+                    if p {
+                        PlayState::Paused
+                    } else {
+                        PlayState::Playing
+                    },
+                    cx,
+                );
                 self.watch_feed(true);
                 self.sync_session();
                 if !p {
@@ -1992,7 +2001,7 @@ impl Plaivo {
         );
         self.trim_images(false, cx);
         self.show_cursor();
-        let refreshing = self.report("stopped", cx);
+        let refreshing = self.report(PlayState::Stopped, cx);
         self.end_transcode(cx);
         let p = &mut self.player;
         p.active = false;

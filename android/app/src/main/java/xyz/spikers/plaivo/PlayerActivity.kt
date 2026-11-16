@@ -50,6 +50,7 @@ import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.LanguagePrefs
 import uniffi.plaivo_ffi.LanguageRule
 import uniffi.plaivo_ffi.PlaivoException
+import uniffi.plaivo_ffi.PlayState
 import uniffi.plaivo_ffi.Playback
 import uniffi.plaivo_ffi.Scale
 import uniffi.plaivo_ffi.Settings
@@ -188,7 +189,7 @@ class PlayerActivity : ComponentActivity() {
         exo.addListener(
             object : Player.Listener {
                 override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                    report(if (playWhenReady) "playing" else "paused")
+                    report(if (playWhenReady) PlayState.PLAYING else PlayState.PAUSED)
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -261,7 +262,7 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch {
             while (true) {
                 delay(10_000)
-                if (exo.isPlaying) report("playing")
+                if (exo.isPlaying) report(PlayState.PLAYING)
             }
         }
     }
@@ -335,7 +336,7 @@ class PlayerActivity : ComponentActivity() {
                 firstFrame = false
                 exo.setMediaItem(mediaItem(p), startAt ?: p.startMs.toLong())
                 exo.prepare()
-                if (exo.playWhenReady) report("playing") else exo.playWhenReady = true
+                if (exo.playWhenReady) report(PlayState.PLAYING) else exo.playWhenReady = true
                 Watch.loaded(p.server, p.key, p.durationMs.toLong())
                 val show = p.showKey
                 if (show == null) {
@@ -723,13 +724,13 @@ class PlayerActivity : ComponentActivity() {
             if (release && session != null) {
                 core.releaseTranscode(p.server, p.key, time, p.durationMs, session)
             } else {
-                core.report(p.server, p.key, "stopped", time, p.durationMs, session)
+                core.report(p.server, p.key, PlayState.STOPPED, time, p.durationMs, session)
                 session?.let { core.stopTranscode(p.server, it) }
             }
         }
     }
 
-    private fun report(state: String) {
+    private fun report(state: PlayState) {
         val p = playback ?: return
         val time = exo.currentPosition.coerceAtLeast(0).toULong()
         background.launch(reports) { core.report(p.server, p.key, state, time, p.durationMs, p.transcodeSession) }

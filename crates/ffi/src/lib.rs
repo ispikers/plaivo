@@ -330,6 +330,13 @@ pub struct SignIn {
 }
 
 #[uniffi::remote(Enum)]
+pub enum PlayState {
+    Playing,
+    Paused,
+    Stopped,
+}
+
+#[uniffi::remote(Enum)]
 pub enum Service {
     Trakt,
     Mal,
@@ -1740,19 +1747,18 @@ impl Plaivo {
         &self,
         server_id: String,
         key: String,
-        state: String,
+        state: PlayState,
         time_ms: u64,
         duration_ms: u64,
         transcode_session: Option<String>,
     ) {
-        if let Some(state) = PlayState::parse(&state) {
-            self.scrobble(&server_id, &key, state, time_ms, duration_ms);
-        }
+        self.scrobble(&server_id, &key, state, time_ms, duration_ms);
+        let state = state.as_str();
         let synced = self.server(&server_id).is_ok_and(|srv| {
             srv.timeline(
                 &self.client,
                 &key,
-                &state,
+                state,
                 time_ms,
                 duration_ms,
                 transcode_session.as_deref(),
@@ -1761,7 +1767,7 @@ impl Plaivo {
         if let Some(d) = self.downloads.get()
             && d.local(&server_id, &key).is_some()
         {
-            d.record_progress(&server_id, &key, &state, time_ms, duration_ms, synced);
+            d.record_progress(&server_id, &key, state, time_ms, duration_ms, synced);
         }
     }
 
