@@ -842,9 +842,13 @@ impl Plaivo {
         .detach();
         cx.observe_window_appearance(window, |_, _, cx| cx.notify())
             .detach();
-        // mpv's RemoteCommandCenter resets Now Playing to Playing whenever the app activates.
-        #[cfg(target_os = "macos")]
-        cx.observe_window_activation(window, |this, _, _| {
+        cx.observe_window_activation(window, |this, _, cx| {
+            // Switching apps brings the cursor back.
+            if this.page == Page::Player {
+                this.wake_controls(cx);
+            }
+            // mpv's RemoteCommandCenter resets Now Playing to Playing whenever the app activates.
+            #[cfg(target_os = "macos")]
             if this.player.mpv.is_some() {
                 crate::mpv::now_playing(this.player.paused);
             }
