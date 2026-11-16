@@ -1,4 +1,4 @@
-use crate::app::{Category, Choice, Nav, Plaivo, open_url};
+use crate::app::{Category, Choice, Nav, Plaivo};
 use crate::settings::{
     COUNTDOWN_MAX, DENSITY_MAX, EpisodePoster, GridSpacing, HomeClock, SKIP_DELAY_MAX, Settings,
     SkipMode, ViewMode,
@@ -624,7 +624,7 @@ impl Plaivo {
                         .child(
                             row("libmpv", Some(Icon::Movie), "libmpv", MPV_INFO).child(
                                 pill("mpv-source", "Source", Some(Icon::OpenInNew), false)
-                                    .on_click(|_, _, _| open_url(MPV_SOURCE)),
+                                    .on_click(|_, _, cx| cx.open_url(MPV_SOURCE)),
                             ),
                         )
                         .child(

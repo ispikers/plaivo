@@ -1,4 +1,4 @@
-use crate::app::{Plaivo, open_url};
+use crate::app::Plaivo;
 use crate::ui::player::spinner;
 use crate::ui::settings::toggle_row;
 use crate::ui::theme::{self, Icon};
@@ -66,7 +66,7 @@ impl Plaivo {
                         .gap(px(8.))
                         .children(notes.map(|url| {
                             pill("update-notes", "What's new", Some(Icon::OpenInNew), false)
-                                .on_click(move |_, _, _| open_url(&url))
+                                .on_click(move |_, _, cx| cx.open_url(&url))
                         }))
                         .children(action),
                 ),

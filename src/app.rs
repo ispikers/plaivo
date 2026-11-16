@@ -394,18 +394,6 @@ pub struct Plaivo {
     pub player: Player,
 }
 
-pub fn open_url(url: &str) {
-    #[cfg(windows)]
-    let r = std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url])
-        .spawn();
-    #[cfg(target_os = "macos")]
-    let r = std::process::Command::new("open").arg(url).spawn();
-    if let Err(e) = r {
-        log::error!("could not open browser: {e}");
-    }
-}
-
 pub fn download_root(dir: &str) -> PathBuf {
     if !dir.is_empty() {
         return dir.into();
@@ -1239,44 +1227,55 @@ impl Plaivo {
         let gen_ = self.pin_gen.fetch_add(1, Ordering::SeqCst) + 1;
         self.auth_waiting = true;
         self.auth_error = None;
-        let (c, pin_gen) = (self.client.clone(), self.pin_gen.clone());
+        let c = self.client.clone();
         Self::bg(
             cx,
-            move || -> R<Option<String>> {
-                let pin = c.create_pin(true)?;
-                log::info!(
-                    "sign-in: PIN {} created, waiting for browser approval",
-                    pin.id
-                );
-                open_url(&c.auth_url(&pin.code));
-                poll_until(
-                    &pin_gen,
-                    gen_,
-                    Duration::from_secs(1),
-                    Instant::now() + Duration::from_secs(600),
-                    || c.check_pin(pin.id).transpose(),
-                )
-                .transpose()
-            },
-            move |this, r, cx| {
-                if this.pin_gen.load(Ordering::SeqCst) != gen_ {
-                    return;
+            move || c.create_pin(true),
+            move |this, r, cx| match r {
+                Ok(pin) if this.pin_gen.load(Ordering::SeqCst) == gen_ => {
+                    log::info!(
+                        "sign-in: PIN {} created, waiting for browser approval",
+                        pin.id
+                    );
+                    cx.open_url(&this.client.auth_url(&pin.code));
+                    let (c, pin_gen) = (this.client.clone(), this.pin_gen.clone());
+                    Self::bg(
+                        cx,
+                        move || {
+                            poll_until(
+                                &pin_gen,
+                                gen_,
+                                Duration::from_secs(1),
+                                Instant::now() + Duration::from_secs(600),
+                                || c.check_pin(pin.id).transpose(),
+                            )
+                            .transpose()
+                        },
+                        move |this, r, cx| this.sign_in_done(gen_, r, cx),
+                    );
                 }
-                this.auth_waiting = false;
-                match r {
-                    Ok(Some(token)) => {
-                        log::info!("sign-in: approved");
-                        this.account.token = Some(token);
-                        this.save_account(cx);
-                        this.begin_splash(cx);
-                        this.discover(cx);
-                    }
-                    Ok(None) => {}
-                    Err(e) => this.auth_error = Some(format!("Sign-in failed: {e}").into()),
-                }
+                r => this.sign_in_done(gen_, r.map(|_| None), cx),
             },
         );
         cx.notify();
+    }
+
+    fn sign_in_done(&mut self, gen_: u64, r: R<Option<String>>, cx: &mut Context<Self>) {
+        if self.pin_gen.load(Ordering::SeqCst) != gen_ {
+            return;
+        }
+        self.auth_waiting = false;
+        match r {
+            Ok(Some(token)) => {
+                log::info!("sign-in: approved");
+                self.account.token = Some(token);
+                self.save_account(cx);
+                self.begin_splash(cx);
+                self.discover(cx);
+            }
+            Ok(None) => {}
+            Err(e) => self.auth_error = Some(format!("Sign-in failed: {e}").into()),
+        }
     }
 
     pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {

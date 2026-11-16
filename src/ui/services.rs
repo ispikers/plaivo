@@ -1,4 +1,4 @@
-use crate::app::{Plaivo, open_url};
+use crate::app::Plaivo;
 use crate::plex::Item;
 use crate::ui::player::spinner;
 use crate::ui::settings::toggle_row;
@@ -403,7 +403,7 @@ impl Plaivo {
                                     Some(Icon::OpenInNew),
                                     true,
                                 )
-                                .on_click(move |_, _, _| open_url(&open)),
+                                .on_click(move |_, _, cx| cx.open_url(&open)),
                             )
                             .child(waiting("Waiting for authorization…")),
                     )
