@@ -22,7 +22,9 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
-      - run: dotnet tool install --global vpk --version 1.2.161
+      - name: Install the vpk CLI matching the velopack crate
+        shell: bash
+        run: dotnet tool install --global vpk --version "$(sed -n 's/^velopack = "=\(.*\)"/\1/p' Cargo.toml)"
       - run: cargo run -p xtask -- libmpv
       - run: cargo fetch
       - name: Fetch the previous release for delta updates
@@ -46,7 +48,8 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
-      - run: dotnet tool install --global vpk --version 1.2.161
+      - name: Install the vpk CLI matching the velopack crate
+        run: dotnet tool install --global vpk --version "$(sed -n 's/^velopack = "=\(.*\)"/\1/p' Cargo.toml)"
       - run: cargo fetch
       - name: Import Developer ID certificate
         if: env.SIGN == 'true'
@@ -94,7 +97,8 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
-      - run: dotnet tool install --global vpk --version 1.2.161
+      - name: Install the vpk CLI matching the velopack crate
+        run: dotnet tool install --global vpk --version "$(sed -n 's/^velopack = "=\(.*\)"/\1/p' Cargo.toml)"
       - name: Check the tag matches Cargo.toml
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
