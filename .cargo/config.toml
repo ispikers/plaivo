@@ -3,3 +3,7 @@ xtask = "run -p xtask --"
 
 [registry]
 global-min-publish-age = "3 days"
+
+# Static CRT: the installer doesn't ship VCRUNTIME140.dll.
+[target.'cfg(target_env = "msvc")']
+rustflags = ["-C", "target-feature=+crt-static"]
