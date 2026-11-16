@@ -4,7 +4,7 @@ use gpui::{
     AnyElement, App, Bounds, BoxShadow, ClickEvent, Context, DispatchPhase, Div, ElementId,
     FontWeight, Hsla, Img, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
     Pixels, ScrollHandle, SharedString, Stateful, Svg, UniformListScrollHandle, Window, canvas,
-    div, fill, img, point, prelude::*, px, size, svg,
+    div, fill, img, point, prelude::*, px, rgb, size, svg,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -103,7 +103,7 @@ pub fn pill(
 }
 
 pub fn danger_pill(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> {
-    let bg = Hsla::from(theme::error());
+    let bg = Hsla::from(rgb(0xB3261E));
     div()
         .id(id.into())
         .h(px(44.))
@@ -222,6 +222,8 @@ thread_local! {
 
 const SCROLLBAR_W: f32 = 6.;
 const SCROLLBAR_MIN_THUMB: f32 = 40.;
+// Content masks are rectangular, so the track stays clear of rounded corners.
+const SCROLLBAR_INSET: f32 = 10.;
 
 pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
     let handle = handle.clone();
@@ -233,19 +235,20 @@ pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
             if max <= 0. {
                 return;
             }
-            let track_h = f32::from(bounds.size.height);
+            let top = bounds.top() + px(SCROLLBAR_INSET);
+            let track_h = (f32::from(bounds.size.height) - 2. * SCROLLBAR_INSET).max(0.);
             let thumb_h = (track_h * track_h / (track_h + max))
                 .clamp(SCROLLBAR_MIN_THUMB.min(track_h), track_h);
             let ratio = max / (track_h - thumb_h).max(1.);
             let offset = (-f32::from(handle.offset().y)).clamp(0., max);
             let x = bounds.right() - px(SCROLLBAR_W + 4.);
             let thumb = Bounds::new(
-                point(x, bounds.top() + px(offset / ratio)),
+                point(x, top + px(offset / ratio)),
                 size(px(SCROLLBAR_W), px(thumb_h)),
             );
             let track = Bounds::new(
-                point(x - px(6.), bounds.top()),
-                size(px(SCROLLBAR_W + 12.), bounds.size.height),
+                point(x - px(6.), top),
+                size(px(SCROLLBAR_W + 12.), px(track_h)),
             );
             let dragging = SCROLL_DRAG.with(|d| d.borrow().is_some());
             window.paint_quad(
@@ -298,9 +301,7 @@ pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
         },
     )
     .absolute()
-    .top_0()
-    .left_0()
-    .size_full()
+    .size_0()
 }
 
 pub fn list_with_scrollbar(list: impl IntoElement, handle: &UniformListScrollHandle) -> Div {
