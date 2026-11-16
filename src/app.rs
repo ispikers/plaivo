@@ -2790,7 +2790,7 @@ impl Plaivo {
         let k = key.clone();
         self.load(
             cx,
-            move |c| srv.children(c, &k),
+            move |c| srv.episodes(c, &k),
             move |this, r, cx| {
                 if this.season.as_deref() != Some(key.as_str()) || this.detail_id.0 != server {
                     return;

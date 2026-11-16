@@ -1467,7 +1467,7 @@ impl Plaivo {
         );
         let prefs = self.card_prefs();
         Ok(srv
-            .children(&ctx, &season_key)?
+            .episodes(&ctx, &season_key)?
             .iter()
             .map(|e| Card {
                 title: format!("{}. {}", e.index.unwrap_or(0), e.title),

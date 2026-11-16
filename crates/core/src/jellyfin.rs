@@ -918,22 +918,26 @@ pub fn set_watched(srv: &Server, c: &Client, key: &str, watched: bool) -> R<()> 
     r.map(drain).map_err(err)
 }
 
-pub fn children(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Item>> {
-    let u = &srv.user_id;
-    match get_quiet::<Page>(
+pub fn seasons(srv: &Server, c: &Ctx, show: &str) -> R<Vec<Item>> {
+    items(
         srv,
         c,
-        &format!("/Shows/{key}/Seasons?UserId={u}&Fields={LIST_FIELDS}"),
-    ) {
-        Ok(seasons) => Ok(into_items(seasons)),
-        Err(_) => items(
-            srv,
-            c,
-            &format!(
-                "/Shows/{key}/Episodes?UserId={u}&SeasonId={key}&Fields={LIST_FIELDS},Overview"
-            ),
+        &format!(
+            "/Shows/{show}/Seasons?UserId={}&Fields={LIST_FIELDS}",
+            srv.user_id
         ),
-    }
+    )
+}
+
+pub fn episodes(srv: &Server, c: &Ctx, season: &str) -> R<Vec<Item>> {
+    items(
+        srv,
+        c,
+        &format!(
+            "/Shows/{season}/Episodes?UserId={}&SeasonId={season}&Fields={LIST_FIELDS},Overview",
+            srv.user_id
+        ),
+    )
 }
 
 pub fn all_episodes(srv: &Server, c: &Ctx, show: &str) -> R<Vec<Item>> {

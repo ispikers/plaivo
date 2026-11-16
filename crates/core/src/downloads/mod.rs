@@ -877,7 +877,7 @@ impl Inner {
             }
             "season" => {
                 return srv
-                    .children(&cx, &e.key)
+                    .episodes(&cx, &e.key)
                     .map(Outcome::Expanded)
                     .map_err(Fail::Net);
             }

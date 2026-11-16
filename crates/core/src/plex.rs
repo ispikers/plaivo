@@ -727,7 +727,11 @@ pub fn resolve_playable(srv: &Server, cx: &Ctx, key: &str) -> R<Item> {
                 key = it.on_deck.unwrap().metadata.unwrap().rating_key;
             }
             "show" | "season" => {
-                let children = srv.children(cx, &key)?;
+                let children = if it.kind == "show" {
+                    srv.show_seasons(cx, &key)?
+                } else {
+                    srv.episodes(cx, &key)?
+                };
                 key = next_child(&children)
                     .ok_or("Nothing to play")?
                     .rating_key
@@ -1947,16 +1951,27 @@ impl Server {
         )
     }
 
-    pub fn children(&self, c: &Ctx, key: &str) -> R<Vec<Item>> {
-        if self.is_jellyfin() {
-            return jellyfin::children(self, c, key);
-        }
+    fn plex_children(&self, c: &Ctx, key: &str) -> R<Vec<Item>> {
         Ok(self
             .get::<Container>(
                 c,
                 &format!("/library/metadata/{key}/children?excludeAllLeaves=1"),
             )?
             .metadata)
+    }
+
+    fn show_seasons(&self, c: &Ctx, show: &str) -> R<Vec<Item>> {
+        if self.is_jellyfin() {
+            return jellyfin::seasons(self, c, show);
+        }
+        self.plex_children(c, show)
+    }
+
+    pub fn episodes(&self, c: &Ctx, season: &str) -> R<Vec<Item>> {
+        if self.is_jellyfin() {
+            return jellyfin::episodes(self, c, season);
+        }
+        self.plex_children(c, season)
     }
 
     pub fn seasons(&self, c: &Ctx, show: &mut Item, discover: Option<&Server>) -> R<Vec<Item>> {
@@ -1968,7 +1983,7 @@ impl Server {
             let airing = id.zip(discover).map(|(id, d)| {
                 s.spawn(move || d.get::<Container>(c, &format!("/library/metadata/{id}")))
             });
-            let seasons = self.children(c, &show.rating_key);
+            let seasons = self.show_seasons(c, &show.rating_key);
             (seasons, airing.and_then(|h| h.join().ok()?.ok()))
         });
         if let Some(d) = airing.and_then(|ct| ct.metadata.into_iter().next()) {
