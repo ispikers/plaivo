@@ -968,23 +968,33 @@ pub fn search(srv: &Server, c: &Ctx, q: &str) -> R<Vec<(Item, f64)>> {
         .collect())
 }
 
-static STARTED: Mutex<String> = Mutex::new(String::new());
+#[derive(Clone, Default, PartialEq)]
+struct Started {
+    key: String,
+    stops: u64,
+}
 
-fn progress_path(started: &str, key: &str, state: &str) -> &'static str {
+static STARTED: Mutex<Started> = Mutex::new(Started {
+    key: String::new(),
+    stops: 0,
+});
+
+fn progress_path(started: &Started, key: &str, state: &str) -> &'static str {
     match state {
         "stopped" => "/Sessions/Playing/Stopped",
-        _ if started != key => "/Sessions/Playing",
+        _ if started.key != key => "/Sessions/Playing",
         _ => "/Sessions/Playing/Progress",
     }
 }
 
-fn record_progress(started: &mut String, key: &str, state: &str, sent: bool) {
+fn record_progress(started: &mut Started, chosen: &Started, key: &str, state: &str, sent: bool) {
     if state == "stopped" {
-        if started == key {
-            started.clear();
+        started.stops += 1;
+        if started.key == key {
+            started.key.clear();
         }
-    } else if sent {
-        key.clone_into(started);
+    } else if sent && started == chosen {
+        key.clone_into(&mut started.key);
     }
 }
 
@@ -1008,7 +1018,8 @@ pub fn timeline(
     transcode_session: Option<&str>,
 ) -> bool {
     let started = || STARTED.lock().unwrap_or_else(|e| e.into_inner());
-    let path = progress_path(&started(), key, state);
+    let chosen = started().clone();
+    let path = progress_path(&chosen, key, state);
     let sent = match authed(
         c.agent.post(format!("{}{path}", srv.uri)),
         c,
@@ -1026,7 +1037,7 @@ pub fn timeline(
             false
         }
     };
-    record_progress(&mut started(), key, state, sent);
+    record_progress(&mut started(), &chosen, key, state, sent);
     sent
 }
 
@@ -1718,20 +1729,46 @@ mod tests {
 
     #[test]
     fn progress_starts_once_per_item() {
-        let mut started = String::new();
-        let mut report = |key: &str, state: &str, sent: bool| {
-            let path = progress_path(&started, key, state);
-            record_progress(&mut started, key, state, sent);
+        fn report(started: &mut Started, key: &str, state: &str, sent: bool) -> &'static str {
+            let chosen = started.clone();
+            let path = progress_path(&chosen, key, state);
+            record_progress(started, &chosen, key, state, sent);
             path
-        };
-        assert_eq!(report("x1", "playing", false), "/Sessions/Playing");
-        assert_eq!(report("x1", "playing", true), "/Sessions/Playing");
-        assert_eq!(report("x1", "paused", true), "/Sessions/Playing/Progress");
-        assert_eq!(report("x0", "stopped", true), "/Sessions/Playing/Stopped");
-        assert_eq!(report("x1", "playing", true), "/Sessions/Playing/Progress");
-        assert_eq!(report("x1", "stopped", false), "/Sessions/Playing/Stopped");
-        assert_eq!(report("x1", "playing", true), "/Sessions/Playing");
-        assert_eq!(report("x2", "playing", true), "/Sessions/Playing");
+        }
+        let s = &mut Started::default();
+        assert_eq!(report(s, "x1", "playing", false), "/Sessions/Playing");
+        assert_eq!(report(s, "x1", "playing", true), "/Sessions/Playing");
+        assert_eq!(
+            report(s, "x1", "paused", true),
+            "/Sessions/Playing/Progress"
+        );
+        assert_eq!(
+            report(s, "x0", "stopped", true),
+            "/Sessions/Playing/Stopped"
+        );
+        assert_eq!(
+            report(s, "x1", "playing", true),
+            "/Sessions/Playing/Progress"
+        );
+        assert_eq!(
+            report(s, "x1", "stopped", false),
+            "/Sessions/Playing/Stopped"
+        );
+        assert_eq!(report(s, "x1", "playing", true), "/Sessions/Playing");
+        assert_eq!(report(s, "x2", "playing", true), "/Sessions/Playing");
+        assert_eq!(
+            report(s, "x2", "stopped", true),
+            "/Sessions/Playing/Stopped"
+        );
+
+        let stale = s.clone();
+        assert_eq!(progress_path(&stale, "x1", "playing"), "/Sessions/Playing");
+        assert_eq!(
+            report(s, "x1", "stopped", true),
+            "/Sessions/Playing/Stopped"
+        );
+        record_progress(s, &stale, "x1", "playing", true);
+        assert_eq!(report(s, "x1", "playing", true), "/Sessions/Playing");
     }
 
     #[test]
