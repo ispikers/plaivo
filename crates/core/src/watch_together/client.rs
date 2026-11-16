@@ -46,7 +46,6 @@ enum Cmd {
     Seek(i64),
     Rate(f64),
     SetMedia(Box<Media>, i64),
-    ClearMedia,
     Control(Control),
     TransferHost(String),
     Kick(String),
@@ -66,7 +65,6 @@ impl Cmd {
             Cmd::Seek(_) => "seek",
             Cmd::Rate(_) => "rate",
             Cmd::SetMedia(..) => "setMedia",
-            Cmd::ClearMedia => "clearMedia",
             Cmd::Control(_) => "setControl",
             Cmd::TransferHost(_) => "transferHost",
             Cmd::Kick(_) => "kick",
@@ -180,10 +178,6 @@ impl WatchTogether {
 
     pub fn set_media(&self, media: Media, position_ms: i64) {
         self.send(Cmd::SetMedia(Box::new(media), position_ms))
-    }
-
-    pub fn clear_media(&self) {
-        self.send(Cmd::ClearMedia)
     }
 
     pub fn set_control(&self, mode: Control) {
@@ -352,7 +346,6 @@ impl Io {
             Cmd::Seek(ms) => self.party.seek(ms, now),
             Cmd::Rate(rate) => self.party.set_rate(rate, now),
             Cmd::SetMedia(media, position_ms) => self.party.set_media(*media, position_ms),
-            Cmd::ClearMedia => self.party.clear_media(),
             Cmd::Control(mode) => self.party.set_control(mode),
             Cmd::TransferHost(peer) => self.party.transfer_host(&peer),
             Cmd::Kick(peer) => self.party.kick(&peer),

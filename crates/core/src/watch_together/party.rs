@@ -723,10 +723,6 @@ impl Party {
         Ok(())
     }
 
-    pub fn clear_media(&mut self) -> Result<(), PartyError> {
-        self.host_send(ClientMsg::ClearMedia)
-    }
-
     pub fn set_control(&mut self, mode: Control) -> Result<(), PartyError> {
         self.host_send(ClientMsg::SetControl { mode })
     }

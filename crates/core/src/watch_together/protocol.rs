@@ -300,7 +300,6 @@ pub enum ClientMsg {
         media: Box<Media>,
         position_ms: i64,
     },
-    ClearMedia,
     SetControl {
         mode: Control,
     },
@@ -510,7 +509,6 @@ pub(crate) mod tests {
             "lock.on" => ClientMsg::Lock { locked: true },
             "leave.basic" => ClientMsg::Leave,
             "end.basic" => ClientMsg::End,
-            "clearMedia.basic" => ClientMsg::ClearMedia,
             _ => return None,
         })
     }

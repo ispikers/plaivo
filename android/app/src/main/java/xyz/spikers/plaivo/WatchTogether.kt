@@ -318,13 +318,6 @@ fun WatchTogetherScreen() {
                             if (s.offsetMs != 0L) ActionButton("Reset", { core.watchSetOffset(0) })
                         }
                     }
-                    if (s.host)
-                        SettingsRow(
-                            Glyph.Stop,
-                            "Stop sharing",
-                            "Clears what the room is watching",
-                            onClick = core::watchClearMedia,
-                        )
                 }
                 SectionTitle("People")
                 s.peers.forEach { p ->

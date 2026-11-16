@@ -194,10 +194,6 @@ impl Plaivo {
         Ok(())
     }
 
-    pub fn watch_clear_media(&self) {
-        self.with_watch(WatchTogether::clear_media);
-    }
-
     pub fn watch_set_control(&self, everyone: bool) {
         self.with_watch(|w| {
             w.set_control(if everyone {
