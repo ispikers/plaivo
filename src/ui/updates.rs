@@ -13,7 +13,12 @@ impl Plaivo {
             Status::Unavailable(why) => ("Updates".into(), why.clone()),
             Status::Idle => (
                 format!("Plaivo {VERSION}").into(),
-                "Checks for updates once an hour".into(),
+                if self.settings.check_updates {
+                    "Checks for updates once an hour"
+                } else {
+                    "Automatic checks are off"
+                }
+                .into(),
             ),
             Status::Checking => (
                 "Checking for updates…".into(),
