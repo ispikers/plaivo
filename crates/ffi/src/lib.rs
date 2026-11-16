@@ -791,10 +791,13 @@ impl Plaivo {
     }
 
     pub fn sign_out(&self) {
-        plaivo_core::sign_out(
-            &mut self.account.lock().unwrap(),
-            &mut self.settings.lock().unwrap(),
-        );
+        {
+            let mut account = self.account.lock().unwrap();
+            let mut settings = self.settings.lock().unwrap();
+            plaivo_core::sign_out(&mut account, &mut settings);
+            account.save();
+            settings.save();
+        }
         self.tracked.lock().unwrap().clear();
         self.watch_leave();
         self.sync_download_servers();

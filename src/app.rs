@@ -1294,6 +1294,8 @@ impl Plaivo {
         self.stop_playback(cx);
         self.watch_leave(cx);
         plaivo_core::sign_out(&mut self.account, &mut self.settings);
+        self.save_account(cx);
+        self.save_settings_soon(cx);
         self.watch.account_name = None;
         self.probe = None;
         self.servers_loading = false;
