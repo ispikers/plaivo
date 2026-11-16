@@ -30,7 +30,6 @@ pub fn rank(
     discover: Vec<Item>,
 ) -> Vec<(String, Item)> {
     let mut seen = HashSet::new();
-    let mut owned_guids = HashSet::new();
     let mut lib: Vec<(u8, bool, f64, String, Item)> = Vec::new();
     for (server, hits) in local {
         for (it, score) in hits {
@@ -38,9 +37,6 @@ pub fn rank(
             if !matches!(it.kind.as_str(), "movie" | "show")
                 || !seen.insert((server.clone(), it.rating_key.clone()))
             {
-                continue;
-            }
-            if !it.guid.is_empty() && !owned_guids.insert(it.guid.clone()) {
                 continue;
             }
             lib.push((
@@ -53,6 +49,8 @@ pub fn rank(
         }
     }
     lib.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
+    let mut owned_guids = HashSet::new();
+    lib.retain(|e| e.4.guid.is_empty() || owned_guids.insert(e.4.guid.clone()));
     let owned_titles: HashSet<(String, Option<i64>)> = lib
         .iter()
         .map(|e| (e.4.title.to_lowercase(), e.4.year))
@@ -135,12 +133,12 @@ mod tests {
                 vec![(item("1", "movie", "Dexter", "g1"), 0.9)],
             ),
             (
-                "home".to_owned(),
-                vec![(item("2", "movie", "Dexter", "g2"), 0.1)],
-            ),
-            (
                 "third".to_owned(),
                 vec![(item("3", "movie", "Dexter", "g2"), 0.9)],
+            ),
+            (
+                "home".to_owned(),
+                vec![(item("2", "movie", "Dexter", "g2"), 0.1)],
             ),
         ];
         let keys: Vec<_> = rank("dexter", "home", local, vec![])
