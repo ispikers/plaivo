@@ -187,8 +187,11 @@ class PlayerActivity : ComponentActivity() {
         Watch.player = this
         exo.addListener(
             object : Player.Listener {
+                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    report(if (playWhenReady) "playing" else "paused")
+                }
+
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    report(if (isPlaying) "playing" else "paused")
                     feedWatch(force = true)
                 }
 
@@ -339,7 +342,7 @@ class PlayerActivity : ComponentActivity() {
                 firstFrame = false
                 exo.setMediaItem(mediaItem(p), startAt ?: p.startMs.toLong())
                 exo.prepare()
-                exo.playWhenReady = true
+                if (exo.playWhenReady) report("playing") else exo.playWhenReady = true
                 Watch.loaded(p.server, p.key, p.durationMs.toLong())
                 val show = p.showKey
                 if (show == null) {
