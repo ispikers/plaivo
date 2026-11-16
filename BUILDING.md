@@ -22,7 +22,7 @@ cargo build --release
 cargo run -p xtask -- bundle --release --open
 ```
 
-`PLAIVO_LOG=debug` raises the log level.
+`PLAIVO_LOG=debug` raises the log level. A debug build plays a URL or file path given as its first argument, with no server behind it, so nothing is reported or tracked: `cargo run -- <url>`.
 
 ## Installers and releases
 

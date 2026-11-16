@@ -62,25 +62,12 @@ fn main() {
                     cx.new(|cx| ui::shell::Root::new(app, cx))
                 })
                 .expect("open window");
-            if let Some(target) = std::env::args().nth(1) {
+            if cfg!(debug_assertions)
+                && let Some(url) = std::env::args().nth(1)
+            {
                 window
                     .update(cx, |root, _, cx| {
-                        root.app.update(cx, |app, cx| {
-                            if let Err(e) = app.launch(
-                                &target,
-                                "",
-                                &target,
-                                "",
-                                0.0,
-                                None,
-                                Vec::new(),
-                                &player::StartTracks::auto(),
-                                "",
-                                cx,
-                            ) {
-                                app.toast(e, cx);
-                            }
-                        })
+                        root.app.update(cx, |app, cx| app.play_url(&url, cx))
                     })
                     .ok();
             }

@@ -164,14 +164,14 @@ struct Opened {
     local: Option<Local>,
 }
 
-pub struct StartTracks {
+struct StartTracks {
     aid: String,
     sid: String,
     pending_sub: Option<String>,
 }
 
 impl StartTracks {
-    pub fn auto() -> Self {
+    fn auto() -> Self {
         Self {
             aid: "auto".into(),
             sid: "auto".into(),
@@ -1455,8 +1455,15 @@ impl Plaivo {
             .collect()
     }
 
+    pub fn play_url(&mut self, url: &str, cx: &mut Context<Self>) {
+        let tracks = StartTracks::auto();
+        if let Err(e) = self.launch(url, "", url, "", 0.0, None, Vec::new(), &tracks, "", cx) {
+            self.toast(e, cx);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub fn launch(
+    fn launch(
         &mut self,
         url: &str,
         key: &str,
@@ -1512,7 +1519,6 @@ impl Plaivo {
             .into_iter()
             .collect();
         p.buffering = true;
-        p.paused = false;
         p.video_ready = false;
         p.audio_tracks.clear();
         p.sub_tracks.clear();
