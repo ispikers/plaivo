@@ -404,7 +404,7 @@ impl Io {
             } else {
                 Event::Error(e)
             };
-            (self.notify)(Update::Event(event));
+            self.event(event);
         }
         true
     }
@@ -439,7 +439,7 @@ impl Io {
             }
         }
         for event in self.party.take_events() {
-            (self.notify)(Update::Event(event));
+            self.event(event);
         }
         if self.party.state() != &self.published {
             let joined = self.party.state().connection == Connection::Connected
@@ -450,6 +450,15 @@ impl Io {
                 self.background_refresh();
             }
         }
+    }
+
+    fn event(&mut self, event: Event) {
+        match &event {
+            Event::Error(_) => log::debug!("watch together: {event:?}"),
+            Event::Failed(_) | Event::Ended { .. } => log::info!("watch together: {event:?}"),
+            _ => {}
+        }
+        (self.notify)(Update::Event(event));
     }
 
     fn connect(&mut self, urls: Vec<String>, race: bool) {
