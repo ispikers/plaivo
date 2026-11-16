@@ -21,8 +21,6 @@ pub struct Account {
     pub servers: Vec<Server>,
     #[serde(default)]
     pub jellyfin: Vec<Server>,
-    #[serde(default, skip_serializing)]
-    server: Option<Server>,
 }
 
 impl Account {
@@ -32,11 +30,6 @@ impl Account {
 
     pub fn load() -> Self {
         let mut a: Account = store::read_json(&Self::path()).unwrap_or_default();
-        if let Some(legacy) = a.server.take()
-            && a.servers.is_empty()
-        {
-            a.servers.push(legacy);
-        }
         if a.client_id.is_empty() {
             use std::hash::{BuildHasher, RandomState};
             let rs = RandomState::new();

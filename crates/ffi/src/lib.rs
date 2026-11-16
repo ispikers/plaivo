@@ -915,18 +915,6 @@ impl Plaivo {
         store::clear_cache();
     }
 
-    pub fn migrate_android_prefs(
-        &self,
-        sidebar_compact: Option<bool>,
-        home_server: Option<String>,
-        quality: Option<i32>,
-        scale: Option<String>,
-    ) -> bool {
-        let mut settings = self.settings.lock().unwrap();
-        settings.migrate_android(sidebar_compact, home_server, quality, scale.as_deref());
-        settings.save()
-    }
-
     pub fn has_servers(&self) -> bool {
         self.account.lock().unwrap().has_servers()
     }

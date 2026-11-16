@@ -1,7 +1,6 @@
 package xyz.spikers.plaivo
 
 import android.app.Application
-import androidx.core.content.edit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,33 +15,13 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        migratePrefs()
         Palette.theme = core.settings().theme
         DownloadQueue.start(this)
         Watch.start()
     }
 
-    private fun migratePrefs() {
-        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        if (prefs.getBoolean(MIGRATED, false)) return
-        background.launch { cacheDir.resolve("meta").deleteRecursively() }
-        val saved =
-            core.migrateAndroidPrefs(
-                prefs.getBoolean("sidebar_compact", true),
-                prefs.getString("home_server", null),
-                if (prefs.contains("quality")) prefs.getInt("quality", 0) else null,
-                prefs.getString("scale", null),
-            )
-        if (!saved) return
-        prefs.edit {
-            clear()
-            putBoolean(MIGRATED, true)
-        }
-    }
-
     companion object {
         lateinit var instance: App
-        private const val MIGRATED = "migrated_to_core"
     }
 }
 
