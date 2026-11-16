@@ -10,6 +10,7 @@ use anyhow::{Context, bail, ensure};
 use sha2::{Digest, Sha256};
 
 const REPO: &str = "ispikers/plaivo";
+const ENTITLEMENTS: &str = "xtask/resources/entitlements.plist";
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -138,7 +139,10 @@ fn installer() -> anyhow::Result<()> {
         ensure_libmpv("macos")?;
         vpk.args(["--mainExe", "plaivo", "--runtime", "osx-arm64"])
             .arg("--packDir")
-            .arg(bundle(true, false)?);
+            .arg(bundle(true, false)?)
+            .arg("--signEntitlements")
+            .arg(root().join(ENTITLEMENTS))
+            .arg("--signDisableDeep");
         for (var, flag) in [
             ("PLAIVO_SIGN_IDENTITY", "--signAppIdentity"),
             ("PLAIVO_SIGN_INSTALL_IDENTITY", "--signInstallIdentity"),
@@ -320,25 +324,28 @@ fn bundle(release: bool, open: bool) -> anyhow::Result<PathBuf> {
 
     match std::env::var("PLAIVO_SIGN_IDENTITY") {
         Ok(identity) => {
-            let sign = |path: &Path| {
-                run(Command::new("codesign")
-                    .args([
-                        "--force",
-                        "--timestamp",
-                        "--options",
-                        "runtime",
-                        "--sign",
-                        &identity,
-                    ])
-                    .arg(path))
+            let codesign = || {
+                let mut cmd = Command::new("codesign");
+                cmd.args([
+                    "--force",
+                    "--timestamp",
+                    "--options",
+                    "runtime",
+                    "--sign",
+                    &identity,
+                ]);
+                cmd
             };
             for entry in std::fs::read_dir(&exe_dir)? {
                 let path = entry?.path();
                 if path.extension() == Some(OsStr::new("dylib")) {
-                    sign(&path)?;
+                    run(codesign().arg(&path))?;
                 }
             }
-            sign(&app)?;
+            run(codesign()
+                .arg("--entitlements")
+                .arg(root.join(ENTITLEMENTS))
+                .arg(&app))?;
         }
         Err(_) => run(Command::new("codesign")
             .args(["--force", "--deep", "--sign", "-"])
