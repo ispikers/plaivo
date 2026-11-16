@@ -268,6 +268,7 @@ pub struct SectionInfo {
 pub struct Splash {
     pub servers: Vec<(String, String, Status)>,
     probes_done: bool,
+    failed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -822,9 +823,7 @@ impl Plaivo {
                     }
                 });
                 this.downloads_changed(cx);
-                if this.page == Page::Home && this.home_error.is_some() && this.has_downloads() {
-                    this.navigate(Nav::Downloads(None), true, cx);
-                }
+                this.check_splash(cx);
             },
         );
     }
@@ -1164,8 +1163,21 @@ impl Plaivo {
         .detach();
     }
 
+    fn fail_splash(&mut self, cx: &mut Context<Self>) {
+        if let Some(sp) = &mut self.splash {
+            sp.failed = true;
+        }
+        self.check_splash(cx);
+    }
+
     fn check_splash(&mut self, cx: &mut Context<Self>) {
         let Some(sp) = &self.splash else { return };
+        if self.opening_downloads {
+            return log::debug!("splash: waiting for downloads");
+        }
+        if sp.failed {
+            return self.finish_splash(cx);
+        }
         if !sp.probes_done {
             return;
         }
@@ -1552,7 +1564,7 @@ impl Plaivo {
             let e = error.unwrap_or_else(|| "None of your Plex servers are reachable.".into());
             if self.servers.is_empty() {
                 self.servers_error = Some(e.into());
-                self.finish_splash(cx);
+                self.fail_splash(cx);
             } else {
                 log::warn!("server discovery failed, keeping cached connections: {e}");
                 self.servers_error = Some(e.into());
@@ -1938,7 +1950,7 @@ impl Plaivo {
                     Err(e) if is_home && !this.home_ready && this.home_rows.is_empty() => {
                         let name = this.server(&sid).map(|x| x.name).unwrap_or_default();
                         this.home_error = Some(format!("Could not reach {name}: {e}").into());
-                        this.finish_splash(cx);
+                        this.fail_splash(cx);
                     }
                     Err(e) if is_home && !this.home_ready => {
                         log::warn!("home rows for {sid}: {e}");
