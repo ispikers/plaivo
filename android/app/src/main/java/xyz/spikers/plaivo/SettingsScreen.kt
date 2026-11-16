@@ -3,7 +3,6 @@ package xyz.spikers.plaivo
 import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -59,9 +58,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.tv.material3.Border
-import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil3.SingletonImageLoader
 import kotlinx.coroutines.launch
@@ -1359,24 +1355,14 @@ fun MoveButton(glyph: Glyph, enabled: Boolean, onClick: () -> Unit) {
         }
         return
     }
-    Surface(
-        onClick = onClick,
+    FocusSurface(
+        onClick,
+        Modifier.size(44.dp).alpha(if (enabled) 1f else 0.35f).semantics { contentDescription = label },
+        CircleShape,
+        Palette.surface,
+        Palette.text,
+        Palette.tint(0.12f),
         enabled = enabled,
-        modifier = Modifier.size(44.dp).alpha(if (enabled) 1f else 0.35f).semantics { contentDescription = label },
-        shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Palette.surface,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.12f),
-                focusedContentColor = Palette.text,
-                disabledContainerColor = Palette.surface,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(
-                focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = CircleShape)
-            ),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { GlyphIcon(glyph, 24.dp, Palette.text) }
     }
@@ -1439,20 +1425,13 @@ fun SettingsRow(
         )
         return
     }
-    Surface(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth(),
-        shape = ClickableSurfaceDefaults.shape(shape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = if (selected) Palette.tint(0.10f) else Palette.surface,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.12f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = shape)),
+    FocusSurface(
+        onClick,
+        modifier.fillMaxWidth(),
+        shape,
+        if (selected) Palette.tint(0.10f) else Palette.surface,
+        Palette.text,
+        Palette.tint(0.12f),
     ) {
         content()
     }

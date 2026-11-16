@@ -8,7 +8,6 @@ import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -90,9 +89,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
-import androidx.tv.material3.Border
-import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import java.util.Date
@@ -622,23 +618,16 @@ fun PlayerScreen(player: PlayerActivity) {
                     .padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp)
         if (skip != null && panel == null) {
             val source = remember { MutableInteractionSource() }
-            Surface(
-                onClick = skipNow,
-                modifier = corner.focusRequester(skipButton).tap(touch, source, onClick = skipNow),
+            FocusSurface(
+                skipNow,
+                corner.focusRequester(skipButton).tap(touch, source, onClick = skipNow),
+                CircleShape,
+                Palette.text,
+                Palette.bg,
+                Palette.text,
+                ring = white,
+                ringInset = 3.dp,
                 interactionSource = source,
-                shape = ClickableSurfaceDefaults.shape(CircleShape),
-                colors =
-                    ClickableSurfaceDefaults.colors(
-                        containerColor = Palette.text,
-                        contentColor = Palette.bg,
-                        focusedContainerColor = Palette.text,
-                        focusedContentColor = Palette.bg,
-                    ),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-                border =
-                    ClickableSurfaceDefaults.border(
-                        focusedBorder = Border(BorderStroke(2.dp, white), inset = 3.dp, shape = CircleShape)
-                    ),
             ) {
                 Row(
                     Modifier.height(if (touch) 48.dp else 44.dp).padding(horizontal = 18.dp),
@@ -706,28 +695,20 @@ private fun Control(
 ) {
     val touch = LocalTouch.current
     val source = remember { MutableInteractionSource() }
-    Surface(
-        onClick = onClick,
+    FocusSurface(
+        onClick,
+        modifier
+            .size(if (touch) size.coerceAtLeast(48.dp) else size)
+            .alpha(if (enabled) 1f else 0.4f)
+            .semantics { contentDescription = label }
+            .tap(touch, source, enabled, onClick),
+        CircleShape,
+        if (selected) white.copy(alpha = 0.18f) else Color.Transparent,
+        white,
+        white.copy(alpha = 0.22f),
+        ring = white,
         enabled = enabled,
-        modifier =
-            modifier
-                .size(if (touch) size.coerceAtLeast(48.dp) else size)
-                .alpha(if (enabled) 1f else 0.4f)
-                .semantics { contentDescription = label }
-                .tap(touch, source, enabled, onClick),
         interactionSource = source,
-        shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = if (selected) white.copy(alpha = 0.18f) else Color.Transparent,
-                contentColor = white,
-                focusedContainerColor = white.copy(alpha = 0.22f),
-                focusedContentColor = white,
-                disabledContainerColor = Color.Transparent,
-                disabledContentColor = white,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border = ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, white), shape = CircleShape)),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             GlyphIcon(glyph, icon, white)
@@ -1154,19 +1135,15 @@ private fun PanelRow(
 ) {
     val touch = LocalTouch.current
     val source = remember { MutableInteractionSource() }
-    Surface(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp).tap(touch, source, onClick = onClick),
+    FocusSurface(
+        onClick,
+        modifier.fillMaxWidth().padding(horizontal = 8.dp).tap(touch, source, onClick = onClick),
+        RoundedCornerShape(10.dp),
+        Color.Transparent,
+        Palette.text,
+        Palette.tint(0.12f),
+        ring = null,
         interactionSource = source,
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Color.Transparent,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.12f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
     ) {
         Row(
             Modifier.fillMaxWidth()
@@ -1197,20 +1174,15 @@ private fun PanelRow(
 @Composable
 private fun QueueRow(card: MediaCard, playing: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
-    Surface(
-        onClick = onClick,
-        modifier =
-            modifier.fillMaxWidth().padding(horizontal = 8.dp).tap(LocalTouch.current, source, onClick = onClick),
+    FocusSurface(
+        onClick,
+        modifier.fillMaxWidth().padding(horizontal = 8.dp).tap(LocalTouch.current, source, onClick = onClick),
+        RoundedCornerShape(10.dp),
+        if (playing) Palette.tint(0.08f) else Color.Transparent,
+        Palette.text,
+        Palette.tint(0.12f),
+        ring = null,
         interactionSource = source,
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = if (playing) Palette.tint(0.08f) else Color.Transparent,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.12f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(8.dp),

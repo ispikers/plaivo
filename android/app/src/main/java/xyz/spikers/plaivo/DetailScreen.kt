@@ -450,22 +450,14 @@ private fun TextAction(label: String, onClick: () -> Unit) {
     val modifier = Modifier.padding(top = 8.dp).height(32.dp)
     if (LocalTouch.current)
         return Tap(onClick, modifier, CircleShape, Palette.tint(0.08f), Palette.text, content = content)
-    Surface(
-        onClick = onClick,
-        modifier = modifier,
-        shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Palette.tint(0.08f),
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.16f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(
-                focusedBorder = Border(BorderStroke(2.dp, Palette.text), inset = (-3).dp, shape = CircleShape)
-            ),
+    FocusSurface(
+        onClick,
+        modifier,
+        CircleShape,
+        Palette.tint(0.08f),
+        Palette.text,
+        Palette.tint(0.16f),
+        ringInset = (-3).dp,
     ) {
         Box(Modifier.fillMaxHeight(), contentAlignment = Alignment.Center, content = content)
     }
@@ -584,25 +576,15 @@ private fun StepButton(glyph: Glyph, label: String, key: String?, modifier: Modi
         if (key == null) return Box(look.clip(CircleShape).background(idle), content = icon)
         return Tap({ onClick(key) }, look, CircleShape, idle, Color.White, content = icon)
     }
-    Surface(
-        onClick = { key?.let(onClick) },
+    FocusSurface(
+        { key?.let(onClick) },
+        look,
+        CircleShape,
+        idle,
+        Color.White,
+        Color.Black.copy(alpha = 0.5f),
+        ringInset = (-3).dp,
         enabled = key != null,
-        modifier = look,
-        shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = idle,
-                contentColor = Color.White,
-                focusedContainerColor = Color.Black.copy(alpha = 0.5f),
-                focusedContentColor = Color.White,
-                disabledContainerColor = idle,
-                disabledContentColor = Color.White,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(
-                focusedBorder = Border(BorderStroke(2.dp, Palette.text), inset = (-3).dp, shape = CircleShape)
-            ),
         content = icon,
     )
 }
@@ -672,22 +654,14 @@ private fun PlayButton(label: String, progress: Float, modifier: Modifier, onCli
     }
     if (LocalTouch.current)
         return Tap(onClick, modifier.height(48.dp), CircleShape, Palette.text, Palette.bg, content = content)
-    Surface(
-        onClick = onClick,
-        modifier = modifier.height(48.dp),
-        shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Palette.text,
-                contentColor = Palette.bg,
-                focusedContainerColor = Palette.text,
-                focusedContentColor = Palette.bg,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(
-                focusedBorder = Border(BorderStroke(2.dp, Palette.text), inset = (-4).dp, shape = CircleShape)
-            ),
+    FocusSurface(
+        onClick,
+        modifier.height(48.dp),
+        CircleShape,
+        Palette.text,
+        Palette.bg,
+        Palette.text,
+        ringInset = (-4).dp,
         content = content,
     )
 }
@@ -710,23 +684,14 @@ private fun RoundAction(
         ) {
             GlyphIcon(glyph, 24.dp, Palette.text)
         }
-    Surface(
-        onClick = onClick,
-        modifier =
-            modifier.size(48.dp).onFocusChanged { if (it.isFocused) onHint(label) else if (!it.hasFocus) onHint("") },
-        shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Palette.tint(0.08f),
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.16f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(
-                focusedBorder = Border(BorderStroke(2.dp, Palette.text), inset = (-3).dp, shape = CircleShape)
-            ),
+    FocusSurface(
+        onClick,
+        modifier.size(48.dp).onFocusChanged { if (it.isFocused) onHint(label) else if (!it.hasFocus) onHint("") },
+        CircleShape,
+        Palette.tint(0.08f),
+        Palette.text,
+        Palette.tint(0.16f),
+        ringInset = (-3).dp,
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { GlyphIcon(glyph, 24.dp, Palette.text) }
     }
@@ -794,21 +759,14 @@ private fun EpisodeRow(card: MediaCard, edge: Dp, onClick: () -> Unit) {
         }
     }
     if (LocalTouch.current) return Tap(onClick, modifier, rowShape, Palette.bg, Palette.text, onLongClick, content)
-    Surface(
-        onClick = onClick,
+    FocusSurface(
+        onClick,
+        modifier,
+        rowShape,
+        Palette.bg,
+        Palette.text,
+        Palette.tint(0.08f),
         onLongClick = onLongClick,
-        modifier = modifier,
-        shape = ClickableSurfaceDefaults.shape(rowShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Palette.bg,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.08f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = rowShape)),
         content = content,
     )
 }

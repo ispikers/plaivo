@@ -49,9 +49,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.tv.material3.Border
-import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -265,23 +262,14 @@ fun ActionButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifie
         ) {
             Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.text)
         }
-    Surface(
-        onClick = { if (enabled) onClick() },
-        modifier = modifier.height(44.dp).alpha(if (enabled) 1f else 0.4f),
-        shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Palette.surface,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.12f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(
-                border = Border(BorderStroke(1.dp, Palette.outline), shape = CircleShape),
-                focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = CircleShape),
-            ),
+    FocusSurface(
+        { if (enabled) onClick() },
+        modifier.height(44.dp).alpha(if (enabled) 1f else 0.4f),
+        CircleShape,
+        Palette.surface,
+        Palette.text,
+        Palette.tint(0.12f),
+        outline = Palette.outline,
     ) {
         Box(Modifier.fillMaxHeight().padding(horizontal = 20.dp), contentAlignment = Alignment.Center) {
             Text(text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)

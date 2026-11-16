@@ -40,8 +40,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import uniffi.plaivo_ffi.Section
 
@@ -230,20 +228,15 @@ private fun NavItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(36.dp),
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(9.dp)),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = if (selected) Palette.tint(0.10f) else Color.Transparent,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(if (selected) 0.15f else 0.12f),
-                focusedContentColor = Palette.text,
-                pressedContainerColor = Palette.tint(0.15f),
-                pressedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+    FocusSurface(
+        onClick,
+        modifier.fillMaxWidth().height(36.dp),
+        RoundedCornerShape(9.dp),
+        if (selected) Palette.tint(0.10f) else Color.Transparent,
+        Palette.text,
+        Palette.tint(if (selected) 0.15f else 0.12f),
+        ring = null,
+        pressedColor = Palette.tint(0.15f),
     ) {
         Row(
             Modifier.fillMaxSize().padding(start = 12.dp),

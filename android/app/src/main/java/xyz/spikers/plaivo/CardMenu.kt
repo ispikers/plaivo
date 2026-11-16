@@ -3,7 +3,6 @@ package xyz.spikers.plaivo
 import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -45,9 +44,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.tv.material3.Border
-import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Action
@@ -340,23 +336,7 @@ private fun StarButton(filled: Boolean, modifier: Modifier, onClick: () -> Unit)
         return Tap(onClick, modifier.size(52.dp), CircleShape, Palette.surface, Palette.text) {
             GlyphIcon(if (filled) Glyph.Star else Glyph.StarBorder, 28.dp, Palette.text)
         }
-    Surface(
-        onClick = onClick,
-        modifier = modifier.size(52.dp),
-        shape = ClickableSurfaceDefaults.shape(CircleShape),
-        colors =
-            ClickableSurfaceDefaults.colors(
-                containerColor = Palette.surface,
-                contentColor = Palette.text,
-                focusedContainerColor = Palette.tint(0.12f),
-                focusedContentColor = Palette.text,
-            ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        border =
-            ClickableSurfaceDefaults.border(
-                focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = CircleShape)
-            ),
-    ) {
+    FocusSurface(onClick, modifier.size(52.dp), CircleShape, Palette.surface, Palette.text, Palette.tint(0.12f)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             GlyphIcon(if (filled) Glyph.Star else Glyph.StarBorder, 28.dp, Palette.text)
         }

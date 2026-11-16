@@ -34,12 +34,15 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Border
 import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
+import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.LocalContentColor
+import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import uniffi.plaivo_ffi.Card as MediaCard
@@ -221,4 +224,50 @@ internal fun Tap(
     ) {
         CompositionLocalProvider(LocalContentColor provides contentColor) { content() }
     }
+}
+
+@Composable
+internal fun FocusSurface(
+    onClick: () -> Unit,
+    modifier: Modifier,
+    shape: Shape,
+    color: Color,
+    contentColor: Color,
+    focusedColor: Color,
+    ring: Color? = Palette.text,
+    ringInset: Dp = 0.dp,
+    outline: Color? = null,
+    pressedColor: Color = focusedColor,
+    enabled: Boolean = true,
+    onLongClick: (() -> Unit)? = null,
+    interactionSource: MutableInteractionSource? = null,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val idle = outline?.let { Border(BorderStroke(1.dp, it), shape = shape) } ?: Border.None
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        onLongClick = onLongClick,
+        enabled = enabled,
+        shape = ClickableSurfaceDefaults.shape(shape),
+        colors =
+            ClickableSurfaceDefaults.colors(
+                containerColor = color,
+                contentColor = contentColor,
+                focusedContainerColor = focusedColor,
+                focusedContentColor = contentColor,
+                pressedContainerColor = pressedColor,
+                pressedContentColor = contentColor,
+                disabledContainerColor = color,
+                disabledContentColor = contentColor,
+            ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        border =
+            ClickableSurfaceDefaults.border(
+                border = idle,
+                focusedBorder = ring?.let { Border(BorderStroke(2.dp, it), inset = ringInset, shape = shape) } ?: idle,
+            ),
+        interactionSource = interactionSource,
+        content = content,
+    )
 }

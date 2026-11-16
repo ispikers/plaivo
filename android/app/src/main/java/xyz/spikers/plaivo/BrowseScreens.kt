@@ -71,9 +71,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.tv.material3.Border
-import androidx.tv.material3.ClickableSurfaceDefaults
-import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.Job
@@ -467,24 +464,15 @@ fun Chips(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         labels.forEachIndexed { i, label ->
             val on = i == selected
-            Surface(
-                onClick = { onSelect(i) },
-                modifier = Modifier.height(36.dp),
-                shape = ClickableSurfaceDefaults.shape(CircleShape),
-                colors =
-                    ClickableSurfaceDefaults.colors(
-                        containerColor = if (on) Palette.text else Palette.surface,
-                        contentColor = if (on) Palette.bg else Palette.text,
-                        focusedContainerColor = if (on) Palette.text else Palette.tint(0.12f),
-                        focusedContentColor = if (on) Palette.bg else Palette.text,
-                    ),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-                border =
-                    ClickableSurfaceDefaults.border(
-                        border =
-                            Border(BorderStroke(1.dp, if (on) Palette.text else Palette.outline), shape = CircleShape),
-                        focusedBorder = Border(BorderStroke(2.dp, Palette.text), inset = (-3).dp, shape = CircleShape),
-                    ),
+            FocusSurface(
+                { onSelect(i) },
+                Modifier.height(36.dp),
+                CircleShape,
+                if (on) Palette.text else Palette.surface,
+                if (on) Palette.bg else Palette.text,
+                if (on) Palette.text else Palette.tint(0.12f),
+                ringInset = (-3).dp,
+                outline = if (on) Palette.text else Palette.outline,
             ) {
                 Box(Modifier.fillMaxHeight().padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
                     Text(label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -555,24 +543,14 @@ private fun PosterList(
                         ListRow(card, look, scale)
                     }
                 else
-                    Surface(
-                        onClick = { play(card) },
+                    FocusSurface(
+                        { play(card) },
+                        if (i == 0) Modifier.fillMaxWidth().focusRequester(first) else Modifier.fillMaxWidth(),
+                        shape,
+                        Palette.bg,
+                        Palette.text,
+                        Palette.tint(0.08f),
                         onLongClick = menu?.let { { it(card) } },
-                        modifier =
-                            if (i == 0) Modifier.fillMaxWidth().focusRequester(first) else Modifier.fillMaxWidth(),
-                        shape = ClickableSurfaceDefaults.shape(shape),
-                        colors =
-                            ClickableSurfaceDefaults.colors(
-                                containerColor = Palette.bg,
-                                contentColor = Palette.text,
-                                focusedContainerColor = Palette.tint(0.08f),
-                                focusedContentColor = Palette.text,
-                            ),
-                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-                        border =
-                            ClickableSurfaceDefaults.border(
-                                focusedBorder = Border(BorderStroke(2.dp, Palette.text), shape = shape)
-                            ),
                     ) {
                         ListRow(card, look, scale)
                     }
