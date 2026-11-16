@@ -9,6 +9,8 @@ const RECENT_SEARCHES: usize = 8;
 const RECENT_ROOMS: usize = 5;
 pub const COUNTDOWN_MAX: u32 = 30;
 pub const DENSITY_MAX: u32 = 5;
+pub const DENSITY_LABELS: [&str; DENSITY_MAX as usize] =
+    ["Smallest", "Small", "Medium", "Large", "Largest"];
 pub const SKIP_DELAY_MAX: i32 = 15;
 pub const AUTO_SKIP_NOTICE: f64 = 7.0;
 pub const SUBTITLE_COLORS: [(&str, &str); 4] = [
@@ -473,6 +475,10 @@ impl Settings {
         }
     }
 
+    pub fn density_label(&self) -> &'static str {
+        DENSITY_LABELS[self.density.clamp(1, DENSITY_MAX) as usize - 1]
+    }
+
     pub fn card_scale(&self) -> f32 {
         1.0 + (self.density.clamp(1, DENSITY_MAX) as f32 - 3.0) * 0.15
     }
@@ -831,6 +837,21 @@ mod tests {
         assert_eq!(at(3), 1.0);
         assert!(at(1) < at(2) && at(2) < at(3) && at(3) < at(4) && at(4) < at(5));
         assert_eq!((at(0), at(9)), (at(1), at(5)));
+    }
+
+    #[test]
+    fn density_labels_clamp() {
+        let label = |density| {
+            Settings {
+                density,
+                ..Default::default()
+            }
+            .density_label()
+        };
+        assert_eq!(
+            (label(0), label(3), label(9)),
+            ("Smallest", "Medium", "Largest")
+        );
     }
 
     #[test]

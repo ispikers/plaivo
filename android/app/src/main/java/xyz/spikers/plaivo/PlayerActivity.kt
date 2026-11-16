@@ -51,7 +51,7 @@ import uniffi.plaivo_ffi.LanguagePrefs
 import uniffi.plaivo_ffi.LanguageRule
 import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.Playback
-import uniffi.plaivo_ffi.Scale as CoreScale
+import uniffi.plaivo_ffi.Scale
 import uniffi.plaivo_ffi.Settings
 import uniffi.plaivo_ffi.SkipMarker
 import uniffi.plaivo_ffi.SkipMode
@@ -60,16 +60,29 @@ import uniffi.plaivo_ffi.TrackInfo
 import uniffi.plaivo_ffi.TrackRequest
 import uniffi.plaivo_ffi.WatchCommand
 import uniffi.plaivo_ffi.WatchFeed
+import uniffi.plaivo_ffi.nextScale
 import uniffi.plaivo_ffi.pickTracks
+import uniffi.plaivo_ffi.scaleLabel
 import uniffi.plaivo_ffi.setPlaybackQuality
 
-enum class Scale(val label: String, val glyph: Glyph, val resize: Int) {
-    Fit("Letterbox", Glyph.ScaleFit, AspectRatioFrameLayout.RESIZE_MODE_FIT),
-    Fill("Fill screen", Glyph.ScaleFill, AspectRatioFrameLayout.RESIZE_MODE_ZOOM),
-    Stretch("Stretch", Glyph.ScaleStretch, AspectRatioFrameLayout.RESIZE_MODE_FILL);
+val Scale.label
+    get() = scaleLabel(this)
 
-    fun next() = entries[(ordinal + 1) % entries.size]
-}
+val Scale.glyph
+    get() =
+        when (this) {
+            Scale.FIT -> Glyph.ScaleFit
+            Scale.FILL -> Glyph.ScaleFill
+            Scale.STRETCH -> Glyph.ScaleStretch
+        }
+
+val Scale.resize
+    get() =
+        when (this) {
+            Scale.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+            Scale.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            Scale.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+        }
 
 private const val UP_NEXT_LEAD_MS = 30_000L
 private const val WATCH_FEED_MS = 500L
@@ -99,7 +112,7 @@ class PlayerActivity : ComponentActivity() {
     var queue by mutableStateOf<List<MediaCard>>(emptyList())
         private set
 
-    var scale by mutableStateOf(Scale.Fit)
+    var scale by mutableStateOf(Scale.FIT)
         private set
 
     var speed by mutableFloatStateOf(1f)
@@ -164,7 +177,7 @@ class PlayerActivity : ComponentActivity() {
         val key = intent.getStringExtra("key") ?: return finish()
         version = intent.getIntExtra("version", 0)
         quality = prefs.quality.toInt()
-        scale = Scale.entries[prefs.scale.ordinal]
+        scale = prefs.scale
         val renderers =
             DefaultRenderersFactory(this).setMediaCodecSelector { mime, secure, tunneling ->
                 // the emulator's host-backed decoders fail mid-stream; its software ones work
@@ -573,8 +586,8 @@ class PlayerActivity : ComponentActivity() {
     }
 
     fun cycleScale(): Scale {
-        scale = scale.next()
-        editSettings { it.copy(scale = CoreScale.entries[scale.ordinal]) }
+        scale = nextScale(scale)
+        editSettings { it.copy(scale = scale) }
         return scale
     }
 

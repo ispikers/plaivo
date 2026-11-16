@@ -36,7 +36,6 @@ const CATEGORIES: [Category; 8] = [
     Category::Advanced,
     Category::About,
 ];
-const DENSITY: [&str; DENSITY_MAX as usize] = ["Smallest", "Small", "Medium", "Large", "Largest"];
 
 pub fn nudge(value: u32, step: i8, by: u32, lo: u32, hi: u32, default: u32) -> u32 {
     if step == 0 {
@@ -44,10 +43,6 @@ pub fn nudge(value: u32, step: i8, by: u32, lo: u32, hi: u32, default: u32) -> u
     } else {
         (value as i64 + step as i64 * by as i64).clamp(lo as i64, hi as i64) as u32
     }
-}
-
-fn density_label(density: u32) -> &'static str {
-    DENSITY[density.clamp(1, DENSITY_MAX) as usize - 1]
 }
 
 impl Plaivo {
@@ -77,7 +72,7 @@ impl Plaivo {
             Category::Appearance => format!(
                 "Theme: {} · Library density: {}",
                 self.settings.theme.label(),
-                density_label(self.settings.density)
+                self.settings.density_label()
             ),
             Category::Playback => format!(
                 "Default quality: {} · Autoplay {}",
@@ -1085,9 +1080,5 @@ mod tests {
         assert_eq!(nudge(5, -1, 5, 5, 60, 10), 5);
         assert_eq!(nudge(0, -1, 1, 0, 30, 5), 0);
         assert_eq!(nudge(25, 0, 5, 5, 60, 10), 10);
-        assert_eq!(
-            (density_label(0), density_label(3), density_label(9)),
-            ("Smallest", "Medium", "Largest")
-        );
     }
 }

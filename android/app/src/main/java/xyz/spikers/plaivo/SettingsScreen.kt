@@ -82,14 +82,20 @@ import uniffi.plaivo_ffi.Status
 import uniffi.plaivo_ffi.SubtitleMode
 import uniffi.plaivo_ffi.Theme as CoreTheme
 import uniffi.plaivo_ffi.ViewMode
+import uniffi.plaivo_ffi.densityLabels
+import uniffi.plaivo_ffi.episodePosterLabel
+import uniffi.plaivo_ffi.gridSpacingLabel
 import uniffi.plaivo_ffi.hideLibrary
 import uniffi.plaivo_ffi.hideServer
 import uniffi.plaivo_ffi.languageName
 import uniffi.plaivo_ffi.languages
 import uniffi.plaivo_ffi.moveLibrary
+import uniffi.plaivo_ffi.skipModeLabel
 import uniffi.plaivo_ffi.subtitleColors
 import uniffi.plaivo_ffi.subtitleModeLabel
+import uniffi.plaivo_ffi.themeLabel
 import uniffi.plaivo_ffi.validRelay
+import uniffi.plaivo_ffi.viewModeLabel
 
 private enum class Picker {
     Theme,
@@ -194,14 +200,14 @@ private val SUBTITLE_BACKGROUNDS = listOf(0u, 25u, 50u, 75u, 100u)
 private val SUBTITLE_POSITIONS = (50u..100u step 5).reversed().toList()
 private val SUBTITLE_COLORS = subtitleColors()
 private val accountWrites = Mutex()
-private val DENSITIES = listOf("Smallest", "Small", "Medium", "Large", "Largest")
+private val DENSITIES = densityLabels()
 
 private fun <T> List<T>.after(value: T) = this[(indexOf(value) + 1) % size]
 
 private fun densityLabel(density: UInt) = DENSITIES[density.toInt().coerceIn(1, DENSITIES.size) - 1]
 
 private val SkipMode.label
-    get() = name.lowercase().replaceFirstChar { it.uppercase() }
+    get() = skipModeLabel(this)
 
 private fun ruleTargets(ids: List<String>, libraries: List<Section>) =
     ids.map { id -> libraries.firstOrNull { it.id == id }?.title ?: "Missing library" }.joinToString()
@@ -215,21 +221,16 @@ private fun ruleDetail(r: LanguageRule) =
         .joinToString(" · ")
 
 private val CoreTheme.label
-    get() = if (this == CoreTheme.OLED) "OLED" else name.lowercase().replaceFirstChar { it.uppercase() }
+    get() = themeLabel(this)
 
 private val ViewMode.label
-    get() = name.lowercase().replaceFirstChar { it.uppercase() }
+    get() = viewModeLabel(this)
 
 private val GridSpacing.label
-    get() = name.lowercase().replaceFirstChar { it.uppercase() }
+    get() = gridSpacingLabel(this)
 
 private val EpisodePoster.label
-    get() =
-        when (this) {
-            EpisodePoster.SERIES -> "Series poster"
-            EpisodePoster.SEASON -> "Season poster"
-            EpisodePoster.THUMBNAIL -> "Thumbnail"
-        }
+    get() = episodePosterLabel(this)
 
 @Composable
 private fun LibraryPicker(

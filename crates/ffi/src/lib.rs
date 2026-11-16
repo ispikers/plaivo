@@ -6,8 +6,9 @@ use plaivo_core::plex::{
 };
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{
-    AUTO_SKIP_NOTICE, BLUR_PARAM, CardPrefs, EpisodePoster, GridSpacing, HomeClock, PlaybackRule,
-    SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key, rank_in,
+    AUTO_SKIP_NOTICE, BLUR_PARAM, CardPrefs, DENSITY_LABELS, EpisodePoster, GridSpacing, HomeClock,
+    PlaybackRule, SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key,
+    rank_in,
 };
 use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
 use plaivo_core::{Account, detail, first, jellyfin, join, store};
@@ -2090,6 +2091,46 @@ pub fn language_name(code: String) -> String {
 #[uniffi::export]
 pub fn subtitle_mode_label(mode: SubtitleMode) -> String {
     mode.label().into()
+}
+
+#[uniffi::export]
+pub fn skip_mode_label(mode: SkipMode) -> String {
+    mode.label().into()
+}
+
+#[uniffi::export]
+pub fn theme_label(theme: Theme) -> String {
+    theme.label().into()
+}
+
+#[uniffi::export]
+pub fn view_mode_label(mode: ViewMode) -> String {
+    mode.label().into()
+}
+
+#[uniffi::export]
+pub fn grid_spacing_label(spacing: GridSpacing) -> String {
+    spacing.label().into()
+}
+
+#[uniffi::export]
+pub fn episode_poster_label(poster: EpisodePoster) -> String {
+    poster.label().into()
+}
+
+#[uniffi::export]
+pub fn scale_label(scale: Scale) -> String {
+    scale.label().into()
+}
+
+#[uniffi::export]
+pub fn next_scale(scale: Scale) -> Scale {
+    scale.next()
+}
+
+#[uniffi::export]
+pub fn density_labels() -> Vec<String> {
+    DENSITY_LABELS.iter().map(|&l| l.into()).collect()
 }
 
 #[uniffi::export]
