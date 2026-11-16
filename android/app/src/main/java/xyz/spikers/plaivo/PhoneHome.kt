@@ -237,7 +237,7 @@ private fun Hero(cards: List<MediaCard>, open: (MediaCard) -> Unit, modifier: Mo
             )
         }
     Box(modifier) {
-        HorizontalPager(pager, Modifier.fillMaxSize(), key = { cards[it].key }) { page ->
+        HorizontalPager(pager, Modifier.fillMaxSize(), key = { "${cards[it].server}/${cards[it].key}" }) { page ->
             val card = cards[page]
             HeroPage(card, scrim, { open(card) }) { play(card) }
         }
