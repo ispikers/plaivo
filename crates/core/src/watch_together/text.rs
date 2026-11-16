@@ -19,7 +19,7 @@ impl PartyError {
             "relay_full" => "The Watch Together servers are busy. Try again soon.",
             "unreachable" => "Couldn't reach the Watch Together server.",
             "forbidden" | "not_host" => "Only the host can do that in this room.",
-            "not_in_room" => "Join a room first.",
+            "not_in_room" => "You're not connected to the room right now.",
             "already_in_room" => "You're already in a room.",
             _ => "Watch Together ran into a problem.",
         })

@@ -58,6 +58,25 @@ enum Cmd {
     Shutdown,
 }
 
+impl Cmd {
+    fn wire_type(&self) -> Option<&'static str> {
+        Some(match self {
+            Cmd::Play => "play",
+            Cmd::Pause => "pause",
+            Cmd::Seek(_) => "seek",
+            Cmd::Rate(_) => "rate",
+            Cmd::SetMedia(..) => "setMedia",
+            Cmd::ClearMedia => "clearMedia",
+            Cmd::Control(_) => "setControl",
+            Cmd::TransferHost(_) => "transferHost",
+            Cmd::Kick(_) => "kick",
+            Cmd::Lock(_) => "lock",
+            Cmd::End => "end",
+            _ => return None,
+        })
+    }
+}
+
 pub struct WatchTogether {
     tx: Sender<Cmd>,
     alive: Arc<AtomicBool>,
@@ -296,6 +315,7 @@ impl Io {
 
     fn handle(&mut self, cmd: Cmd) -> bool {
         let now = self.now();
+        let re = cmd.wire_type();
         let result = match cmd {
             Cmd::Create => self.party.start(Request::Create, now).map(|_| {
                 let urls: Vec<String> = self.relays.list.iter().map(|r| r.url.clone()).collect();
@@ -375,7 +395,10 @@ impl Io {
                 return false;
             }
         };
-        if let Err(e) = result {
+        if let Err(mut e) = result {
+            if e.re.is_none() {
+                e.re = re.map(Into::into);
+            }
             let event = if matches!(e.code.as_str(), "invalid_code" | "already_in_room") {
                 Event::Failed(e)
             } else {
@@ -773,6 +796,27 @@ mod tests {
         assert!(h.opens().is_empty());
         assert_eq!(h.failure().as_deref(), Some("room_not_found"));
         assert!(h.gone());
+    }
+
+    #[test]
+    fn refused_commands_name_the_command_they_refused() {
+        let mut h = Harness::new(offline);
+        h.cmd(Cmd::Pause);
+        h.cmd(Cmd::Kick("p2".into()));
+        let refused: Vec<Option<String>> = h
+            .updates
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|u| match u {
+                Update::Event(e @ Event::Error(err)) => {
+                    assert!(e.text(&PartyState::default()).is_some());
+                    Some(err.re.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(refused, [Some("pause".into()), Some("kick".into())]);
     }
 
     #[test]
