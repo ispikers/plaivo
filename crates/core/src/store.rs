@@ -99,7 +99,7 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> bool {
     result.is_ok()
 }
 
-pub struct Writes {
+pub(crate) struct Writes {
     issued: AtomicU64,
     written: Mutex<u64>,
 }
