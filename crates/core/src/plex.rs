@@ -173,6 +173,20 @@ pub struct PersonInfo {
     pub known_for: Vec<Item>,
 }
 
+impl PersonInfo {
+    pub fn facts(&self) -> Vec<(&'static str, String)> {
+        [
+            ("Born", &self.born),
+            ("Died", &self.died),
+            ("Birthplace", &self.birthplace),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| (k, v.clone()))
+        .collect()
+    }
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct People {
@@ -689,6 +703,41 @@ impl Item {
             .strip_prefix("plex://")
             .and_then(|g| g.rsplit('/').next())
             .filter(|id| !id.is_empty())
+    }
+
+    pub fn meta_line(&self) -> String {
+        let kind = match self.kind.as_str() {
+            "movie" => "Movie",
+            "show" => "TV Show",
+            _ => "",
+        };
+        join(&[
+            kind.into(),
+            self.audience_rating
+                .map(|r| format!("★ {r:.1}"))
+                .unwrap_or_default(),
+            self.content_rating.clone(),
+            self.year.map(|y| y.to_string()).unwrap_or_default(),
+        ])
+    }
+
+    pub fn episode_title(&self) -> String {
+        format!("{}. {}", self.index.unwrap_or(0), self.title)
+    }
+
+    pub fn episode_meta(&self) -> String {
+        join(&[
+            self.duration.map(fmt_duration).unwrap_or_default(),
+            self.originally_available_at.clone(),
+        ])
+    }
+
+    pub fn cast(&self) -> &[Person] {
+        &self.role[..self.role.len().min(40)]
+    }
+
+    pub fn top_genres(&self) -> impl Iterator<Item = &str> {
+        self.genre.iter().take(4).map(|t| t.tag.as_str())
     }
 
     pub fn episode_label(&self) -> String {
@@ -1816,13 +1865,14 @@ impl Server {
     }
 
     pub fn related(&self, c: &Ctx, key: &str) -> R<Vec<Hub>> {
-        if self.is_jellyfin() {
-            return jellyfin::related(self, c, key);
-        }
-        let mut hubs = self
-            .get::<Container>(c, &format!("/library/metadata/{key}/related?count=20"))?
-            .hub;
+        let mut hubs = if self.is_jellyfin() {
+            jellyfin::related(self, c, key)?
+        } else {
+            self.get::<Container>(c, &format!("/library/metadata/{key}/related?count=20"))?
+                .hub
+        };
         hubs.retain(|h| !h.metadata.is_empty());
+        hubs.truncate(3);
         Ok(hubs)
     }
 
@@ -2350,6 +2400,37 @@ pub fn fmt_bitrate(kbps: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_text_lines_skip_missing_parts() {
+        let movie = Item {
+            kind: "movie".into(),
+            audience_rating: Some(8.0),
+            year: Some(2010),
+            ..Default::default()
+        };
+        assert_eq!(movie.meta_line(), "Movie · ★ 8.0 · 2010");
+        let ep = Item {
+            title: "Pilot".into(),
+            index: Some(1),
+            duration: Some(3_000_000),
+            ..Default::default()
+        };
+        assert_eq!(ep.episode_title(), "1. Pilot");
+        assert_eq!(ep.episode_meta(), "50m");
+        let person = PersonInfo {
+            born: "1970".into(),
+            birthplace: "Oslo".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            person.facts(),
+            [
+                ("Born", "1970".to_owned()),
+                ("Birthplace", "Oslo".to_owned())
+            ]
+        );
+    }
 
     #[test]
     fn discover_part_and_stream_ids_are_not_numbers() {

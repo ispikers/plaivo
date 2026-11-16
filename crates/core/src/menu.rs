@@ -36,6 +36,18 @@ impl Action {
             Action::Season => "View season",
         }
     }
+
+    pub fn done(self) -> Option<&'static str> {
+        Some(match self {
+            Action::MarkWatched => "Marked as watched",
+            Action::MarkUnwatched => "Marked as unwatched",
+            Action::ClearProgress => "Removed from Continue Watching",
+            Action::Download => "Added to downloads",
+            Action::AddToWatchlist => "Added to watchlist",
+            Action::RemoveFromWatchlist => "Removed from watchlist",
+            _ => return None,
+        })
+    }
 }
 
 pub struct Context {

@@ -689,11 +689,6 @@ fn card_with(
     let art = prefs.art(it, wide);
     let (w, h) = if wide { (480, 270) } else { (300, 450) };
     let backdrop = first(&[&it.art, &it.grandparent_art]);
-    let kind = match it.kind.as_str() {
-        "movie" => "Movie",
-        "show" => "TV Show",
-        _ => "",
-    };
     Card {
         server: server.to_owned(),
         key: it.rating_key.clone(),
@@ -704,14 +699,7 @@ fn card_with(
         backdrop: (!backdrop.is_empty())
             .then(|| image(backdrop, 1920, 1080))
             .flatten(),
-        meta: join(&[
-            kind.into(),
-            it.audience_rating
-                .map(|r| format!("★ {r:.1}"))
-                .unwrap_or_default(),
-            it.content_rating.clone(),
-            it.year.map(|y| y.to_string()).unwrap_or_default(),
-        ]),
+        meta: it.meta_line(),
         summary: if prefs.spoiler(it) {
             String::new()
         } else {
@@ -1303,7 +1291,7 @@ impl Plaivo {
                     value,
                 })
                 .collect(),
-            genres: it.genre.iter().take(4).map(|t| t.tag.clone()).collect(),
+            genres: it.top_genres().map(str::to_owned).collect(),
             summary: it.summary.clone(),
             play_key: summary.play_key,
             play_label: summary.play_label,
@@ -1322,9 +1310,8 @@ impl Plaivo {
                 })
                 .collect(),
             cast: it
-                .role
+                .cast()
                 .iter()
-                .take(40)
                 .map(|p| CastMember {
                     id: p.id.clone(),
                     name: p.tag.clone(),
@@ -1420,23 +1407,19 @@ impl Plaivo {
             chips: Vec::new(),
             ratings: Vec::new(),
             genres: Vec::new(),
-            summary: info.summary,
+            summary: info.summary.clone(),
             play_key: String::new(),
             play_label: String::new(),
             progress: 0.,
             media_line: String::new(),
-            info: [
-                ("Born", info.born),
-                ("Died", info.died),
-                ("Birthplace", info.birthplace),
-            ]
-            .into_iter()
-            .filter(|(_, v)| !v.is_empty())
-            .map(|(label, value)| InfoLine {
-                label: label.into(),
-                value,
-            })
-            .collect(),
+            info: info
+                .facts()
+                .into_iter()
+                .map(|(label, value)| InfoLine {
+                    label: label.into(),
+                    value,
+                })
+                .collect(),
             cast: Vec::new(),
             extras: Vec::new(),
             seasons: Vec::new(),
@@ -1470,11 +1453,8 @@ impl Plaivo {
             .episodes(&ctx, &season_key)?
             .iter()
             .map(|e| Card {
-                title: format!("{}. {}", e.index.unwrap_or(0), e.title),
-                meta: join(&[
-                    e.duration.map(plex::fmt_duration).unwrap_or_default(),
-                    e.originally_available_at.clone(),
-                ]),
+                title: e.episode_title(),
+                meta: e.episode_meta(),
                 ..card(&srv, e, true, &prefs)
             })
             .collect())
@@ -1511,7 +1491,7 @@ impl Plaivo {
         }
         let srv = self.server(&server_id)?;
         let hubs = srv.related(&Ctx::new(self.client.clone(), Source::Network), &key)?;
-        Ok(rows(&srv, &hubs[..hubs.len().min(3)], &self.card_prefs()))
+        Ok(rows(&srv, &hubs, &self.card_prefs()))
     }
 
     pub fn item_menu(&self, server_id: String, key: String) -> R<ItemMenu> {
@@ -1547,21 +1527,11 @@ impl Plaivo {
 
     pub fn menu_action(&self, server_id: String, key: String, action: Action) -> R<String> {
         let srv = self.server(&server_id)?;
-        Ok(match action {
+        match action {
             Action::MarkWatched | Action::MarkUnwatched => {
-                let on = action == Action::MarkWatched;
-                srv.set_watched(&self.client, &key, on)?;
-                if on {
-                    "Marked as watched"
-                } else {
-                    "Marked as unwatched"
-                }
-                .into()
+                srv.set_watched(&self.client, &key, action == Action::MarkWatched)?
             }
-            Action::ClearProgress => {
-                srv.remove_from_continue_watching(&self.client, &key)?;
-                "Removed from Continue Watching".into()
-            }
+            Action::ClearProgress => srv.remove_from_continue_watching(&self.client, &key)?,
             Action::AddToWatchlist | Action::RemoveFromWatchlist => {
                 let on = action == Action::AddToWatchlist;
                 let token = self
@@ -1576,20 +1546,15 @@ impl Plaivo {
                     &token,
                     it.plex_guid().ok_or("This title has no Plex ID")?,
                     on,
-                )?;
-                if on {
-                    "Added to watchlist"
-                } else {
-                    "Removed from watchlist"
-                }
-                .into()
+                )?
             }
             _ => {
                 return Err(PlaivoError::Failed(
                     "This action opens on the device".into(),
                 ));
             }
-        })
+        }
+        Ok(action.done().unwrap_or_default().into())
     }
 
     pub fn rate(&self, server_id: String, key: String, stars: Option<u8>) -> R<()> {
@@ -2419,17 +2384,6 @@ impl Plaivo {
                 .insert((server.to_owned(), it.rating_key.clone()), (m, show));
         }
         let media = it.media.first();
-        let resolution = match media
-            .map(|m| m.video_resolution.to_ascii_lowercase())
-            .unwrap_or_default()
-            .as_str()
-        {
-            "" => String::new(),
-            "4k" => "4K".into(),
-            "sd" => "SD".into(),
-            r if r.chars().all(|c| c.is_ascii_digit()) => format!("{r}p"),
-            r => r.to_uppercase(),
-        };
         Playback {
             url,
             server: server.to_owned(),
@@ -2450,7 +2404,9 @@ impl Plaivo {
                     .and_then(|m| m.bitrate)
                     .map(fmt_bitrate)
                     .unwrap_or_default(),
-                resolution,
+                media
+                    .map(|m| plex::fmt_resolution(&m.video_resolution))
+                    .unwrap_or_default(),
             ]),
             transcode_session,
             transcode_label,

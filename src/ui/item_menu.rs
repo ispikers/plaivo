@@ -435,7 +435,7 @@ impl Plaivo {
                     move || srv.remove_from_continue_watching(&c, &key),
                     move |this, r, cx| match r {
                         Ok(()) => {
-                            this.toast("Removed from Continue Watching", cx);
+                            this.toast(act.done().unwrap_or_default(), cx);
                             this.load_home(cx);
                             this.refresh_page(cx);
                         }
@@ -458,14 +458,7 @@ impl Plaivo {
                     move || srv.set_watched(&c, &key, on),
                     move |this, r, cx| match r {
                         Ok(()) => {
-                            this.toast(
-                                if on {
-                                    "Marked as watched"
-                                } else {
-                                    "Marked as unwatched"
-                                },
-                                cx,
-                            );
+                            this.toast(act.done().unwrap_or_default(), cx);
                             this.refresh_page(cx);
                         }
                         Err(e) => this.toast(format!("Could not update: {e}"), cx),
@@ -497,7 +490,7 @@ impl Plaivo {
                     return;
                 };
                 self.with_downloads(cx, move |d| d.enqueue(&srv, &it));
-                self.toast("Added to downloads", cx);
+                self.toast(act.done().unwrap_or_default(), cx);
             }
             Action::AddToWatchlist | Action::RemoveFromWatchlist => {
                 let on = act == Action::AddToWatchlist;
@@ -514,14 +507,7 @@ impl Plaivo {
                     move |this, r, cx| match r {
                         Ok(()) => {
                             this.set_watchlisted_state(&key, on);
-                            this.toast(
-                                if on {
-                                    "Added to watchlist"
-                                } else {
-                                    "Removed from watchlist"
-                                },
-                                cx,
-                            );
+                            this.toast(act.done().unwrap_or_default(), cx);
                         }
                         Err(e) => this.toast(format!("Could not update the watchlist: {e}"), cx),
                     },

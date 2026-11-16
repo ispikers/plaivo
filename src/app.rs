@@ -510,7 +510,7 @@ pub fn episode_card(e: &Item, server: &str) -> Card {
     let mut card = card_for(e, true, server);
     let hide = card_prefs().spoiler(e);
     if e.kind == "episode" {
-        card.title = format!("{}. {}", e.index.unwrap_or(0), e.title).into();
+        card.title = e.episode_title().into();
         card.thumb = thumb(server, &e.thumb).map(|t| Thumb { blur: hide, ..t });
     }
     card.summary = if hide {
@@ -518,31 +518,14 @@ pub fn episode_card(e: &Item, server: &str) -> Card {
     } else {
         e.summary.clone().into()
     };
-    card.meta = join(&[
-        e.duration.map(plex::fmt_duration).unwrap_or_default(),
-        e.originally_available_at.clone(),
-    ])
-    .into();
+    card.meta = e.episode_meta().into();
     card
 }
 
 fn hero_card(it: &Item, server: &str) -> Card {
     let mut card = card_for(it, true, server);
-    let kind = match it.kind.as_str() {
-        "movie" => "Movie",
-        "show" => "TV Show",
-        _ => "",
-    };
     card.title = first(&[&it.grandparent_title, &it.title]).to_owned().into();
-    card.meta = join(&[
-        kind.into(),
-        it.audience_rating
-            .map(|r| format!("★ {r:.1}"))
-            .unwrap_or_default(),
-        it.content_rating.clone(),
-        it.year.map(|y| y.to_string()).unwrap_or_default(),
-    ])
-    .into();
+    card.meta = it.meta_line().into();
     card.summary = it.summary.clone().into();
     card.thumb = thumb(server, first(&[&it.art, &it.grandparent_art]));
     card
@@ -2568,15 +2551,11 @@ impl Plaivo {
         .into_iter()
         .filter(|(_, cards)| !cards.is_empty())
         .collect();
-        let info_rows = [
-            ("Born", info.born),
-            ("Died", info.died),
-            ("Birthplace", info.birthplace),
-        ]
-        .into_iter()
-        .filter(|(_, v)| !v.is_empty())
-        .map(|(k, v)| (k.into(), v.into()))
-        .collect();
+        let info_rows = info
+            .facts()
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
         self.detail = Some(DetailView {
             server: server.to_owned().into(),
             title: name.to_owned().into(),
@@ -2651,9 +2630,8 @@ impl Plaivo {
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
             cast: it
-                .role
+                .cast()
                 .iter()
-                .take(40)
                 .map(|p| CastMember {
                     server: server.to_owned().into(),
                     id: p.id.clone(),
@@ -2672,10 +2650,8 @@ impl Plaivo {
             title: it.title.clone().into(),
             chips: summary.chips.into_iter().map(Into::into).collect(),
             genres: it
-                .genre
-                .iter()
-                .take(4)
-                .map(|t| t.tag.clone().into())
+                .top_genres()
+                .map(|t| SharedString::from(t.to_owned()))
                 .collect(),
             summary: it.summary.clone().into(),
             play_label: summary.play_label.into(),
@@ -2859,7 +2835,6 @@ impl Plaivo {
                     Ok(hubs) => {
                         d.related = hubs
                             .into_iter()
-                            .take(3)
                             .map(|h| {
                                 (
                                     h.title.into(),
