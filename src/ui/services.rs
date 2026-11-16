@@ -1,4 +1,4 @@
-use crate::app::{Plaivo, open_url, poll_until};
+use crate::app::{Plaivo, open_url};
 use crate::plex::Item;
 use crate::ui::player::spinner;
 use crate::ui::settings::toggle_row;
@@ -230,14 +230,18 @@ impl Plaivo {
         Self::bg(
             cx,
             move || {
-                let (every, deadline) = (
-                    Duration::from_secs(sign_in.interval_secs),
-                    Instant::now() + Duration::from_secs(sign_in.expires_in_secs),
-                );
-                poll_until(&flag, attempt, every, deadline, || {
-                    Some(t.poll_sign_in(&mut sign_in)).filter(|r| !matches!(r, Poll::Pending))
-                })
-                .unwrap_or(Poll::Failed(SignInFailure::Expired))
+                let deadline = Instant::now() + Duration::from_secs(sign_in.expires_in_secs);
+                while Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_secs(sign_in.interval_secs));
+                    if flag.load(Ordering::SeqCst) != attempt {
+                        break;
+                    }
+                    match t.poll_sign_in(&mut sign_in) {
+                        Poll::Pending => {}
+                        r => return r,
+                    }
+                }
+                Poll::Failed(SignInFailure::Expired)
             },
             move |this, r, _| {
                 if !this.services.current(attempt) {
