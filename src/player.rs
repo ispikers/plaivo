@@ -1682,6 +1682,8 @@ impl Plaivo {
             mpv::Event::Pause(p) => {
                 let outside = p != self.player.paused && self.watch_holds();
                 self.player.paused = p;
+                #[cfg(target_os = "macos")]
+                mpv::now_playing(p);
                 if outside {
                     self.watch_relay_pause(p);
                 }

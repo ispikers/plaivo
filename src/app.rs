@@ -845,6 +845,14 @@ impl Plaivo {
         .detach();
         cx.observe_window_appearance(window, |_, _, cx| cx.notify())
             .detach();
+        // mpv's RemoteCommandCenter resets Now Playing to Playing whenever the app activates.
+        #[cfg(target_os = "macos")]
+        cx.observe_window_activation(window, |this, _, _| {
+            if this.player.mpv.is_some() {
+                crate::mpv::now_playing(this.player.paused);
+            }
+        })
+        .detach();
         window.focus(&s.focus, cx);
         s.open_downloads(cx);
         if s.account.has_servers() {
