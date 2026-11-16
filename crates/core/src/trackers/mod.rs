@@ -11,8 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
 
 pub use crate::watch_together::ids_from_guids;
 
@@ -21,6 +22,8 @@ pub type Ids = BTreeMap<String, String>;
 const ACCOUNTS_FILE: &str = "trackers.json";
 const QUEUE_FILE: &str = "tracker-queue.json";
 const QUEUE_MAX: usize = 50;
+const RETRY_MIN: Duration = Duration::from_secs(60);
+const RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 
 fn env(v: Option<&'static str>) -> Option<&'static str> {
     v.filter(|s| !s.trim().is_empty())
@@ -620,13 +623,20 @@ impl Inner {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn drain(&self, mappings: &mut anime::Mappings) {
-        while let Some(w) = self.queue().items.first().cloned() {
-            if self.write(&w, mappings) == Outcome::Retry {
-                break;
+    fn drain(&self, mut write: impl FnMut(&Write) -> Outcome) -> bool {
+        let mut blocked = [false; 2];
+        let items = self.queue().items.clone();
+        for w in items {
+            let stuck = &mut blocked[w.service as usize];
+            if *stuck {
+                continue;
             }
-            self.queue().remove(&w);
+            match write(&w) {
+                Outcome::Retry => *stuck = true,
+                _ => self.queue().remove(&w),
+            }
         }
+        blocked.contains(&true)
     }
 
     fn update(&self, f: impl FnOnce(&mut Accounts)) {
@@ -763,25 +773,47 @@ impl Inner {
     }
 }
 
+fn next_wait(last: Option<Duration>, pending: bool) -> Option<Duration> {
+    pending.then(|| last.map_or(RETRY_MIN, |d| (d * 2).min(RETRY_MAX)))
+}
+
 fn worker(inner: Weak<Inner>, rx: Receiver<Job>, mut mappings: anime::Mappings) {
-    while let Ok(job) = rx.recv() {
+    let (mut wait, mut due) = (None, None::<Instant>);
+    loop {
+        let job = match due {
+            Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                Ok(job) => job,
+                Err(RecvTimeoutError::Timeout) => Job::Retry,
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+            None => match rx.recv() {
+                Ok(job) => job,
+                Err(_) => break,
+            },
+        };
         let Some(inner) = inner.upgrade() else { break };
-        match job {
+        let mut write = |w: &Write| inner.write(w, &mut mappings);
+        let pending = match job {
             Job::Scrobble(action, media, pct) => {
                 inner.scrobble(action, &media, pct);
+                continue;
             }
-            Job::Write(w) if inner.queue().items.contains(&w) => {
-                let outcome = inner.write(&w, &mut mappings);
-                if outcome != Outcome::Retry {
+            Job::Write(w) if inner.queue().items.contains(&w) => match write(&w) {
+                Outcome::Retry => true,
+                Outcome::Done => {
                     inner.queue().remove(&w);
+                    inner.drain(&mut write)
                 }
-                if outcome == Outcome::Done {
-                    inner.drain(&mut mappings);
+                Outcome::Drop => {
+                    inner.queue().remove(&w);
+                    continue;
                 }
-            }
-            Job::Retry => inner.drain(&mut mappings),
-            Job::Write(_) => {}
-        }
+            },
+            Job::Retry => inner.drain(&mut write),
+            Job::Write(_) => continue,
+        };
+        wait = next_wait(wait, pending);
+        due = wait.map(|d| Instant::now() + d);
     }
 }
 
@@ -1037,6 +1069,53 @@ mod tests {
         assert_eq!(Queue::load(path.clone()).items.len(), QUEUE_MAX - 1);
         assert_eq!(Queue::load(path).items[0].pct, 6.0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn drain_skips_only_the_failing_service() {
+        let dir =
+            std::env::temp_dir().join(format!("plaivo-trackers-drain-{}", std::process::id()));
+        let (t, _rx) = Trackers::detached(dir.clone(), [true; 2]);
+        for (service, pct) in [
+            (Service::Mal, 1.0),
+            (Service::Trakt, 2.0),
+            (Service::Mal, 3.0),
+            (Service::Trakt, 4.0),
+        ] {
+            t.0.queue().push(Write {
+                service,
+                media: episode(),
+                pct,
+            });
+        }
+        let mut tried = Vec::new();
+        let pending = t.0.drain(|w| {
+            tried.push(w.pct);
+            match w.service {
+                Service::Mal => Outcome::Retry,
+                Service::Trakt => Outcome::Done,
+            }
+        });
+        assert!(pending);
+        assert_eq!(tried, [1.0, 2.0, 4.0]);
+        let left = |t: &Trackers| t.0.queue().items.iter().map(|w| w.pct).collect::<Vec<_>>();
+        assert_eq!(left(&t), [1.0, 3.0]);
+        assert!(!t.0.drain(|_| Outcome::Done));
+        assert!(left(&t).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn retry_wait_backs_off_and_resets() {
+        let mut wait = None;
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            wait = next_wait(wait, true);
+            seen.push(wait.unwrap().as_secs());
+        }
+        assert_eq!(seen, [60, 120, 240, 480, 960, 1800, 1800]);
+        assert_eq!(next_wait(wait, false), None);
+        assert_eq!(next_wait(None, true), Some(RETRY_MIN));
     }
 
     #[test]
