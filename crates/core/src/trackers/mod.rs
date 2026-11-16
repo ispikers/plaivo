@@ -170,14 +170,6 @@ pub struct Media {
     pub show_ids: Ids,
     pub season: Option<u32>,
     pub episode: Option<u32>,
-    pub order: Option<EpisodeOrder>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EpisodeOrder {
-    Tvdb,
-    Tmdb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -832,7 +824,6 @@ mod tests {
             show_ids: ids(&[("imdb", "tt0213338"), ("tvdb", "76885"), ("tmdb", "30991")]),
             season: Some(1),
             episode: Some(3),
-            order: None,
         }
     }
 
@@ -885,7 +876,7 @@ mod tests {
             ..Default::default()
         };
         let m = Media::for_item(&movie).unwrap();
-        assert!(m.movie && m.season.is_none() && m.order.is_none());
+        assert!(m.movie && m.season.is_none());
         assert_eq!(m.ids, ids(&[("imdb", "tt1"), ("tmdb", "2"), ("mal", "7")]));
         let episode = Item {
             kind: "episode".into(),

@@ -1,5 +1,5 @@
+use super::Media;
 use super::http::{Request, send};
-use super::{EpisodeOrder, Media};
 use crate::store;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -313,19 +313,15 @@ fn find(t: &Table, media: &Media, progress: u32) -> Result<Option<(usize, u32)>,
         }
         return Ok(single(rows).map(|r| (r, 1)));
     }
-    let order = media.order.unwrap_or(if num(media, "tvdb").is_some() {
-        EpisodeOrder::Tvdb
+    let (id_col, season_col, offset_col, key) = if num(media, "tvdb").is_some() {
+        ("tvdb_id", "season.tvdb", "episode_offset.tvdb", "tvdb")
     } else {
-        EpisodeOrder::Tmdb
-    });
-    let (id_col, season_col, offset_col, key) = match order {
-        EpisodeOrder::Tvdb => ("tvdb_id", "season.tvdb", "episode_offset.tvdb", "tvdb"),
-        EpisodeOrder::Tmdb => (
+        (
             "themoviedb_id.tv",
             "season.tmdb",
             "episode_offset.tmdb",
             "tmdb",
-        ),
+        )
     };
     let rows = t.rows_with(id_col, num(media, key))?;
     if rows.is_empty() {
@@ -692,13 +688,7 @@ mod tests {
         assert_eq!(r(ep(&show, 2, 3)), m(Some(102), 3));
         assert_eq!(r(ep(&show, 3, 1)), None);
         assert_eq!(r(ep(&show, 0, 5)), None);
-        assert_eq!(
-            r(Media {
-                order: Some(EpisodeOrder::Tmdb),
-                ..ep(&show, 2, 4)
-            }),
-            m(Some(101), 4)
-        );
+        assert_eq!(r(ep(&[("tmdb", "70")], 2, 4)), m(Some(101), 4));
         assert_eq!(r(ep(&[("tmdb", "70")], 3, 2)), m(Some(102), 2));
         assert_eq!(r(ep(&[("tvdb", "6000")], 1, 7)), m(None, 7));
         assert_eq!(r(ep(&[("tvdb", "6000")], 4, 7)), None);
@@ -751,11 +741,8 @@ mod tests {
         );
         r("Frieren tmdb 209867 S1E1", ep(&[("tmdb", "209867")], 1, 1));
         r(
-            "Jujutsu Kaisen tmdb order 95479 S1E30",
-            Media {
-                order: Some(EpisodeOrder::Tmdb),
-                ..ep(&[("tvdb", "377543"), ("tmdb", "95479")], 1, 30)
-            },
+            "Jujutsu Kaisen tmdb 95479 S1E30",
+            ep(&[("tmdb", "95479")], 1, 30),
         );
         assert_eq!(bebop.and_then(|m| m.mal), Some(1));
         let meta: Meta = store::read_json(&mappings.meta_path()).unwrap();
