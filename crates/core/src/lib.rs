@@ -67,6 +67,7 @@ impl Account {
 }
 
 pub const DISK_CACHE_BYTES: u64 = 768 << 20;
+pub(crate) const WATCHED_PCT: f64 = 90.0;
 
 pub fn grid_columns(width: f32, card: f32, gap: f32) -> i32 {
     let pitch = card + gap;

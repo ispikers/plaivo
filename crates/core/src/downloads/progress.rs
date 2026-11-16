@@ -4,7 +4,6 @@ use serde_json::{Value, json};
 use crate::jellyfin;
 use crate::plex::{Backend, Client, Server, drain, encode};
 
-const WATCHED: f64 = 0.9;
 const TICKS_PER_MS: u64 = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -25,7 +24,7 @@ pub(crate) struct Replay {
 }
 
 pub(crate) fn watched(time_ms: u64, duration_ms: u64) -> bool {
-    duration_ms > 0 && time_ms as f64 >= duration_ms as f64 * WATCHED
+    duration_ms > 0 && time_ms as f64 * 100.0 >= duration_ms as f64 * crate::WATCHED_PCT
 }
 
 pub(crate) fn coalesce(list: &mut Vec<Pending>, mut p: Pending) {

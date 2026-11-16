@@ -726,15 +726,13 @@ impl Plaivo {
         let settings = Settings::load();
         apply_log_level(&settings);
         std::thread::spawn(|| store::prune_cache(plaivo_core::DISK_CACHE_BYTES));
-        let trackers = Trackers::start();
-        trackers.set_watched_threshold(90.0);
         Arc::new(Self {
             client: Client::new(account.client_id.clone()),
             account: Mutex::new(account),
             plex_user: Mutex::new(None),
             settings: Mutex::new(settings),
             downloads: OnceLock::new(),
-            trackers,
+            trackers: Trackers::start(),
             tracked: Mutex::new(HashMap::new()),
             watch: Mutex::new(None),
             watch_listener: OnceLock::new(),

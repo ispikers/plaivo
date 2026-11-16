@@ -14,8 +14,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-const WATCHED_PCT: f64 = 90.0;
-
 const QR_SIZE: f32 = 220.;
 
 struct Pending {
@@ -34,10 +32,8 @@ pub struct Services {
 
 impl Services {
     pub fn start() -> Self {
-        let trackers = Trackers::start();
-        trackers.set_watched_threshold(WATCHED_PCT);
         Self {
-            trackers,
+            trackers: Trackers::start(),
             pending: None,
             error: None,
             attempt: Arc::new(AtomicU64::new(0)),

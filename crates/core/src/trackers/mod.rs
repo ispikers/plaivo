@@ -272,7 +272,7 @@ impl Session {
         }
     }
 
-    fn step(&mut self, state: PlayState, pct: f64, threshold: f64, realtime: bool) -> Vec<Action> {
+    fn step(&mut self, state: PlayState, pct: f64, realtime: bool) -> Vec<Action> {
         let mut out = Vec::new();
         if realtime {
             let (next, action) = match (state, self.scrobble) {
@@ -288,6 +288,7 @@ impl Session {
             self.scrobble = next;
             out.extend(action.map(|a| Action::Trakt(a, pct)));
         }
+        let threshold = crate::WATCHED_PCT;
         if !self.watched && self.last.is_some_and(|l| l < threshold) && pct >= threshold {
             self.watched = true;
             out.push(Action::Watched(pct));
@@ -394,7 +395,6 @@ impl Queue {
 struct Shared {
     accounts: Accounts,
     session: Option<Session>,
-    threshold: f64,
     shows: HashMap<(String, String), Ids>,
 }
 
@@ -430,7 +430,6 @@ impl Trackers {
         let shared = Mutex::new(Shared {
             accounts,
             session: None,
-            threshold: 90.0,
             shows: HashMap::new(),
         });
         let queue = Mutex::new(Queue::load(config.join(QUEUE_FILE)));
@@ -467,10 +466,6 @@ impl Trackers {
 
     pub fn set_trakt_progress(&self, on: bool) {
         self.0.update(|a| a.trakt_progress = on);
-    }
-
-    pub fn set_watched_threshold(&self, pct: f64) {
-        self.0.lock().threshold = pct.clamp(1.0, 100.0);
     }
 
     pub fn sign_out(&self, service: Service) {
@@ -596,7 +591,7 @@ impl Trackers {
             let actions = s
                 .session
                 .as_mut()
-                .map(|x| x.step(state, pct, s.threshold, realtime))
+                .map(|x| x.step(state, pct, realtime))
                 .unwrap_or_default();
             out.extend(jobs(
                 actions,
@@ -963,24 +958,24 @@ mod tests {
     #[test]
     fn watched_threshold_fires_once() {
         let mut s = Session::new(episode());
-        assert!(s.step(PlayState::Playing, 95.0, 90.0, false).is_empty());
+        assert!(s.step(PlayState::Playing, 95.0, false).is_empty());
         let mut s = Session::new(episode());
-        assert!(s.step(PlayState::Playing, 10.0, 90.0, false).is_empty());
-        assert!(s.step(PlayState::Playing, 89.9, 90.0, false).is_empty());
+        assert!(s.step(PlayState::Playing, 10.0, false).is_empty());
+        assert!(s.step(PlayState::Playing, 89.9, false).is_empty());
         assert_eq!(
-            s.step(PlayState::Playing, 90.0, 90.0, false),
+            s.step(PlayState::Playing, 90.0, false),
             vec![Action::Watched(90.0)]
         );
-        assert!(s.step(PlayState::Playing, 95.0, 90.0, false).is_empty());
-        assert!(s.step(PlayState::Playing, 20.0, 90.0, false).is_empty());
-        assert!(s.step(PlayState::Playing, 92.0, 90.0, false).is_empty());
-        assert!(s.step(PlayState::Stopped, 99.0, 90.0, false).is_empty());
+        assert!(s.step(PlayState::Playing, 95.0, false).is_empty());
+        assert!(s.step(PlayState::Playing, 20.0, false).is_empty());
+        assert!(s.step(PlayState::Playing, 92.0, false).is_empty());
+        assert!(s.step(PlayState::Stopped, 99.0, false).is_empty());
     }
 
     #[test]
     fn scrobble_transitions() {
         let mut s = Session::new(episode());
-        let step = |s: &mut Session, st, pct| s.step(st, pct, 90.0, true);
+        let step = |s: &mut Session, st, pct| s.step(st, pct, true);
         assert!(step(&mut s, PlayState::Paused, 1.0).is_empty());
         assert_eq!(
             step(&mut s, PlayState::Playing, 1.0),
