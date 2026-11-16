@@ -162,6 +162,21 @@ mod tests {
     }
 
     #[test]
+    fn manifest_versions_match_the_libmpv_pin() {
+        let pin = include_str!("../../deps/libmpv.env");
+        let pinned = |key: &str| {
+            pin.lines()
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix('='))
+                .unwrap()
+                .trim()
+                .trim_start_matches(['v', 'n'])
+        };
+        for (l, key) in LICENSES.iter().zip(["MPV", "FFMPEG", "LIBPLACEBO"]) {
+            assert_eq!(l.version, pinned(key), "{}", l.name);
+        }
+    }
+
+    #[test]
     fn manifest_entries_lead_the_list_with_their_texts() {
         let manifest: serde_json::Value =
             serde_json::from_str(include_str!("../../licenses/desktop.json")).unwrap();
