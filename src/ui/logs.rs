@@ -17,18 +17,17 @@ const MONO: &str = if cfg!(target_os = "macos") {
 
 impl Plaivo {
     pub fn render_logs(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let count = logging::len();
+        let span = logging::span();
+        let count = span.len();
         let list = uniform_list(
             "logs",
             count,
             cx.processor(|this, range: Range<usize>, _, cx| {
                 let selected = this.log_selection.map(|(a, b)| a.min(b)..=a.max(b));
-                let start = range.start;
-                logging::lines(range)
+                let first = logging::span().start;
+                logging::lines(first + range.start..first + range.end)
                     .into_iter()
-                    .enumerate()
-                    .map(|(n, line)| {
-                        let i = start + n;
+                    .map(|(i, line)| {
                         let spans = spans(&line);
                         div()
                             .px(px(32.))
@@ -68,7 +67,10 @@ impl Plaivo {
         .track_scroll(&self.logs_scroll)
         .size_full();
         let detail = match self.log_selection {
-            Some((a, b)) => format!("{} of {count} lines selected", a.abs_diff(b) + 1),
+            Some((a, b)) => format!(
+                "{} of {count} lines selected",
+                (a.min(b).max(span.start)..(a.max(b) + 1).min(span.end)).len()
+            ),
             None => format!("{count} recent lines · drag or Shift+click to select"),
         };
         div()
@@ -105,7 +107,7 @@ impl Plaivo {
         let range = self
             .log_selection
             .map_or(0..usize::MAX, |(a, b)| a.min(b)..a.max(b) + 1);
-        let lines = logging::lines(range);
+        let lines: Vec<String> = logging::lines(range).into_iter().map(|(_, l)| l).collect();
         cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
         self.toast(format!("Copied {} lines", lines.len()), cx);
     }

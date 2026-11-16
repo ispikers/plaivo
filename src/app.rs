@@ -1751,7 +1751,7 @@ impl Plaivo {
                 self.page = Page::Logs;
                 self.log_selection = None;
                 self.logs_scroll.scroll_to_item(
-                    crate::logging::len().saturating_sub(1),
+                    crate::logging::span().len().saturating_sub(1),
                     gpui::ScrollStrategy::Top,
                 );
             }

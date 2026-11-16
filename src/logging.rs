@@ -2,6 +2,7 @@ use crate::store;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use plaivo_core::redact;
 use std::collections::VecDeque;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,7 +10,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_BYTES: usize = 1 << 20;
 const MAX_LINE: usize = 16 << 10;
 
-static LINES: Mutex<(VecDeque<String>, usize)> = Mutex::new((VecDeque::new(), 0));
+struct Buffer {
+    lines: VecDeque<String>,
+    bytes: usize,
+    evicted: usize,
+}
+
+static LINES: Mutex<Buffer> = Mutex::new(Buffer {
+    lines: VecDeque::new(),
+    bytes: 0,
+    evicted: 0,
+});
 
 struct Logger {
     console: bool,
@@ -19,17 +30,23 @@ fn log_dir() -> PathBuf {
     store::cache_dir().with_file_name("logs")
 }
 
-pub fn len() -> usize {
-    LINES.lock().map_or(0, |l| l.0.len())
-}
-
-pub fn lines(range: std::ops::Range<usize>) -> Vec<String> {
+pub fn span() -> Range<usize> {
     LINES
         .lock()
-        .map(|l| {
-            let n = l.0.len();
-            l.0.range(range.start.min(n)..range.end.min(n))
+        .map_or(0..0, |b| b.evicted..b.evicted + b.lines.len())
+}
+
+pub fn lines(range: Range<usize>) -> Vec<(usize, String)> {
+    LINES
+        .lock()
+        .map(|b| {
+            let n = b.lines.len();
+            let at = |seq: usize| seq.saturating_sub(b.evicted).min(n);
+            b.lines
+                .range(at(range.start)..at(range.end))
                 .cloned()
+                .enumerate()
+                .map(|(i, line)| (b.evicted + at(range.start) + i, line))
                 .collect()
         })
         .unwrap_or_default()
@@ -44,7 +61,7 @@ pub fn export() -> std::io::Result<PathBuf> {
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS
     );
-    for line in lines(0..usize::MAX) {
+    for (_, line) in lines(0..usize::MAX) {
         text.push_str(&line);
         text.push('\n');
     }
@@ -61,14 +78,14 @@ fn push(mut line: String) {
         line.truncate(end);
         line.push('…');
     }
-    if let Ok(mut l) = LINES.lock() {
-        let (lines, bytes) = &mut *l;
-        *bytes += line.len();
-        lines.push_back(line);
-        while *bytes > MAX_BYTES
-            && let Some(old) = lines.pop_front()
+    if let Ok(mut b) = LINES.lock() {
+        b.bytes += line.len();
+        b.lines.push_back(line);
+        while b.bytes > MAX_BYTES
+            && let Some(old) = b.lines.pop_front()
         {
-            *bytes -= old.len();
+            b.bytes -= old.len();
+            b.evicted += 1;
         }
     }
 }
@@ -182,10 +199,17 @@ mod tests {
             push(line.clone());
         }
         push("newest".into());
-        let all = lines(0..usize::MAX);
+        let all: Vec<String> = lines(0..usize::MAX).into_iter().map(|(_, l)| l).collect();
         assert!(all.iter().map(String::len).sum::<usize>() <= MAX_BYTES);
         assert!(all[0].len() <= MAX_LINE + '…'.len_utf8());
         assert_eq!(all.last().unwrap(), "newest");
-        assert_eq!(lines(len() - 1..len() + 9), ["newest"]);
+        let s = span();
+        assert!(s.start > 0);
+        assert!(lines(0..s.start).is_empty());
+        assert_eq!(lines(0..s.start + 1)[0].0, s.start);
+        assert_eq!(
+            lines(s.end - 1..s.end + 9),
+            [(s.end - 1, "newest".to_owned())]
+        );
     }
 }

@@ -143,7 +143,8 @@ impl Render for Root {
                 })))
                 .on_action(cx.listener(Self::on_app(
                     |app, _: &input::SelectAll, _, cx| {
-                        app.log_selection = Some((0, crate::logging::len().saturating_sub(1)));
+                        let span = crate::logging::span();
+                        app.log_selection = Some((span.start, span.end.saturating_sub(1)));
                         cx.notify();
                     },
                 )))
