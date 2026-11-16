@@ -64,11 +64,9 @@ const END_EOF: c_int = 0;
 const END_ERROR: c_int = 4;
 
 #[cfg(windows)]
-const LIB_NAMES: &[&str] = &["libmpv-2.dll", "mpv-2.dll", "mpv-1.dll"];
+const LIB_NAME: &str = "libmpv-2.dll";
 #[cfg(target_os = "macos")]
-const LIB_NAMES: &[&str] = &["libmpv.2.dylib", "libmpv.dylib"];
-#[cfg(all(unix, not(target_os = "macos")))]
-const LIB_NAMES: &[&str] = &["libmpv.so.2", "libmpv.so"];
+const LIB_NAME: &str = "libmpv.2.dylib";
 
 pub fn preload() {
     let _ = api();
@@ -77,24 +75,11 @@ pub fn preload() {
 fn api() -> Result<&'static Api, String> {
     static API: OnceLock<Result<Api, String>> = OnceLock::new();
     API.get_or_init(|| unsafe {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_owned()));
-        let lib = LIB_NAMES
-            .iter()
-            .flat_map(|n| {
-                exe_dir
-                    .iter()
-                    .map(move |d| d.join(n))
-                    .chain(std::iter::once(n.into()))
-            })
-            .find_map(|p| libloading::Library::new(p).ok())
-            .ok_or_else(|| {
-                format!(
-                    "libmpv not found: put {} next to the Plaivo executable",
-                    LIB_NAMES[0]
-                )
-            })?;
+        let path = std::env::current_exe()
+            .map_err(|e| format!("libmpv: {e}"))?
+            .with_file_name(LIB_NAME);
+        let lib =
+            libloading::Library::new(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let lib: &'static libloading::Library = Box::leak(Box::new(lib));
         macro_rules! sym {
             ($n:literal) => {
