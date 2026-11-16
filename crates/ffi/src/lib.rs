@@ -377,7 +377,7 @@ pub enum TrackerPoll {
     Failed { reason: String },
 }
 
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 pub struct ServerInfo {
     pub id: String,
     pub name: String,
@@ -627,6 +627,7 @@ pub struct Plaivo {
     watch_listener: OnceLock<Arc<dyn watch::WatchListener>>,
     continuing: Mutex<HashMap<String, Hub>>,
     library_ids: Mutex<HashMap<String, Vec<String>>>,
+    offline: Mutex<Vec<ServerInfo>>,
 }
 
 impl Plaivo {
@@ -738,6 +739,7 @@ impl Plaivo {
             watch_listener: OnceLock::new(),
             continuing: Mutex::new(HashMap::new()),
             library_ids: Mutex::new(HashMap::new()),
+            offline: Mutex::new(Vec::new()),
         })
     }
 
@@ -946,6 +948,10 @@ impl Plaivo {
             .collect()
     }
 
+    pub fn offline_servers(&self) -> Vec<ServerInfo> {
+        self.offline.lock().unwrap().clone()
+    }
+
     pub fn refresh_servers(&self) -> R<Vec<ServerInfo>> {
         let Some(token) = self.account.lock().unwrap().token.clone() else {
             return Ok(self.servers());
@@ -953,14 +959,21 @@ impl Plaivo {
         let resources = self.client.servers(&token)?;
         let previous = self.account.lock().unwrap().servers.clone();
         let settings = self.settings.lock().unwrap().clone();
-        let (skipped, resources): (Vec<_>, Vec<_>) = resources.into_iter().partition(|r| {
-            settings.server_hidden(&r.client_identifier)
-                && previous.iter().any(|p| p.id == r.client_identifier)
-        });
+        let (skipped, resources): (Vec<_>, Vec<_>) = resources
+            .into_iter()
+            .partition(|r| settings.server_hidden(&r.client_identifier));
         let kept = previous
             .iter()
             .filter(|p| skipped.iter().any(|r| r.client_identifier == p.id))
             .cloned();
+        let known = |r: &&plex::Resource| previous.iter().any(|p| p.id == r.client_identifier);
+        let info = |r: &plex::Resource| ServerInfo {
+            id: r.client_identifier.clone(),
+            name: r.name.clone(),
+            owned: r.owned,
+            jellyfin: false,
+        };
+        let mut offline: Vec<ServerInfo> = skipped.iter().filter(|r| !known(r)).map(info).collect();
         let connected: Vec<Server> = std::thread::scope(|s| {
             let probes: Vec<_> = resources
                 .iter()
@@ -981,6 +994,9 @@ impl Plaivo {
                         Ok(srv) => log::info!("discovery: {} reachable at {}", srv.name, srv.uri),
                         Err(e) => log::warn!("discovery: {e}, keeping the last known address"),
                     }
+                    if probed.is_err() && !known(&r) {
+                        offline.push(info(r));
+                    }
                     probed.ok().or_else(|| {
                         previous
                             .iter()
@@ -991,6 +1007,7 @@ impl Plaivo {
                 .chain(kept)
                 .collect()
         });
+        *self.offline.lock().unwrap() = offline;
         let mut account = self.account.lock().unwrap();
         account.servers = connected;
         account.save();

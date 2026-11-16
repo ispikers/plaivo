@@ -413,6 +413,7 @@ impl Plaivo {
             .iter()
             .filter(|s| !self.sections.iter().any(|x| x.server == s.id))
             .map(|s| (s.id.clone(), s.name.clone()))
+            .chain(self.offline_servers.iter().cloned())
             .collect();
         for (id, name) in unlisted {
             let hidden = self.settings.server_hidden(&id);

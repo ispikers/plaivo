@@ -348,6 +348,7 @@ pub struct Plaivo {
     pub splash: Option<Splash>,
     probe: Option<(Vec<Server>, usize, bool)>,
     pub servers_loading: bool,
+    pub offline_servers: Vec<(String, String)>,
     pub servers_error: Option<SharedString>,
     pub hero: Vec<Card>,
     pub hero_index: usize,
@@ -745,6 +746,7 @@ impl Plaivo {
             splash: None,
             probe: None,
             servers_loading: false,
+            offline_servers: Vec::new(),
             servers_error: None,
             hero: Vec::new(),
             hero_index: 0,
@@ -1545,20 +1547,20 @@ impl Plaivo {
                 cx,
             );
         }
-        let (skipped, resources): (Vec<_>, Vec<_>) = resources.into_iter().partition(|r| {
-            self.settings.server_hidden(&r.client_identifier)
-                && self
-                    .account
-                    .servers
-                    .iter()
-                    .any(|s| s.id == r.client_identifier)
-        });
+        let (skipped, resources): (Vec<_>, Vec<_>) = resources
+            .into_iter()
+            .partition(|r| self.settings.server_hidden(&r.client_identifier));
         let kept: Vec<Server> = self
             .account
             .servers
             .iter()
             .filter(|s| skipped.iter().any(|r| r.client_identifier == s.id))
             .cloned()
+            .collect();
+        self.offline_servers = skipped
+            .iter()
+            .filter(|r| !kept.iter().any(|s| s.id == r.client_identifier))
+            .map(|r| (r.client_identifier.clone(), r.name.clone()))
             .collect();
         if resources.is_empty() {
             return self.discovery_done(kept, None, cx);
@@ -1580,7 +1582,7 @@ impl Plaivo {
         .detach();
         for res in resources {
             let (c, t, started) = (self.client.clone(), token.clone(), token.clone());
-            let id = res.client_identifier.clone();
+            let (id, name) = (res.client_identifier.clone(), res.name.clone());
             let last = self
                 .account
                 .servers
@@ -1607,6 +1609,9 @@ impl Plaivo {
                         row.2 = if ok { Status::Ok } else { Status::Error };
                     }
                     let previous = this.account.servers.iter().find(|s| s.id == id).cloned();
+                    if !ok && previous.is_none() {
+                        this.offline_servers.push((id.clone(), name.clone()));
+                    }
                     let Some(probe) = &mut this.probe else { return };
                     probe.2 |= ok;
                     probe.0.extend(r.ok().or(previous));

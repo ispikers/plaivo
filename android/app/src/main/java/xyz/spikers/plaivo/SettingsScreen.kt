@@ -708,7 +708,10 @@ fun SettingsScreen(
                                 }
                             }
                         }
-                    val unlisted = servers.filter { s -> libraries.none { it.server == s.id } }
+                    val offline = remember { core.offlineServers() }
+                    val unlisted =
+                        servers.filter { s -> libraries.none { it.server == s.id } } +
+                            offline.filter { o -> servers.none { it.id == o.id } }
                     unlisted.forEachIndexed { i, s ->
                         val hidden = s.id in settings.hiddenServers
                         SectionTitle(s.name)
