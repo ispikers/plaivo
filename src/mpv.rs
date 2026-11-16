@@ -374,14 +374,7 @@ fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
                     b"demuxer-cache-time" => double().map(Event::Cached),
                     b"volume" => double().map(Event::Volume),
                     b"pause" => flag().map(Event::Pause),
-                    b"paused-for-cache" => {
-                        let f = flag();
-                        ctx.store(
-                            "paused-for-cache",
-                            f.map(|b| if b { "yes" } else { "no" }.into()),
-                        );
-                        f.map(Event::Buffering)
-                    }
+                    b"paused-for-cache" => flag().map(Event::Buffering),
                     b"mute" => flag().map(Event::Mute),
                     b"track-list" => {
                         ctx.store("track-list", string());

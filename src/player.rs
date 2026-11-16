@@ -132,6 +132,7 @@ pub struct Player {
     queue_show: (String, String),
     pub queue_scroll: UniformListScrollHandle,
     pub buffering: bool,
+    pub switching: bool,
     pub volume: f64,
     pub muted: bool,
     pub audio_tracks: Vec<Choice>,
@@ -831,7 +832,7 @@ impl Plaivo {
             return;
         }
         self.report("stopped", cx);
-        self.player.buffering = true;
+        self.player.switching = true;
         self.player.advancing = true;
         self.play(card.server.to_string(), card.key.to_string(), cx);
     }
@@ -885,7 +886,7 @@ impl Plaivo {
     }
 
     fn show_opening(&mut self, server: &str, key: &str, cx: &mut Context<Self>) {
-        self.player.buffering = true;
+        self.player.switching = true;
         if self.playing() {
             return self.expand_player(cx);
         }
@@ -919,7 +920,7 @@ impl Plaivo {
             return;
         }
         self.player.play_gen += 1;
-        self.player.buffering = false;
+        self.player.switching = false;
         if let Some(nav) = self.nav.last().cloned() {
             self.navigate(nav, false, cx);
         }
@@ -929,15 +930,8 @@ impl Plaivo {
         let p = &mut self.player;
         p.up_next_cancelled |= p.advancing;
         p.stop_sent &= !p.advancing;
-        if p.advancing {
-            p.buffering = !p.video_ready
-                || p.mpv
-                    .as_ref()
-                    .and_then(|m| m.get("paused-for-cache"))
-                    .as_deref()
-                    == Some("yes");
-        }
         p.advancing = false;
+        p.switching = false;
     }
 
     pub fn up_next(&mut self) -> Option<(Card, f64)> {
@@ -1495,6 +1489,7 @@ impl Plaivo {
         let p = &mut self.player;
         p.active = true;
         p.opening = false;
+        p.switching = false;
         p.key = key.to_owned();
         p.duration = duration;
         p.time = start_at.unwrap_or(0.0);

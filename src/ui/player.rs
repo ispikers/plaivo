@@ -324,7 +324,7 @@ impl Plaivo {
                 }
                 cx.notify();
             }));
-        let spinner = self.player.buffering.then(|| {
+        let spinner = (self.player.buffering || self.player.switching).then(|| {
             div()
                 .absolute()
                 .size_full()
