@@ -1,5 +1,5 @@
 use crate::{Plaivo, R};
-use plaivo_core::plex::{Ctx, Source, resolve_playable};
+use plaivo_core::plex::{Ctx, DISCOVER_ID, Source, resolve_playable};
 use plaivo_core::settings::Settings;
 use plaivo_core::watch_together::{
     Connection, Control, Event, Match, MatchState, Media, Participant, PartyState, PlayerCommand,
@@ -182,6 +182,9 @@ impl Plaivo {
     }
 
     pub fn watch_share(&self, server_id: String, key: String) -> R<()> {
+        if server_id == DISCOVER_ID {
+            return Err("Only titles in your libraries can be watched together".into());
+        }
         let srv = self.server(&server_id)?;
         let cx = Ctx::new(self.client.clone(), Source::Live);
         let it = resolve_playable(&srv, &cx, &key)?;

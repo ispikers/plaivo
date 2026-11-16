@@ -55,6 +55,7 @@ import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.DownloadScope
 import uniffi.plaivo_ffi.ItemMenu
 import uniffi.plaivo_ffi.actionLabel
+import uniffi.plaivo_ffi.discoverId
 
 private enum class MenuPage {
     Main,
@@ -108,6 +109,7 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit, onDe
     var page by remember { mutableStateOf(MenuPage.Main) }
     var pressed by remember { mutableStateOf(false) }
     val first = remember { FocusRequester() }
+    val local = remember(card.server) { card.server != discoverId() }
     LaunchedEffect(card) {
         io { runCatching { core.itemMenu(card.server, card.key) } }
             .onSuccess { menu = it }
@@ -248,7 +250,9 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit, onDe
                                 )
                         }
                     }
-                    if (downloadScopes(card.kind).isNotEmpty() && (!Watch.inRoom || Watch.state?.host == true)) {
+                    if (
+                        local && downloadScopes(card.kind).isNotEmpty() && (!Watch.inRoom || Watch.state?.host == true)
+                    ) {
                         SettingsRow(
                             Glyph.Group,
                             "Watch together",
