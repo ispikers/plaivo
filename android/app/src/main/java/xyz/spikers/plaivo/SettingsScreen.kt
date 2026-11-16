@@ -589,12 +589,13 @@ fun SettingsScreen(
                             }
                         }
                 Category.General -> {
-                    SectionTitle("Home server")
+                    val plexName by produceState<String?>(null) { value = io { core.plexUser()?.name } }
+                    SectionTitle("Servers")
                     if (home != null)
                         SettingsRow(
-                            Glyph.Server,
+                            Glyph.Home,
+                            "Home server",
                             home.name,
-                            "Home shows Continue Watching and recommendations from this server",
                             Modifier.takeFocus(true),
                             onClick = { picker = Picker.HomeServer },
                         )
@@ -605,20 +606,37 @@ fun SettingsScreen(
                             "Sign in to Plex or add a Jellyfin server below",
                             Modifier.takeFocus(true),
                         )
-                    SectionTitle("Plex")
+                    SettingsRow(
+                        Glyph.Sort,
+                        "Manage libraries",
+                        "Choose which libraries and servers Plaivo uses, and their order",
+                        onClick = { open(Category.Libraries) },
+                    ) {
+                        GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
+                    }
+                    SettingsRow(
+                        Glyph.Group,
+                        "Watch Together relay",
+                        settings.watchRelay.ifBlank { "Public relays" },
+                        onClick = { picker = Picker.Relay },
+                    )
+                    SectionTitle("Accounts")
                     if (core.signedIn()) {
-                        SettingsRow(Glyph.Person, "Plex account", "Signed in")
-                        SettingsRow(Glyph.Logout, "Sign out", "Removes this device's Plex sign-in", onClick = onSignOut)
+                        SettingsRow(Glyph.Person, "Plex", plexName ?: "Signed in")
+                        SettingsRow(
+                            Glyph.Logout,
+                            "Sign out of Plex",
+                            "Removes this device's Plex sign-in",
+                            onClick = onSignOut,
+                        )
                     } else {
                         SettingsRow(
                             Glyph.Person,
                             "Sign in with Plex",
                             "Link this device at plex.tv/link",
-                            Modifier,
                             onClick = onPlexSignIn,
                         )
                     }
-                    SectionTitle("Jellyfin")
                     jellyfin.forEach { s ->
                         key(s.id) {
                             Row(
@@ -628,7 +646,9 @@ fun SettingsScreen(
                                 SettingsRow(
                                     Glyph.Server,
                                     s.name,
-                                    listOf(s.user, s.address).filter { it.isNotEmpty() }.joinToString(" · "),
+                                    listOf("Jellyfin", s.user, s.address)
+                                        .filter { it.isNotEmpty() }
+                                        .joinToString(" · "),
                                     Modifier.weight(1f),
                                 )
                                 MoveButton(Glyph.Close, true) {
@@ -644,26 +664,10 @@ fun SettingsScreen(
                     }
                     SettingsRow(
                         Glyph.Add,
-                        "Add server",
+                        "Add Jellyfin server",
                         "Sign in with a username and password, or Quick Connect",
                         Modifier.focusRequester(addServerFocus),
                         onClick = { adding = true },
-                    ) {
-                        GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
-                    }
-                    SectionTitle("Watch Together")
-                    SettingsRow(
-                        Glyph.Group,
-                        "Relay",
-                        settings.watchRelay.ifBlank { "Public relays" },
-                        onClick = { picker = Picker.Relay },
-                    )
-                    SectionTitle("Libraries")
-                    SettingsRow(
-                        Glyph.Sort,
-                        "Manage libraries",
-                        "Choose which libraries and servers Plaivo uses, and their order",
-                        onClick = { open(Category.Libraries) },
                     ) {
                         GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
                     }

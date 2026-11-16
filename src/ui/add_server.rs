@@ -8,8 +8,8 @@ use crate::ui::widgets::{
     icon, nav_row, pill, round_button, row, scroll_handle, scrollbar, section,
 };
 use gpui::{
-    AnyElement, AppContext, Context, Div, Entity, FocusHandle, FontWeight, SharedString, Window,
-    div, prelude::*, px,
+    AnyElement, AppContext, Context, Entity, FocusHandle, FontWeight, SharedString, Window, div,
+    prelude::*, px,
 };
 use plaivo_core::jellyfin::{self, ServerInfo};
 use std::sync::Arc;
@@ -412,71 +412,57 @@ impl Plaivo {
             .into_any_element()
     }
 
-    pub fn render_connections(&mut self, cx: &mut Context<Self>) -> Div {
+    pub fn account_rows(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let plex = match self.account.token {
             Some(_) => row(
                 "plex-account",
                 Some(Icon::Person),
-                "Plex account",
-                "Signed in",
+                "Plex",
+                self.watch
+                    .account_name
+                    .clone()
+                    .unwrap_or_else(|| "Signed in".into()),
             )
             .child(
                 pill("sign-out", "Sign out", Some(Icon::Logout), false)
                     .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx))),
             ),
-            None => row(
-                "plex-account",
-                Some(Icon::Person),
-                "Plex account",
-                "Not signed in",
-            )
-            .child(
+            None => row("plex-account", Some(Icon::Person), "Plex", "Not signed in").child(
                 pill("sign-in", "Sign in", None, false).on_click(cx.listener(|this, _, _, cx| {
                     this.page = Page::Auth;
                     this.sign_in(cx);
                 })),
             ),
         };
-        let jellyfin: Vec<_> = self
-            .account
-            .jellyfin
-            .iter()
-            .map(|s| {
-                let id = s.id.clone();
-                row(
-                    SharedString::from(format!("jf-{id}")),
-                    Some(Icon::Server),
-                    s.name.clone(),
-                    join(&[s.user.clone(), s.uri.clone()]),
-                )
-                .child(
-                    pill(
-                        SharedString::from(format!("jf-remove-{id}")),
-                        "Remove",
-                        None,
-                        false,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.remove_jellyfin(&id, cx))),
-                )
-            })
-            .collect();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(28.))
-            .child(section("Plex").child(plex))
-            .child(
-                section("Jellyfin").children(jellyfin).child(
-                    nav_row(
-                        "add-jellyfin",
-                        Icon::Add,
-                        "Add server",
-                        "Sign in with a username and password, or Quick Connect",
-                    )
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.navigate(Nav::AddServer, true, cx)),
-                    ),
-                ),
+        let jellyfin = self.account.jellyfin.iter().map(|s| {
+            let id = s.id.clone();
+            row(
+                SharedString::from(format!("jf-{id}")),
+                Some(Icon::Server),
+                s.name.clone(),
+                join(&["Jellyfin".into(), s.user.clone(), s.uri.clone()]),
             )
+            .child(
+                pill(
+                    SharedString::from(format!("jf-remove-{id}")),
+                    "Remove",
+                    None,
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.remove_jellyfin(&id, cx))),
+            )
+            .into_any_element()
+        });
+        let add = nav_row(
+            "add-jellyfin",
+            Icon::Add,
+            "Add Jellyfin server",
+            "Sign in with a username and password, or Quick Connect",
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::AddServer, true, cx)));
+        std::iter::once(plex.into_any_element())
+            .chain(jellyfin.collect::<Vec<_>>())
+            .chain([add.into_any_element()])
+            .collect()
     }
 }

@@ -556,46 +556,21 @@ impl Plaivo {
                         this.navigate(Nav::Settings(Some(c)), true, cx)
                     }))
                 })),
-            Some(Category::General) => div()
-                .flex()
-                .flex_col()
-                .gap(px(28.))
-                .child(
-                    section("Home server").child(match self.home_server() {
-                        Some(home) => nav_row(
-                            "home-server",
-                            Icon::Server,
-                            home.name,
-                            "Home shows Continue Watching and recommendations from this server",
-                        )
+            Some(Category::General) => {
+                let home = match self.home_server() {
+                    Some(home) => nav_row("home-server", Icon::Home, "Home server", home.name)
                         .on_click(
                             cx.listener(|this, _, _, cx| this.open_picker(Pick::HomeServer, cx)),
                         )
                         .into_any_element(),
-                        None => note(
-                            "No servers found. Sign in to Plex or add a Jellyfin server below.",
-                        )
-                        .into_any_element(),
-                    }),
-                )
-                .child(self.render_connections(cx))
-                .child(
-                    section("Watch Together").child(
-                        nav_row(
-                            "watch-relay",
-                            Icon::Group,
-                            "Relay",
-                            if self.settings.watch_relay.is_empty() {
-                                "Public relays".to_owned()
-                            } else {
-                                self.settings.watch_relay.clone()
-                            },
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.open_relay_picker(cx))),
-                    ),
-                )
-                .child(
-                    section("Libraries").child(
+                    None => {
+                        note("No servers found. Sign in to Plex or add a Jellyfin server below.")
+                            .into_any_element()
+                    }
+                };
+                let servers = section("Servers")
+                    .child(home)
+                    .child(
                         nav_row(
                             "libraries",
                             Icon::Sort,
@@ -605,8 +580,27 @@ impl Plaivo {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.navigate(Nav::Settings(Some(Category::Libraries)), true, cx)
                         })),
-                    ),
-                ),
+                    )
+                    .child(
+                        nav_row(
+                            "watch-relay",
+                            Icon::Group,
+                            "Watch Together relay",
+                            if self.settings.watch_relay.is_empty() {
+                                "Public relays".to_owned()
+                            } else {
+                                self.settings.watch_relay.clone()
+                            },
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.open_relay_picker(cx))),
+                    );
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(28.))
+                    .child(servers)
+                    .child(section("Accounts").children(self.account_rows(cx)))
+            }
             Some(Category::Libraries) => self.render_library_manager(cx),
             Some(Category::Appearance) => self.render_appearance(cx),
             Some(Category::Playback) => self.render_playback_settings(cx),

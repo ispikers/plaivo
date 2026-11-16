@@ -1490,6 +1490,21 @@ impl Plaivo {
             }
             return;
         };
+        if self.watch.account_name.is_none() {
+            let (c, t) = (self.client.clone(), token.clone());
+            Self::bg(
+                cx,
+                move || c.user(&t).map(|u| (u.name, t)),
+                |this, r, cx| match r {
+                    Ok((name, t)) if this.account.token.as_ref() == Some(&t) => {
+                        this.watch.account_name = Some(name);
+                        cx.notify();
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("plex user: {e}"),
+                },
+            );
+        }
         self.servers_loading = true;
         let c = self.client.clone();
         let started = token.clone();
