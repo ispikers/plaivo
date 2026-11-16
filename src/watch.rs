@@ -576,15 +576,6 @@ impl Plaivo {
         )
     }
 
-    // Pauses from outside the app (media keys, Now Playing, AirPods) go to the room, which then commands this player.
-    pub fn watch_relay_pause(&mut self, paused: bool) {
-        if paused {
-            self.watch_call(|wt| wt.pause());
-        } else {
-            self.watch_resume();
-        }
-    }
-
     pub fn watch_resume(&mut self) {
         self.watch.resuming = self
             .watch

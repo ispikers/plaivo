@@ -1777,11 +1777,7 @@ impl Plaivo {
                 false
             }
             mpv::Event::Pause(p) => {
-                let outside = p != self.player.paused && self.watch_holds();
                 self.player.paused = p;
-                if outside {
-                    self.watch_relay_pause(p);
-                }
                 self.report(if p { "paused" } else { "playing" }, cx);
                 self.watch_feed(true);
                 self.sync_session();
