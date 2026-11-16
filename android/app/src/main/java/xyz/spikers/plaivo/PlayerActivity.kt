@@ -142,6 +142,7 @@ class PlayerActivity : ComponentActivity() {
     private var queueShow: String? = null
     private var fellBack = false
     private var loading: Job? = null
+    private var ended: Playback? = null
     private val audioCodecs by lazy {
         val dolby =
             listOf("ac3" to MimeTypes.AUDIO_AC3, "eac3" to MimeTypes.AUDIO_E_AC3).filter { (_, mime) ->
@@ -287,7 +288,7 @@ class PlayerActivity : ComponentActivity() {
         forceTranscode: Boolean = false,
         tracks: TrackRequest? = null,
     ) {
-        if (playback != null && playback?.key != key) version = 0
+        playback?.let { if (it.server != server || it.key != key) version = 0 }
         loading?.cancel()
         loading =
             lifecycleScope.launch {
@@ -303,9 +304,10 @@ class PlayerActivity : ComponentActivity() {
                         return@launch
                     }
                 val previous = playback
-                if (previous?.key != p.key) fellBack = false
-                if (previous != null && (previous.key != p.key || previous.transcodeSession != null)) {
-                    val ending = end(previous, release = previous.key == p.key)
+                val same = previous?.server == p.server && previous?.key == p.key
+                if (!same) fellBack = false
+                if (previous != null && (!same || previous.transcodeSession != null)) {
+                    val ending = end(previous, release = same)
                     if (previous.transcodeSession != null) {
                         exo.stop()
                         ending.join()
@@ -313,7 +315,7 @@ class PlayerActivity : ComponentActivity() {
                 }
                 playback = p
                 quality = p.qualityKbps.toInt()
-                if (previous?.key != p.key) manualTracks = false
+                if (!same) manualTracks = false
                 requestedTracks = tracks.takeIf { manualTracks }
                 tracksPending = true
                 if (!manualTracks) {
@@ -712,12 +714,13 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (Watch.player === this) Watch.player = null
-        playback?.let { end(it) }
+        playback?.takeIf { it !== ended }?.let { end(it) }
         if (::exo.isInitialized) exo.release()
         super.onDestroy()
     }
 
     private fun end(p: Playback, release: Boolean = false): Job {
+        ended = p
         val time = exo.currentPosition.coerceAtLeast(0).toULong()
         val session = p.transcodeSession
         return background.launch(reports) {
@@ -732,6 +735,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun report(state: PlayState) {
         val p = playback ?: return
+        if (p === ended) return
         val time = exo.currentPosition.coerceAtLeast(0).toULong()
         background.launch(reports) { core.report(p.server, p.key, state, time, p.durationMs, p.transcodeSession) }
     }
