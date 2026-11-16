@@ -920,12 +920,7 @@ fun SettingsScreen(
                         ) {
                             GlyphIcon(Glyph.ChevronRight, 22.dp, Palette.muted)
                         }
-                        SettingsRow(
-                            null,
-                            "Quality",
-                            qualityName(r.quality),
-                            onClick = { picker = Picker.RuleQuality },
-                        )
+                        SettingsRow(null, "Quality", qualityName(r.quality), onClick = { picker = Picker.RuleQuality })
                         SettingsRow(
                             Glyph.Check,
                             "Save",

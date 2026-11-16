@@ -129,16 +129,12 @@ object Watch : WatchListener {
 
     fun create() {
         roomCode = null
-        background.launch {
-            runCatching { core.watchCreate() }.onFailure { main.post { toast(it.message) } }
-        }
+        background.launch { runCatching { core.watchCreate() }.onFailure { main.post { toast(it.message) } } }
     }
 
     fun join(code: String, create: Boolean = false) {
         roomCode = code
-        background.launch {
-            runCatching { core.watchJoin(code, create) }.onFailure { main.post { toast(it.message) } }
-        }
+        background.launch { runCatching { core.watchJoin(code, create) }.onFailure { main.post { toast(it.message) } } }
     }
 
     fun share(card: MediaCard) {
