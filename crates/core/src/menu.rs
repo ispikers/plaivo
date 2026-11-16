@@ -69,19 +69,7 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
     let season = c.season && it.kind == "episode" && !it.parent_rating_key.is_empty();
     let mut v = Vec::new();
     if in_progress {
-        v.extend([
-            Action::FromStart,
-            Action::MarkWatched,
-            Action::MarkUnwatched,
-            Action::ClearProgress,
-        ]);
-        if c.details {
-            v.push(Action::Details);
-        }
-        if season {
-            v.push(Action::Season);
-        }
-        return v;
+        v.push(Action::FromStart);
     }
     if it.trailer().is_some() {
         v.push(Action::Trailer);
@@ -92,9 +80,6 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
         } else {
             Action::MarkWatched
         });
-    }
-    if library && c.continue_watching {
-        v.push(Action::ClearProgress);
     }
     if library && c.can_rate {
         v.push(Action::Rate);
@@ -114,6 +99,9 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
         } else {
             Action::AddToWatchlist
         });
+    }
+    if in_progress || (library && c.continue_watching) {
+        v.push(Action::ClearProgress);
     }
     if c.details {
         v.push(Action::Details);
@@ -201,23 +189,6 @@ mod tests {
     }
 
     #[test]
-    fn next_up_items_in_continue_watching_can_be_removed() {
-        let ep = Item {
-            kind: "episode".into(),
-            ..Default::default()
-        };
-        assert!(!actions(&ep, &ctx()).contains(&Action::ClearProgress));
-        let row = Context {
-            continue_watching: true,
-            ..ctx()
-        };
-        assert_eq!(
-            &actions(&ep, &row)[..2],
-            [Action::MarkWatched, Action::ClearProgress]
-        );
-    }
-
-    #[test]
     fn episode_pages_offer_their_season() {
         let ep = Item {
             kind: "episode".into(),
@@ -239,34 +210,47 @@ mod tests {
     }
 
     #[test]
-    fn in_progress_items_get_the_continue_watching_menu() {
-        let ep = Item {
+    fn continue_watching_menus_share_one_order() {
+        let next_up = Item {
             kind: "episode".into(),
-            view_offset: Some(60_000),
-            duration: Some(1_200_000),
+            parent_rating_key: "s1".into(),
+            media: vec![Media::default()],
             ..Default::default()
         };
+        let row = Context {
+            continue_watching: true,
+            ..ctx()
+        };
+        let common = [
+            Action::MarkWatched,
+            Action::Rate,
+            Action::FileInfo,
+            Action::Download,
+            Action::ClearProgress,
+        ];
         assert_eq!(
-            actions(&ep, &ctx()),
-            [
-                Action::FromStart,
-                Action::MarkWatched,
-                Action::MarkUnwatched,
-                Action::ClearProgress,
-                Action::Details
-            ]
+            actions(&next_up, &row),
+            [&common[..], &[Action::Details]].concat()
         );
+        let started = Item {
+            view_offset: Some(60_000),
+            duration: Some(1_200_000),
+            ..next_up.clone()
+        };
         assert_eq!(
-            actions(
-                &ep,
-                &Context {
-                    details: false,
-                    ..ctx()
-                }
-            )
-            .last(),
-            Some(&Action::ClearProgress)
+            actions(&started, &ctx()),
+            [&[Action::FromStart], &common[..], &[Action::Details]].concat()
         );
+        let page = Context {
+            details: false,
+            season: true,
+            ..row
+        };
+        assert_eq!(
+            actions(&next_up, &page),
+            [&common[..], &[Action::Season]].concat()
+        );
+        assert!(!actions(&next_up, &ctx()).contains(&Action::ClearProgress));
     }
 
     #[test]

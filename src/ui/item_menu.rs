@@ -20,7 +20,6 @@ pub struct ItemMenu {
     key: String,
     item: Option<Item>,
     watchlisted: Option<bool>,
-    resume: bool,
 }
 
 pub enum Dialog {
@@ -228,7 +227,6 @@ impl Plaivo {
         &mut self,
         server: String,
         key: String,
-        resume: bool,
         at: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
@@ -247,7 +245,6 @@ impl Plaivo {
             key: key.clone(),
             item: item.clone(),
             watchlisted,
-            resume,
         });
         match item {
             Some(it) if watchlisted.is_none() => self.fetch_watchlisted(&it, cx),
@@ -356,7 +353,6 @@ impl Plaivo {
         server: &str,
         it: &Item,
         watchlisted: Option<bool>,
-        resume: bool,
     ) -> Vec<(Icon, &'static str, Action)> {
         let local = server != DISCOVER_ID;
         let here = self.page == Page::Detail
@@ -366,8 +362,6 @@ impl Plaivo {
             details: !here,
             season: here,
             can_rate: self.server(server).is_some_and(|s| s.can_rate()),
-            continue_watching: resume
-                && self.server(server).is_some_and(|s| s.can_remove_next_up()),
             can_download: self.downloads.is_some()
                 && !self.download_entries.iter().any(|e| {
                     e.server == server
@@ -375,6 +369,13 @@ impl Plaivo {
                 }),
             signed_in: self.account.token.is_some(),
             watchlisted,
+            continue_watching: self.server(server).is_some_and(|s| s.can_remove_next_up())
+                && self.hubs.iter().any(|h| {
+                    h.resume
+                        && h.items
+                            .iter()
+                            .any(|c| c.server == server && c.key == it.rating_key)
+                }),
         };
         menu::actions(it, &ctx)
             .into_iter()
@@ -601,7 +602,7 @@ impl Plaivo {
         let entries = m
             .item
             .as_ref()
-            .map(|it| self.menu_entries(&m.server, it, m.watchlisted, m.resume));
+            .map(|it| self.menu_entries(&m.server, it, m.watchlisted));
         let rows = entries.as_ref().map_or(1, |e| e.len().max(1));
         let vp = window.viewport_size();
         let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));

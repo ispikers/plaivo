@@ -563,8 +563,7 @@ impl Plaivo {
         let image = self.picture(&card.thumb, if wide { Shape::Wide } else { Shape::Poster });
         let placeholder = card.key.is_empty();
         let open = card.clone();
-        let (menu_server, menu_key, resume) =
-            (card.server.to_string(), card.key.to_string(), card.resume);
+        let (menu_server, menu_key) = (card.server.to_string(), card.key.to_string());
         let art = div()
             .relative()
             .w(px(art_w))
@@ -677,7 +676,6 @@ impl Plaivo {
                             this.open_item_menu(
                                 menu_server.clone(),
                                 menu_key.clone(),
-                                resume,
                                 ev.position,
                                 cx,
                             )

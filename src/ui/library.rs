@@ -116,7 +116,6 @@ impl Plaivo {
                         let check = card.watched && this.settings.watched_indicators;
                         let (open, server, key) =
                             (card.clone(), card.server.to_string(), card.key.to_string());
-                        let resume = card.resume;
                         div()
                             .id(SharedString::from(format!("lib-row-{i}")))
                             .h(px(row_h))
@@ -137,7 +136,6 @@ impl Plaivo {
                                             this.open_item_menu(
                                                 server.clone(),
                                                 key.clone(),
-                                                resume,
                                                 ev.position,
                                                 cx,
                                             )
