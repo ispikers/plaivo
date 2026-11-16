@@ -966,18 +966,21 @@ pub fn search(srv: &Server, c: &Ctx, q: &str) -> R<Vec<(Item, f64)>> {
 
 static STARTED: Mutex<String> = Mutex::new(String::new());
 
-fn progress_path(key: &str, state: &str) -> &'static str {
-    let mut started = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+fn progress_path(started: &str, key: &str, state: &str) -> &'static str {
     match state {
-        "stopped" => {
-            started.clear();
-            "/Sessions/Playing/Stopped"
-        }
-        _ if *started != key => {
-            key.clone_into(&mut started);
-            "/Sessions/Playing"
-        }
+        "stopped" => "/Sessions/Playing/Stopped",
+        _ if started != key => "/Sessions/Playing",
         _ => "/Sessions/Playing/Progress",
+    }
+}
+
+fn record_progress(started: &mut String, key: &str, state: &str, sent: bool) {
+    if state == "stopped" {
+        if started == key {
+            started.clear();
+        }
+    } else if sent {
+        key.clone_into(started);
     }
 }
 
@@ -1000,8 +1003,9 @@ pub fn timeline(
     time_ms: u64,
     transcode_session: Option<&str>,
 ) -> bool {
-    let path = progress_path(key, state);
-    match authed(
+    let started = || STARTED.lock().unwrap_or_else(|e| e.into_inner());
+    let path = progress_path(&started(), key, state);
+    let sent = match authed(
         c.agent.post(format!("{}{path}", srv.uri)),
         c,
         Some(&srv.token),
@@ -1017,7 +1021,9 @@ pub fn timeline(
             log::warn!("{} {path} for {key} failed: {e}", srv.name);
             false
         }
-    }
+    };
+    record_progress(&mut started(), key, state, sent);
+    sent
 }
 
 fn sep(path: &str) -> char {
@@ -1708,11 +1714,20 @@ mod tests {
 
     #[test]
     fn progress_starts_once_per_item() {
-        assert_eq!(progress_path("x1", "playing"), "/Sessions/Playing");
-        assert_eq!(progress_path("x1", "paused"), "/Sessions/Playing/Progress");
-        assert_eq!(progress_path("x1", "stopped"), "/Sessions/Playing/Stopped");
-        assert_eq!(progress_path("x1", "playing"), "/Sessions/Playing");
-        assert_eq!(progress_path("x2", "playing"), "/Sessions/Playing");
+        let mut started = String::new();
+        let mut report = |key: &str, state: &str, sent: bool| {
+            let path = progress_path(&started, key, state);
+            record_progress(&mut started, key, state, sent);
+            path
+        };
+        assert_eq!(report("x1", "playing", false), "/Sessions/Playing");
+        assert_eq!(report("x1", "playing", true), "/Sessions/Playing");
+        assert_eq!(report("x1", "paused", true), "/Sessions/Playing/Progress");
+        assert_eq!(report("x0", "stopped", true), "/Sessions/Playing/Stopped");
+        assert_eq!(report("x1", "playing", true), "/Sessions/Playing/Progress");
+        assert_eq!(report("x1", "stopped", false), "/Sessions/Playing/Stopped");
+        assert_eq!(report("x1", "playing", true), "/Sessions/Playing");
+        assert_eq!(report("x2", "playing", true), "/Sessions/Playing");
     }
 
     #[test]
