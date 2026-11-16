@@ -136,8 +136,7 @@ fn installer() -> anyhow::Result<()> {
             .arg("--packDir")
             .arg(bundle(true, false)?)
             .arg("--signEntitlements")
-            .arg(root().join(ENTITLEMENTS))
-            .arg("--signDisableDeep");
+            .arg(root().join(ENTITLEMENTS));
         for (var, flag) in [
             ("PLAIVO_SIGN_IDENTITY", "--signAppIdentity"),
             ("PLAIVO_SIGN_INSTALL_IDENTITY", "--signInstallIdentity"),
