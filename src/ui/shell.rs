@@ -520,6 +520,15 @@ impl Plaivo {
             })
             .child(
                 item(
+                    "watch".into(),
+                    Icon::Group,
+                    "Watch Together".into(),
+                    self.page == Page::Watch,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Watch, true, cx))),
+            )
+            .child(
+                item(
                     "downloads".into(),
                     Icon::Download,
                     "Downloads".into(),
@@ -528,15 +537,6 @@ impl Plaivo {
                 .on_click(
                     cx.listener(|this, _, _, cx| this.navigate(Nav::Downloads(None), true, cx)),
                 ),
-            )
-            .child(
-                item(
-                    "watch".into(),
-                    Icon::Group,
-                    "Watch Together".into(),
-                    self.page == Page::Watch,
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Watch, true, cx))),
             )
             .child(
                 div()

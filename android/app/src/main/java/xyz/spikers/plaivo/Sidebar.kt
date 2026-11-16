@@ -135,20 +135,20 @@ fun Sidebar(
                 Modifier.selectedFocus(screen == Screen.Watchlist),
             )
         NavItem(
-            Glyph.Download,
-            "Downloads",
-            screen == Screen.Downloads,
-            labelAlpha,
-            { onNavigate(Screen.Downloads) },
-            Modifier.selectedFocus(screen == Screen.Downloads),
-        )
-        NavItem(
             Glyph.Group,
             "Watch Together",
             screen == Screen.WatchTogether,
             labelAlpha,
             { onNavigate(Screen.WatchTogether) },
             Modifier.selectedFocus(screen == Screen.WatchTogether),
+        )
+        NavItem(
+            Glyph.Download,
+            "Downloads",
+            screen == Screen.Downloads,
+            labelAlpha,
+            { onNavigate(Screen.Downloads) },
+            Modifier.selectedFocus(screen == Screen.Downloads),
         )
         Box(Modifier.fillMaxWidth().height(32.dp)) {
             Text(
