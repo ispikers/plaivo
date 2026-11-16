@@ -86,20 +86,27 @@ impl SubtitleMode {
     }
 }
 
-pub fn two_letter(code: &str) -> Option<&'static str> {
-    let code = code.to_ascii_lowercase();
+fn primary(code: &str) -> String {
+    code.split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn language(code: &str) -> Option<&'static (&'static str, &'static [&'static str])> {
+    let primary = primary(code);
     LANGUAGES
         .iter()
-        .find(|(_, codes)| codes.contains(&code.as_str()))
-        .and_then(|(_, codes)| codes.iter().copied().find(|c| c.len() == 2))
+        .find(|(_, codes)| codes.contains(&primary.as_str()))
+}
+
+pub fn two_letter(code: &str) -> Option<&'static str> {
+    language(code).and_then(|(_, codes)| codes.iter().copied().find(|c| c.len() == 2))
 }
 
 pub fn language_label(code: &str) -> Option<&'static str> {
-    let code = code.to_ascii_lowercase();
-    LANGUAGES
-        .iter()
-        .find(|(_, codes)| codes.contains(&code.as_str()))
-        .map(|(name, _)| *name)
+    language(code).map(|(name, _)| *name)
 }
 
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
@@ -116,45 +123,29 @@ pub struct TrackInfo {
     pub is_default: bool,
 }
 
-fn entry(code: &str) -> Option<&'static [&'static str]> {
-    LANGUAGES
-        .iter()
-        .map(|(_, codes)| *codes)
-        .find(|codes| codes.contains(&code))
-}
-
 pub fn canonical(code: &str) -> String {
-    let primary = code
-        .split(['-', '_'])
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if primary == "und" {
-        return String::new();
+    match language(code) {
+        Some((_, codes)) => codes[0].to_owned(),
+        None => match primary(code) {
+            p if p == "und" => String::new(),
+            p => p,
+        },
     }
-    entry(&primary).map_or(primary, |codes| codes[0].to_owned())
 }
 
 pub fn language_name(code: &str) -> String {
-    let code = canonical(code);
-    match LANGUAGES.iter().find(|(_, codes)| codes[0] == code) {
-        Some((name, _)) => (*name).to_owned(),
-        None if code.is_empty() => "Any".into(),
-        None => code.to_uppercase(),
+    match canonical(code) {
+        c if c.is_empty() => "Any".into(),
+        c => language_label(&c).map_or_else(|| c.to_uppercase(), str::to_owned),
     }
 }
 
 pub fn language_codes(code: &str) -> String {
-    let code = canonical(code);
-    entry(&code).map_or(code, |codes| codes.join(","))
+    language(code).map_or_else(|| canonical(code), |(_, codes)| codes.join(","))
 }
 
 fn iso1(code: &str) -> String {
-    let code = canonical(code);
-    entry(&code)
-        .and_then(|codes| codes.iter().find(|c| c.len() == 2))
-        .map_or(code, |c| (*c).to_owned())
+    two_letter(code).map_or_else(|| canonical(code), str::to_owned)
 }
 
 fn same(a: &str, b: &str) -> bool {
@@ -635,6 +626,14 @@ mod tests {
         assert_eq!(
             (language_label("ger"), language_label("")),
             (Some("German"), None)
+        );
+        assert_eq!(
+            (
+                two_letter("pt-BR"),
+                language_label("zh_Hant"),
+                iso1("en-US")
+            ),
+            (Some("pt"), Some("Chinese"), "en".into())
         );
     }
 
