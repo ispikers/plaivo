@@ -55,10 +55,17 @@ impl Plaivo {
         let Some(srv) = self.player.server.clone() else {
             return;
         };
-        if self.player.sub_search.downloading.is_some() {
-            return;
+        if self
+            .player
+            .sub_search
+            .downloading
+            .as_ref()
+            .is_some_and(|(item, _)| *item == self.player.key)
+        {
+            return self.toast("A subtitle is already downloading", cx);
         }
-        self.player.sub_search.downloading = Some(result.key.clone());
+        let job = (self.player.key.clone(), result.key.clone());
+        self.player.sub_search.downloading = Some(job.clone());
         let (c, key, language) = (
             self.client.clone(),
             self.player.key.clone(),
@@ -98,7 +105,9 @@ impl Plaivo {
                 Ok(None)
             },
             move |this, r, cx| {
-                this.player.sub_search.downloading = None;
+                if this.player.sub_search.downloading.as_ref() == Some(&job) {
+                    this.player.sub_search.downloading = None;
+                }
                 if this.player.key != watching {
                     return;
                 }
@@ -183,7 +192,9 @@ impl Plaivo {
                 .flex_col()
                 .gap(px(2.))
                 .children(list.iter().enumerate().map(|(i, r)| {
-                    let busy = downloading.as_deref() == Some(r.key.as_str());
+                    let busy = downloading
+                        .as_ref()
+                        .is_some_and(|(item, res)| *item == self.player.key && *res == r.key);
                     let tags = [
                         r.provider_title.clone(),
                         r.score.map(|s| format!("Score {s:.0}")).unwrap_or_default(),

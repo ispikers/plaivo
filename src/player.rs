@@ -68,7 +68,7 @@ pub const SPEEDS: &[f64] = &[0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 pub struct SubSearch {
     pub language: String,
     pub results: Option<Result<Vec<plex::SubtitleResult>, String>>,
-    pub downloading: Option<String>,
+    pub downloading: Option<(String, String)>,
     pub generation: u64,
 }
 
