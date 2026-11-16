@@ -1,9 +1,12 @@
 [workspace]
 members = [".", "crates/core", "crates/ffi", "crates/uniffi-bindgen", "xtask"]
 
+[workspace.package]
+version = "0.1.5"
+
 [package]
 name = "plaivo"
-version = "0.1.5"
+version.workspace = true
 edition = "2024"
 license = "MIT"
 

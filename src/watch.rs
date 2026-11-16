@@ -5,6 +5,7 @@ use crate::ui::theme::Icon;
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{AppContext, Context, Entity, SharedString};
+use plaivo_core::CLIENT;
 use plaivo_core::watch_together::{
     Connection, Event, Match, MatchState, Media, PartyState, Phase, PlaivoExt, PlayerCommand,
     PlayerFeed, Relays, Update, WatchTogether, describe, display_name, find_copy, match_for,
@@ -12,7 +13,6 @@ use plaivo_core::watch_together::{
 };
 use std::time::{Duration, Instant};
 
-const CLIENT: &str = concat!("Plaivo/", env!("CARGO_PKG_VERSION"));
 const FEED_EVERY: Duration = Duration::from_millis(400);
 const SAVE_AFTER: Duration = Duration::from_millis(600);
 

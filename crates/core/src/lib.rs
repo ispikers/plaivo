@@ -66,6 +66,8 @@ impl Account {
     }
 }
 
+pub const CLIENT: &str = concat!("Plaivo/", env!("CARGO_PKG_VERSION"));
+
 pub const DISK_CACHE_BYTES: u64 = 768 << 20;
 pub(crate) const WATCHED_PCT: f64 = 90.0;
 

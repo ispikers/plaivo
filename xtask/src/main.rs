@@ -209,7 +209,7 @@ fn release(wanted: &str) -> anyhow::Result<()> {
         )?;
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         run(Command::new(cargo)
-            .args(["update", "-p", "plaivo", "--offline"])
+            .args(["update", "--workspace", "--offline"])
             .current_dir(root()))?;
         git(&["add", "Cargo.toml", "Cargo.lock"])?;
         git(&["commit", "-m", &format!("chore: release {tag}")])?;

@@ -17,6 +17,17 @@ spotless {
     }
 }
 
+val workspace: File = rootProject.projectDir.parentFile
+val cargoVersion =
+    providers
+        .fileContents(rootProject.layout.projectDirectory.file("../Cargo.toml"))
+        .asText
+        .get()
+        .lineSequence()
+        .first { it.startsWith("version = \"") }
+        .substringAfter('"')
+        .substringBefore('"')
+
 android {
     namespace = "xyz.spikers.plaivo"
     compileSdk = 37
@@ -27,7 +38,7 @@ android {
         minSdk = 24
         targetSdk = 37
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = cargoVersion
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
@@ -49,7 +60,6 @@ android {
     }
 }
 
-val workspace: File = rootProject.projectDir.parentFile
 val ndkDir = androidComponents.sdkComponents.ndkDirectory
 
 androidComponents.onVariants { variant ->
@@ -67,7 +77,6 @@ androidComponents.onVariants { variant ->
             listOf("cargo", "ndk", "-t", "arm64-v8a", "-t", "armeabi-v7a", "-P", "24", "-o", file(jniLibs).absolutePath) +
                 listOf("build", "-p", "plaivo-ffi", "--profile", profile),
         )
-        environment("PLAIVO_APP_VERSION", android.defaultConfig.versionName!!)
         val ndk = ndkDir
         doFirst { environment("ANDROID_NDK_HOME", ndk.get().asFile.absolutePath) }
     }

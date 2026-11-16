@@ -282,7 +282,7 @@ impl Plaivo {
             drop(old);
             let state = Arc::new(Mutex::new(PartyState::default()));
             let shared = state.clone();
-            let wt = WatchTogether::new(&name, &client(), relays, move |u| {
+            let wt = WatchTogether::new(&name, plaivo_core::CLIENT, relays, move |u| {
                 deliver(&*listener, &shared, u)
             })
             .map_err(|e| format!("Watch Together: {}", e.code))?;
@@ -338,11 +338,6 @@ fn deliver(listener: &dyn WatchListener, shared: &Mutex<PartyState>, update: Upd
             PlayerCommand::SetRate(rate) => WatchCommand::SetRate { rate },
         }),
     }
-}
-
-fn client() -> String {
-    let version = option_env!("PLAIVO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-    format!("Plaivo/{version}")
 }
 
 fn view(s: &PartyState) -> WatchState {

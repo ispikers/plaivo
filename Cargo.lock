@@ -3704,7 +3704,7 @@ dependencies = [
 
 [[package]]
 name = "plaivo-core"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "flate2",
  "libc",
@@ -3717,7 +3717,7 @@ dependencies = [
 
 [[package]]
 name = "plaivo-ffi"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "flate2",
  "log",
@@ -5462,7 +5462,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "uniffi",
 ]
@@ -6644,7 +6644,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "serde_json",

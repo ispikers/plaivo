@@ -47,7 +47,7 @@ To release, run this from a clean, up-to-date `main` with the new version:
 cargo run -p xtask -- release 0.2.0
 ```
 
-It bumps `Cargo.toml`, commits, tags `v0.2.0`, asks before pushing, waits for the `release` workflow (which packs both platforms with delta updates from the previous release and uploads them to a draft GitHub release), shows the draft and asks before publishing it. The workflow reads the optional secrets `PLAIVO_TRAKT_ID`, `MACOS_CERT_P12` and `MACOS_CERT_PASSWORD` (a base64 `.p12` holding both the Developer ID Application and Developer ID Installer certificates), and `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` (notarization, required with the certificate). The CI Windows build is unsigned.
+It bumps the workspace version in `Cargo.toml` (every crate and the Android `versionName` read it), commits, tags `v0.2.0`, asks before pushing, waits for the `release` workflow (which packs both platforms with delta updates from the previous release and uploads them to a draft GitHub release), shows the draft and asks before publishing it. The workflow reads the optional secrets `PLAIVO_TRAKT_ID`, `MACOS_CERT_P12` and `MACOS_CERT_PASSWORD` (a base64 `.p12` holding both the Developer ID Application and Developer ID Installer certificates), and `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` (notarization, required with the certificate). The CI Windows build is unsigned.
 
 libmpv itself is built by `deps/build-libmpv.sh` and the `libmpv` workflow. Changing a pin needs a new `TAG`.
 
