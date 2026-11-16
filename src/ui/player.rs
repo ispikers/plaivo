@@ -47,6 +47,15 @@ fn control(
     .tooltip(tip(label))
 }
 
+fn neighbor_label(step: isize, target: Option<&Card>) -> SharedString {
+    match (step < 0, target) {
+        (true, Some(c)) => format!("Previous · {}", c.subtitle).into(),
+        (false, Some(c)) => format!("Next · {}", c.subtitle).into(),
+        (true, None) => "No previous episode".into(),
+        (false, None) => "No next episode".into(),
+    }
+}
+
 fn seek_button(id: &'static str, i: Icon, secs: u32, back: bool) -> gpui::Stateful<gpui::Div> {
     let label = format!("{} {secs} seconds", if back { "Back" } else { "Forward" });
     control(id, i, 24., label).relative().child(
@@ -595,38 +604,6 @@ impl Plaivo {
         let stop_on_close = self.settings.stop_on_close;
         let paused = self.player.paused;
         let episodic = !self.player.queue.is_empty();
-        let (prev, next) = (self.neighbor(-1), self.neighbor(1));
-        let skip_button = |id: &'static str,
-                           i: Icon,
-                           step: isize,
-                           target: Option<crate::app::Card>,
-                           cx: &mut Context<Self>| {
-            let label: SharedString = target.as_ref().map_or_else(
-                || {
-                    if step < 0 {
-                        "No previous episode"
-                    } else {
-                        "No next episode"
-                    }
-                    .into()
-                },
-                |c| {
-                    format!(
-                        "{} · {}",
-                        if step < 0 { "Previous" } else { "Next" },
-                        c.subtitle
-                    )
-                    .into()
-                },
-            );
-            let b = control(id, i, 26., label);
-            match target {
-                Some(_) => {
-                    b.on_click(cx.listener(move |this, _, _, cx| this.play_neighbor(step, cx)))
-                }
-                None => b.opacity(0.35).cursor_default(),
-            }
-        };
         let muted = self.player.muted || self.player.volume == 0.;
         let scale = self.settings.scale;
         let title_max = (f32::from(window.viewport_size().width) / 2. - 180.).max(160.);
@@ -774,7 +751,11 @@ impl Plaivo {
                             .items_center()
                             .gap(px(4.))
                             .when(episodic, |d| {
-                                d.child(skip_button("prev", Icon::SkipPrevious, -1, prev, cx))
+                                d.child(self.neighbor_button(
+                                    -1,
+                                    |l| control("prev", Icon::SkipPrevious, 26., l),
+                                    cx,
+                                ))
                             })
                             .child(seek_button("back", Icon::Replay, small, true).on_click(
                                 cx.listener(move |this, _, _, _| this.seek_by(-(small as f64))),
@@ -797,7 +778,11 @@ impl Plaivo {
                                 cx.listener(move |this, _, _, _| this.seek_by(small as f64)),
                             ))
                             .when(episodic, |d| {
-                                d.child(skip_button("next", Icon::SkipNext, 1, next, cx))
+                                d.child(self.neighbor_button(
+                                    1,
+                                    |l| control("next", Icon::SkipNext, 26., l),
+                                    cx,
+                                ))
                             })
                             .child(if stop_on_close {
                                 control("minimize", Icon::ExpandMore, 28., "Minimize").on_click(
@@ -1634,6 +1619,20 @@ impl Plaivo {
             )
     }
 
+    fn neighbor_button(
+        &self,
+        step: isize,
+        button: impl FnOnce(SharedString) -> gpui::Stateful<gpui::Div>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let target = self.neighbor(step);
+        let b = button(neighbor_label(step, target.as_ref()));
+        match target {
+            Some(_) => b.on_click(cx.listener(move |this, _, _, cx| this.play_neighbor(step, cx))),
+            None => b.opacity(0.35).cursor_default(),
+        }
+    }
+
     pub fn render_mini(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let (x, bottom, w, h) = theme::MINI_HOLE;
         let bar = theme::MINI_BAR;
@@ -1661,38 +1660,6 @@ impl Plaivo {
             )
         };
         let episodic = !self.player.queue.is_empty();
-        let mini_skip = |id: &'static str,
-                         i: Icon,
-                         step: isize,
-                         target: Option<crate::app::Card>,
-                         cx: &mut Context<Self>| {
-            let label: SharedString = target.as_ref().map_or_else(
-                || {
-                    if step < 0 {
-                        "No previous episode"
-                    } else {
-                        "No next episode"
-                    }
-                    .into()
-                },
-                |c| {
-                    format!(
-                        "{} · {}",
-                        if step < 0 { "Previous" } else { "Next" },
-                        c.subtitle
-                    )
-                    .into()
-                },
-            );
-            let b = mini_control(id, i, 24.).tooltip(tip(label));
-            match target {
-                Some(_) => {
-                    b.on_click(cx.listener(move |this, _, _, cx| this.play_neighbor(step, cx)))
-                }
-                None => b.opacity(0.35).cursor_default(),
-            }
-        };
-        let (prev, next) = (self.neighbor(-1), self.neighbor(1));
         div()
             .relative()
             .h(px(bar))
@@ -1755,7 +1722,14 @@ impl Plaivo {
                             .items_center()
                             .gap(px(4.))
                             .when(episodic, |d| {
-                                d.child(mini_skip("mini-prev", Icon::SkipPrevious, -1, prev, cx))
+                                d.child(self.neighbor_button(
+                                    -1,
+                                    |l| {
+                                        mini_control("mini-prev", Icon::SkipPrevious, 24.)
+                                            .tooltip(tip(l))
+                                    },
+                                    cx,
+                                ))
                             })
                             .child(mini_control("mini-back", Icon::Replay, 24.).on_click(
                                 cx.listener(|this, _, _, _| {
@@ -1780,7 +1754,14 @@ impl Plaivo {
                                 }),
                             ))
                             .when(episodic, |d| {
-                                d.child(mini_skip("mini-next", Icon::SkipNext, 1, next, cx))
+                                d.child(self.neighbor_button(
+                                    1,
+                                    |l| {
+                                        mini_control("mini-next", Icon::SkipNext, 24.)
+                                            .tooltip(tip(l))
+                                    },
+                                    cx,
+                                ))
                             })
                             .child(
                                 mini_control("mini-stop", Icon::Stop, 24.)
