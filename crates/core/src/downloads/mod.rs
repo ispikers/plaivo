@@ -783,6 +783,14 @@ impl Inner {
         !self.abort.load(Ordering::Relaxed)
     }
 
+    fn live(&self) -> Result<(), Fail> {
+        if self.abort.load(Ordering::Relaxed) {
+            Err(Fail::Abort)
+        } else {
+            Ok(())
+        }
+    }
+
     fn download(&self, mut e: Entry, srv: &Server) {
         (self.on_change)();
         let mut delay = FIRST_RETRY;
@@ -867,6 +875,7 @@ impl Inner {
     }
 
     fn attempt(&self, e: &mut Entry, srv: &Server) -> Result<Outcome, Fail> {
+        self.live()?;
         let cx = Ctx::new(self.client.clone(), Source::Live);
         match e.kind.as_str() {
             "show" => {
@@ -884,6 +893,7 @@ impl Inner {
             _ => {}
         }
         let item = srv.metadata(&cx, &e.key).map_err(Fail::Net)?;
+        self.live()?;
         let dir = self.dir(&e.server, &e.key);
         write_item(&dir, &item)?;
         let mut snapshots = vec![(e.key.clone(), item.clone())];
@@ -892,6 +902,7 @@ impl Inner {
             let parent = match store::read_json::<Item>(&pdir.join(ITEM)) {
                 Some(p) => p,
                 None => {
+                    self.live()?;
                     let p = srv.metadata(&cx, &key).map_err(Fail::Net)?;
                     write_item(&pdir, &p)?;
                     p
@@ -931,6 +942,7 @@ impl Inner {
             );
         });
         for path in images {
+            self.live()?;
             let file = self.image_path(&e.server, &path);
             if self.lock().images.contains(&file) {
                 continue;
@@ -947,6 +959,7 @@ impl Inner {
             }
         }
         for (name, s) in subtitles(part) {
+            self.live()?;
             let file = dir.join(name);
             if !file.exists()
                 && let Err(err) = self
@@ -965,6 +978,7 @@ impl Inner {
         if let Ok(m) = std::fs::metadata(&file) {
             return Ok(Outcome::Done(m.len()));
         }
+        self.live()?;
         let part_file = dir.join(format!("{}.part", e.file));
         let (server, key) = e.id();
         let mut seen = (e.bytes, e.total);

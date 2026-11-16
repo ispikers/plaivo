@@ -1170,7 +1170,7 @@ fn removed_servers_stop_downloading_and_empty_keys_never_purge_the_server() {
 fn pausing_during_a_metadata_request_sticks() {
     let (entered, released) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
     let (inside, open) = (entered.clone(), released.clone());
-    let (base, _) = serve(move |req| {
+    let (base, log) = serve(move |req| {
         let gate = |n| {
             inside.store(n, Ordering::SeqCst);
             while open.load(Ordering::SeqCst) < n {
@@ -1223,6 +1223,13 @@ fn pausing_during_a_metadata_request_sticks() {
         (s[0].state, s[0].error.as_str()),
         (State::Paused, ""),
         "an error after pausing does not overwrite the pause"
+    );
+    assert!(
+        !log.lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.path.starts_with("/library/metadata/110")),
+        "a paused attempt stops before fetching parent metadata"
     );
     drop(d);
     let _ = std::fs::remove_dir_all(root);
