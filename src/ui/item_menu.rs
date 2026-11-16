@@ -11,7 +11,7 @@ use gpui::{
 };
 use plaivo_core::menu::{self, Action};
 
-const MENU_W: f32 = 268.;
+const MENU_W: f32 = 272.;
 const MENU_ROW: f32 = 40.;
 
 pub struct ItemMenu {
