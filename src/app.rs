@@ -548,72 +548,6 @@ fn hero_card(it: &Item, server: &str) -> Card {
     card
 }
 
-fn title_rank(title: &str, q: &str) -> u8 {
-    let (t, q) = (title.to_lowercase(), q.to_lowercase());
-    if t == q {
-        0
-    } else if t.starts_with(&q) {
-        1
-    } else if t
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|w| !w.is_empty() && w.starts_with(&q))
-    {
-        2
-    } else if t.contains(&q) {
-        3
-    } else {
-        4
-    }
-}
-
-fn rank_search(
-    q: &str,
-    home: &str,
-    local: Vec<(String, Vec<(Item, f64)>)>,
-    discover: Vec<Item>,
-) -> Vec<(String, Item)> {
-    let mut seen = HashSet::new();
-    let mut owned_guids = HashSet::new();
-    let mut lib: Vec<(u8, bool, f64, String, Item)> = Vec::new();
-    for (server, hits) in local {
-        for (it, score) in hits {
-            let it = it.as_show();
-            if !matches!(it.kind.as_str(), "movie" | "show")
-                || !seen.insert((server.clone(), it.rating_key.clone()))
-            {
-                continue;
-            }
-            if !it.guid.is_empty() && !owned_guids.insert(it.guid.clone()) {
-                continue;
-            }
-            lib.push((
-                title_rank(&it.title, q),
-                server != home,
-                -score,
-                server.clone(),
-                it,
-            ));
-        }
-    }
-    lib.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
-    let owned_titles: HashSet<(String, Option<i64>)> = lib
-        .iter()
-        .map(|e| (e.4.title.to_lowercase(), e.4.year))
-        .collect();
-    let mut out: Vec<(String, Item)> = lib.into_iter().map(|e| (e.3, e.4)).collect();
-    out.extend(
-        discover
-            .into_iter()
-            .filter(|it| matches!(it.kind.as_str(), "movie" | "show"))
-            .filter(|it| {
-                !owned_guids.contains(&it.guid)
-                    && !owned_titles.contains(&(it.title.to_lowercase(), it.year))
-            })
-            .map(|it| (DISCOVER_ID.to_owned(), it)),
-    );
-    out
-}
-
 pub fn shape_size(shape: Shape, scale: f32, width: u32) -> (u32, u32) {
     let round = |w: f32| ((w * scale / 50.0).ceil() * 50.0) as u32;
     match shape {
@@ -2415,7 +2349,7 @@ impl Plaivo {
         self.search_gen += 1;
         let gen_ = self.search_gen;
         let q = q.trim().to_owned();
-        if q.chars().count() < 2 {
+        if plaivo_core::search::too_short(&q) {
             self.results.clear();
             self.searching = false;
             cx.notify();
@@ -2474,18 +2408,19 @@ impl Plaivo {
                     })
                     .collect();
                 let home = this.home_server().map(|h| h.id).unwrap_or_default();
-                this.results = rank_search(&q, &home, local, discover.unwrap_or_default())
-                    .iter()
-                    .map(|(server, it)| {
-                        let mut c = card_for(it, false, server);
-                        if server == DISCOVER_ID {
-                            c.subtitle =
-                                join(&[c.subtitle.to_string(), "Not in your library".into()])
-                                    .into();
-                        }
-                        c
-                    })
-                    .collect();
+                this.results =
+                    plaivo_core::search::rank(&q, &home, local, discover.unwrap_or_default())
+                        .iter()
+                        .map(|(server, it)| {
+                            let mut c = card_for(it, false, server);
+                            if server == DISCOVER_ID {
+                                c.subtitle =
+                                    join(&[c.subtitle.to_string(), "Not in your library".into()])
+                                        .into();
+                            }
+                            c
+                        })
+                        .collect();
                 this.searching = false;
                 if this.results.is_empty()
                     && let Some(e) = errors.first()
@@ -2953,64 +2888,6 @@ impl Plaivo {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn item(key: &str, kind: &str, title: &str, guid: &str) -> Item {
-        Item {
-            rating_key: key.into(),
-            kind: kind.into(),
-            title: title.into(),
-            guid: guid.into(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn title_matches_rank_above_incidental_hits() {
-        let local = vec![(
-            "home".to_owned(),
-            vec![
-                (item("1", "movie", "Sherlock Gnomes", "g1"), 0.99),
-                (item("2", "show", "Dexter's Laboratory", "g2"), 0.5),
-                (item("3", "show", "Dexter", "g3"), 0.4),
-            ],
-        )];
-        let keys: Vec<_> = rank_search("dexter", "home", local, vec![])
-            .into_iter()
-            .map(|(_, i)| i.rating_key)
-            .collect();
-        assert_eq!(keys, ["3", "2", "1"]);
-    }
-
-    #[test]
-    fn episodes_fold_into_one_show_and_owned_discover_hits_drop() {
-        let mut ep = item("10", "episode", "Pilot", "");
-        ep.grandparent_rating_key = "2".into();
-        ep.grandparent_title = "Dexter's Laboratory".into();
-        let local = vec![(
-            "home".to_owned(),
-            vec![
-                (item("2", "show", "Dexter's Laboratory", "g2"), 0.5),
-                (ep.clone(), 0.4),
-                (ep, 0.3),
-            ],
-        )];
-        let discover = vec![
-            item("x", "show", "Dexter's Laboratory", "g2"),
-            item("y", "show", "Dexter: New Blood", "g9"),
-        ];
-        let out = rank_search("dexter", "home", local, discover);
-        let keys: Vec<_> = out
-            .iter()
-            .map(|(s, i)| format!("{s}/{}", i.rating_key))
-            .collect();
-        assert_eq!(keys, ["home/2", "discover/y"]);
-    }
-
-    #[test]
-    fn word_prefix_beats_substring() {
-        assert!(title_rank("The Dexter Files", "dex") < title_rank("Index", "dex"));
-        assert_eq!(title_rank("Dexter", "DEXTER"), 0);
-    }
 
     #[test]
     fn resolutions_read_like_labels() {

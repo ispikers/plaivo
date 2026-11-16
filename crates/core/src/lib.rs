@@ -4,6 +4,7 @@ pub mod jellyfin;
 pub mod menu;
 pub mod plex;
 pub mod prefs;
+pub mod search;
 pub mod settings;
 pub mod store;
 pub mod trackers;

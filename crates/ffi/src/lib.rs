@@ -1601,35 +1601,39 @@ impl Plaivo {
     }
 
     pub fn search(&self, query: String) -> Vec<Card> {
+        if plaivo_core::search::too_short(&query) {
+            return Vec::new();
+        }
+        let query = query.trim();
         let mut servers = self.active_servers();
         servers.retain(|s| !plaivo_core::plex::is_down(&s.id));
         let ctx = Ctx::new(self.client.clone(), Source::Live);
-        let prefs = self.card_prefs();
-        let mut hits: Vec<(f64, Card)> = std::thread::scope(|s| {
+        let local: Vec<(String, Vec<(Item, f64)>)> = std::thread::scope(|s| {
             let jobs: Vec<_> = servers
                 .iter()
-                .map(|srv| (srv, s.spawn(|| srv.search(&ctx, &query))))
+                .map(|srv| (srv, s.spawn(|| srv.search(&ctx, query))))
                 .collect();
             jobs.into_iter()
                 .filter_map(|(srv, job)| {
                     Some((
-                        srv,
+                        srv.id.clone(),
                         job.join()
                             .ok()?
                             .inspect_err(|e| log::warn!("search on {}: {e}", srv.name))
                             .ok()?,
                     ))
                 })
-                .flat_map(|(srv, found)| {
-                    found
-                        .into_iter()
-                        .map(|(it, score)| (score, card(srv, &it, false, &prefs)))
-                        .collect::<Vec<_>>()
-                })
                 .collect()
         });
-        hits.sort_by(|a, b| b.0.total_cmp(&a.0));
-        hits.into_iter().map(|(_, c)| c).collect()
+        let home = self.settings.lock().unwrap().home_server.clone();
+        let prefs = self.card_prefs();
+        plaivo_core::search::rank(query, &home, local, Vec::new())
+            .into_iter()
+            .filter_map(|(id, it)| {
+                let srv = servers.iter().find(|s| s.id == id)?;
+                Some(card(srv, &it, false, &prefs))
+            })
+            .collect()
     }
 
     pub fn qualities(&self) -> Vec<QualityOption> {
