@@ -1,6 +1,6 @@
 use crate::app::{Card, LIB_TABS, LibTab, Listing, Nav, Plaivo, Shape};
 use crate::plex::SORTS;
-use crate::settings::{DENSITY_MAX, ViewMode};
+use crate::settings::ViewMode;
 use crate::ui::home::{card_height, card_width, content_width};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
@@ -99,11 +99,10 @@ impl Plaivo {
     }
 
     fn list(&mut self, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
-        let density = self.settings.density.clamp(1, DENSITY_MAX);
-        let f = (density - 1) as f32 / 4.;
-        let poster_w = 70. + 50. * f;
+        let f = self.settings.density_fraction();
+        let poster_w = self.settings.list_poster_width();
         let row_h = poster_w * 1.5 + 16.;
-        let summary_lines = [2, 2, 3, 4, 5][density as usize - 1];
+        let summary_lines = self.settings.list_summary_lines() as usize;
         let count = self.grid_len(Grid::Library);
         let list = uniform_list(
             "lib-list",

@@ -483,6 +483,18 @@ impl Settings {
         1.0 + (self.density.clamp(1, DENSITY_MAX) as f32 - 3.0) * 0.15
     }
 
+    pub fn density_fraction(&self) -> f32 {
+        (self.density.clamp(1, DENSITY_MAX) - 1) as f32 / (DENSITY_MAX - 1) as f32
+    }
+
+    pub fn list_poster_width(&self) -> f32 {
+        70. + 50. * self.density_fraction()
+    }
+
+    pub fn list_summary_lines(&self) -> u32 {
+        self.density.clamp(2, DENSITY_MAX)
+    }
+
     pub fn library_rank(&self, key: &str) -> usize {
         rank_in(&self.library_order, key)
     }
@@ -837,6 +849,22 @@ mod tests {
         assert_eq!(at(3), 1.0);
         assert!(at(1) < at(2) && at(2) < at(3) && at(3) < at(4) && at(4) < at(5));
         assert_eq!((at(0), at(9)), (at(1), at(5)));
+    }
+
+    #[test]
+    fn list_rows_grow_with_density() {
+        let at = |density| {
+            let s = Settings {
+                density,
+                ..Default::default()
+            };
+            (s.list_poster_width(), s.list_summary_lines())
+        };
+        assert_eq!(at(0), (70., 2));
+        assert_eq!(at(2), (82.5, 2));
+        assert_eq!(at(3), (95., 3));
+        assert_eq!(at(DENSITY_MAX), (120., DENSITY_MAX));
+        assert_eq!(at(9), at(DENSITY_MAX));
     }
 
     #[test]

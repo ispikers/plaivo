@@ -2153,6 +2153,24 @@ pub fn card_scale(density: u32) -> f32 {
     .card_scale()
 }
 
+#[uniffi::export]
+pub fn list_poster_width(density: u32) -> f32 {
+    Settings {
+        density,
+        ..Default::default()
+    }
+    .list_poster_width()
+}
+
+#[uniffi::export]
+pub fn list_summary_lines(density: u32) -> u32 {
+    Settings {
+        density,
+        ..Default::default()
+    }
+    .list_summary_lines()
+}
+
 fn hub_sorts(items: &[Item], key: &str) -> Vec<HubSort> {
     plex::hub_sorts(items, key)
         .into_iter()

@@ -28,6 +28,8 @@ import uniffi.plaivo_ffi.GridSpacing
 import uniffi.plaivo_ffi.Settings
 import uniffi.plaivo_ffi.Theme
 import uniffi.plaivo_ffi.ViewMode
+import uniffi.plaivo_ffi.listPosterWidth
+import uniffi.plaivo_ffi.listSummaryLines
 
 data class Colors(val bg: Color, val surface: Color, val text: Color, val outline: Color)
 
@@ -132,8 +134,8 @@ fun appearanceOf(s: Settings) =
             },
         watchedIndicators = s.watchedIndicators,
         list = s.viewMode == ViewMode.LIST,
-        listPoster = (70 + 50 * (s.density.toInt().coerceIn(1, 5) - 1) / 4f).dp,
-        summaryLines = intArrayOf(2, 2, 3, 4, 5)[s.density.toInt().coerceIn(1, 5) - 1],
+        listPoster = listPosterWidth(s.density).dp,
+        summaryLines = listSummaryLines(s.density).toInt(),
     )
 
 object Dims {
