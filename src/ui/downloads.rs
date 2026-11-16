@@ -6,7 +6,8 @@ use crate::ui::library::Grid;
 use crate::ui::settings::{note, toggle_row};
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    NoContextMenu, chip, icon, overlay_button, pill, progress_bar, round_button, row, section, tip,
+    NoContextMenu, chip, icon, overlay_button, pill, progress_bar, round_button, row,
+    scroll_handle, scrollbar, section, tip,
 };
 use gpui::{
     AnyElement, Context, Div, FontWeight, PathPromptOptions, PromptLevel, SharedString, Stateful,
@@ -360,7 +361,7 @@ impl Plaivo {
                 ),
             )
             .child(
-                section("Storage").child(
+                section("Cleanup").child(
                     toggle_row(
                         "auto-remove",
                         "Remove watched downloads",
@@ -512,7 +513,7 @@ impl Plaivo {
 
     pub fn render_downloads(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if let Some((server, key)) = self.offline_view.clone() {
-            return self.render_offline_item(server, key, cx);
+            return self.render_offline_item(server, key, window, cx);
         }
         let entries = std::mem::take(&mut self.download_entries);
         let queue: Vec<&Entry> = entries.iter().filter(|e| e.state != State::Done).collect();
@@ -526,6 +527,7 @@ impl Plaivo {
         let queue_empty = queue.is_empty();
         self.download_entries = entries;
         let empty = self.offline_cards.is_empty();
+        let queue_scroll = scroll_handle("download-queue", window, cx);
         let scroll = self.offline_scroll.clone();
         let grid =
             (!empty).then(|| self.grid(Grid::Offline, content_width(self, window), scroll, cx));
@@ -569,8 +571,10 @@ impl Plaivo {
                         .flex_none()
                         .max_h(gpui::relative(0.4))
                         .overflow_y_scroll()
+                        .track_scroll(&queue_scroll)
                         .px(px(16.))
-                        .child(section("Queue").children(rows)),
+                        .child(section("Queue").children(rows))
+                        .child(scrollbar(&queue_scroll)),
                 )
             })
             .when_some(grid, |d, grid| {
@@ -595,6 +599,7 @@ impl Plaivo {
         &mut self,
         server: String,
         key: String,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let offline = std::mem::take(&mut self.offline);
@@ -647,6 +652,7 @@ impl Plaivo {
         }
         let nothing = items.is_empty();
         self.offline = offline;
+        let scroll = scroll_handle("offline-item", window, cx);
         let header = div()
             .flex()
             .items_center()
@@ -685,6 +691,7 @@ impl Plaivo {
             .id("offline-item")
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&scroll)
             .child(
                 div()
                     .px(px(24.))
@@ -697,6 +704,7 @@ impl Plaivo {
                     .when(nothing, |d| d.child(note("Nothing downloaded here.")))
                     .child(list),
             )
+            .child(scrollbar(&scroll))
             .into_any_element()
     }
 }

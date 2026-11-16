@@ -1,7 +1,7 @@
 use crate::app::{Nav, Plaivo, join};
 use crate::ui::settings::{note, toggle_row};
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{chip, icon, pill, row, section};
+use crate::ui::widgets::{icon, pill, row, scroll_handle, scrollbar, section};
 use gpui::{
     AnyElement, ClipboardItem, Context, Div, FontWeight, SharedString, Window, div, prelude::*, px,
 };
@@ -37,10 +37,12 @@ impl Plaivo {
         } else {
             self.render_lobby(window, cx)
         };
+        let scroll = scroll_handle("watch", window, cx);
         div()
             .id("watch")
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&scroll)
             .child(
                 div()
                     .w_full()
@@ -57,6 +59,7 @@ impl Plaivo {
                     )
                     .child(body),
             )
+            .child(scrollbar(&scroll))
             .into_any_element()
     }
 
@@ -383,54 +386,5 @@ impl Plaivo {
                 .on_click(cx.listener(|this, _, _, cx| this.open_from_player(Nav::Watch, cx)))
                 .into_any_element(),
         )
-    }
-
-    pub fn watch_summary(&self) -> String {
-        let name = if self.settings.watch_name.is_empty() {
-            "your account name".to_owned()
-        } else {
-            self.settings.watch_name.clone()
-        };
-        format!(
-            "Name: {name} · Relay: {}",
-            if self.settings.watch_relay.is_empty() {
-                "Public"
-            } else {
-                "Custom"
-            }
-        )
-    }
-
-    pub fn render_watch_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let (name, relay, custom) = (
-            self.watch.name.clone(),
-            self.watch.relay.clone(),
-            self.watch.custom_relay,
-        );
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(28.))
-            .child(section("Display name").child(self.field("watch-name", &name, window, cx)))
-            .child(
-                section("Relay")
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(6.))
-                            .child(chip("watch-relay-public", "Public", !custom).on_click(
-                                cx.listener(|this, _, _, cx| this.use_public_relay(true, cx)),
-                            ))
-                            .child(chip("watch-relay-custom", "Custom", custom).on_click(
-                                cx.listener(|this, _, _, cx| this.use_public_relay(false, cx)),
-                            )),
-                    )
-                    .when(custom, |d| {
-                        d.child(self.field("watch-relay", &relay, window, cx))
-                            .when_some(self.watch.relay_error.clone(), |d, e| {
-                                d.child(error_text(e))
-                            })
-                    }),
-            )
     }
 }

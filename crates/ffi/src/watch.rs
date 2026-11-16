@@ -2,9 +2,9 @@ use crate::{Plaivo, R};
 use plaivo_core::plex::{Ctx, Source, resolve_playable};
 use plaivo_core::settings::Settings;
 use plaivo_core::watch_together::{
-    Connection, Control, Event, Match, MatchState, Media, NAME_MAX, Participant, PartyState,
-    PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, clean, describe, find_copy,
-    format_code, match_for, normalize_code, sync_label,
+    Connection, Control, Event, Match, MatchState, Media, Participant, PartyState, PlayerCommand,
+    PlayerFeed, Relays, Update, WatchTogether, describe, display_name, find_copy, format_code,
+    match_for, normalize_code, sync_label,
 };
 use std::sync::{Arc, Mutex};
 
@@ -88,13 +88,13 @@ impl Plaivo {
         let _ = self.watch_listener.set(Arc::from(listener));
     }
 
-    pub fn watch_create(&self, device_name: String) -> R<()> {
-        self.start_watch(&device_name, WatchTogether::create)
+    pub fn watch_create(&self) -> R<()> {
+        self.start_watch(WatchTogether::create)
     }
 
-    pub fn watch_join(&self, code: String, create: bool, device_name: String) -> R<()> {
+    pub fn watch_join(&self, code: String, create: bool) -> R<()> {
         let code = normalize_code(&code).ok_or("Room codes are six letters and numbers")?;
-        self.start_watch(&device_name, |w| w.join(&code, create))
+        self.start_watch(|w| w.join(&code, create))
     }
 
     pub fn watch_leave(&self) {
@@ -248,12 +248,17 @@ pub fn valid_relay(url: String) -> bool {
 }
 
 impl Plaivo {
-    fn start_watch(&self, device_name: &str, f: impl FnOnce(&WatchTogether)) -> R<()> {
-        let s = self.settings.lock().unwrap();
-        let name = display_name(&s.watch_name, device_name)
-            .ok_or("Set a display name under Settings, Watch Together")?;
-        let relay = s.watch_relay.trim().to_owned();
-        drop(s);
+    fn start_watch(&self, f: impl FnOnce(&WatchTogether)) -> R<()> {
+        let plex = self.plex_user().map(|u| u.name);
+        let jellyfin = self
+            .account
+            .lock()
+            .unwrap()
+            .jellyfin
+            .first()
+            .map(|s| s.user.clone());
+        let name = display_name(plex.iter().chain(&jellyfin).map(String::as_str));
+        let relay = self.settings.lock().unwrap().watch_relay.trim().to_owned();
         let relays = if relay.is_empty() {
             Relays::public()
         } else {
@@ -336,13 +341,6 @@ fn deliver(listener: &dyn WatchListener, shared: &Mutex<PartyState>, update: Upd
 fn client() -> String {
     let version = option_env!("PLAIVO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
     format!("Plaivo/{version}")
-}
-
-fn display_name(saved: &str, device: &str) -> Option<String> {
-    [saved, device, "Plaivo"]
-        .into_iter()
-        .map(|n| clean(n, NAME_MAX))
-        .find(|n| !n.is_empty())
 }
 
 fn view(s: &PartyState) -> WatchState {
@@ -496,11 +494,5 @@ mod tests {
             .as_deref(),
             Some("You were removed from the room.")
         );
-        assert_eq!(
-            display_name("  ", "Living Room TV").as_deref(),
-            Some("Living Room TV")
-        );
-        assert_eq!(display_name("", "").as_deref(), Some("Plaivo"));
-        assert_eq!(display_name(&"x".repeat(40), "").unwrap().len(), NAME_MAX);
     }
 }

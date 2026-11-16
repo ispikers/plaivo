@@ -1,19 +1,19 @@
-use crate::app::{Category, Nav, Plaivo, join};
+use crate::app::{Category, Choice, Nav, Plaivo, join};
 use crate::plex::QUALITIES;
 use crate::settings::PlaybackRule;
 use crate::shaders;
-use crate::ui::language_rules::{
-    ADD_LIST_H, card, check_row, column, rule_buttons, rule_columns, toggle,
-};
+use crate::ui::item_menu::Pick;
+use crate::ui::language_rules::{card, column, rule_buttons, rule_columns, toggle};
 use crate::ui::settings::{note, quality_label};
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{icon, nav_row, row, scroll_box, section};
-use gpui::{AnyElement, Context, Div, FontWeight, div, prelude::*, px};
+use crate::ui::widgets::{icon, nav_row, row, section};
+use gpui::{AnyElement, Context, Div, FontWeight, SharedString, div, prelude::*, px};
+
+const RULE_DEFAULT: &str = "*";
 
 pub struct PlaybackDraft {
     index: Option<usize>,
     rule: PlaybackRule,
-    open: Option<&'static str>,
 }
 
 fn rule_detail(r: &PlaybackRule) -> String {
@@ -67,11 +67,7 @@ impl Plaivo {
         let rule = index
             .and_then(|i| self.settings.playback_rules.get(i).cloned())
             .unwrap_or_default();
-        self.playback_draft = Some(PlaybackDraft {
-            index,
-            rule,
-            open: None,
-        });
+        self.playback_draft = Some(PlaybackDraft { index, rule });
         self.navigate(Nav::Settings(Some(Category::PlaybackOverride)), true, cx);
     }
 
@@ -119,70 +115,96 @@ impl Plaivo {
             |this, id, cx| this.edit_playback_rule(|d| toggle(&mut d.rule.libraries, &id), cx),
             cx,
         );
-        let shader_options = [(
-            None,
-            format!("Default · {}", shaders::name(&self.settings.shader)),
-        )]
-        .into_iter()
-        .chain(std::iter::once((Some(""), "Off".to_owned())))
-        .chain(
-            shaders::PRESETS
-                .iter()
-                .map(|p| (Some(p.id), p.name.to_owned())),
-        );
+        let label = |choices: Vec<Choice>| {
+            choices
+                .into_iter()
+                .find(|c| c.selected)
+                .map_or(SharedString::default(), |c| c.label)
+        };
         let shader = self.picker(
             "rule-shader",
             card("Shader", "NVScaler turns itself off for HDR video"),
-            shader_options.collect(),
-            r.shader
-                .as_deref()
-                .map(|id| shaders::find(id).map_or("", |p| p.id)),
-            |r, id| r.shader = id.map(str::to_owned),
+            label(self.rule_choices(Pick::RuleShader)),
+            Pick::RuleShader,
             cx,
-        );
-        let quality_options = [
-            (
-                None,
-                format!("Default · {}", quality_label(self.settings.quality)),
-            ),
-            (Some(0), "Original".to_owned()),
-        ]
-        .into_iter()
-        .chain(
-            QUALITIES
-                .iter()
-                .map(|q| (Some(q.kbps), quality_label(q.kbps))),
         );
         let quality = self.picker(
             "rule-quality",
             card("Quality", "unless the file is already smaller"),
-            quality_options.collect(),
-            r.quality,
-            |r, kbps| r.quality = kbps,
+            label(self.rule_choices(Pick::RuleQuality)),
+            Pick::RuleQuality,
             cx,
         );
         rule_columns(libraries, column("Playback").child(shader).child(quality))
     }
 
-    fn picker<T: PartialEq + Copy + 'static>(
+    pub fn rule_choices(&self, p: Pick) -> Vec<Choice> {
+        let Some(r) = self.playback_draft.as_ref().map(|d| &d.rule) else {
+            return Vec::new();
+        };
+        let choice = |id: String, label: String, selected: bool| Choice {
+            id: id.into(),
+            label: label.into(),
+            sub: SharedString::default(),
+            selected,
+        };
+        if p == Pick::RuleShader {
+            let current = r
+                .shader
+                .as_deref()
+                .map(|id| shaders::find(id).map_or("", |p| p.id));
+            let default = format!("Default · {}", shaders::name(&self.settings.shader));
+            return std::iter::once(choice(RULE_DEFAULT.into(), default, current.is_none()))
+                .chain(std::iter::once(choice(
+                    String::new(),
+                    "Off".into(),
+                    current == Some(""),
+                )))
+                .chain(
+                    shaders::PRESETS
+                        .iter()
+                        .map(|x| choice(x.id.into(), x.name.into(), current == Some(x.id))),
+                )
+                .collect();
+        }
+        let default = format!("Default · {}", quality_label(self.settings.quality));
+        std::iter::once(choice(RULE_DEFAULT.into(), default, r.quality.is_none()))
+            .chain(std::iter::once(choice(
+                "0".into(),
+                "Original".into(),
+                r.quality == Some(0),
+            )))
+            .chain(QUALITIES.iter().map(|q| {
+                choice(
+                    q.kbps.to_string(),
+                    quality_label(q.kbps),
+                    r.quality == Some(q.kbps),
+                )
+            }))
+            .collect()
+    }
+
+    pub fn pick_rule(&mut self, p: Pick, id: &str, cx: &mut Context<Self>) {
+        let id = (id != RULE_DEFAULT).then(|| id.to_owned());
+        self.edit_playback_rule(
+            |d| match p {
+                Pick::RuleShader => d.rule.shader = id,
+                _ => d.rule.quality = id.map(|kbps| kbps.parse().unwrap_or(0)),
+            },
+            cx,
+        )
+    }
+
+    fn picker(
         &self,
         key: &'static str,
         card: Div,
-        options: Vec<(T, String)>,
-        current: T,
-        set: fn(&mut PlaybackRule, T),
+        label: SharedString,
+        pick: Pick,
         cx: &mut Context<Self>,
     ) -> Div {
-        let open = self
-            .playback_draft
-            .as_ref()
-            .is_some_and(|d| d.open == Some(key));
-        let label = options
-            .iter()
-            .find(|(v, _)| *v == current)
-            .map_or(String::new(), |(_, l)| l.clone());
         let header = div()
-            .id((key, usize::MAX))
+            .id(key)
             .h(px(40.))
             .px(px(14.))
             .rounded(px(8.))
@@ -200,44 +222,8 @@ impl Plaivo {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(label),
             )
-            .child(icon(
-                if open {
-                    Icon::ExpandLess
-                } else {
-                    Icon::ExpandMore
-                },
-                20.,
-                theme::muted(),
-            ))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.edit_playback_rule(
-                    |d| d.open = if d.open == Some(key) { None } else { Some(key) },
-                    cx,
-                )
-            }));
-        let list = open.then(|| {
-            scroll_box((key, usize::MAX - 1))
-                .max_h(px(ADD_LIST_H))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(theme::outline())
-                .p(px(4.))
-                .flex()
-                .flex_col()
-                .children(options.into_iter().enumerate().map(|(i, (v, l))| {
-                    check_row((key, i), l, v == current).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.edit_playback_rule(
-                                |d| {
-                                    set(&mut d.rule, v);
-                                    d.open = None;
-                                },
-                                cx,
-                            )
-                        },
-                    ))
-                }))
-        });
-        card.child(header).children(list)
+            .child(icon(Icon::ChevronRight, 20., theme::muted()))
+            .on_click(cx.listener(move |this, _, _, cx| this.open_picker(pick, cx)));
+        card.child(header)
     }
 }

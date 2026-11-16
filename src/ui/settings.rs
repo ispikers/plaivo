@@ -1,13 +1,14 @@
-use crate::app::{Category, Nav, Plaivo, open_url};
+use crate::app::{Category, Choice, Nav, Plaivo, open_url};
 use crate::settings::{
     COUNTDOWN_MAX, DENSITY_MAX, EpisodePoster, GridSpacing, HomeClock, SKIP_DELAY_MAX, Settings,
     SkipMode, ViewMode,
 };
+use crate::ui::item_menu::Pick;
 use crate::ui::licenses::LICENSES;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    chip, icon, nav_row, overlay_button, pill, round_button, row, scrollbar, section, stepper,
-    toggle,
+    chip, danger_pill, icon, nav_row, overlay_button, pill, round_button, row, scrollbar, section,
+    stepper, toggle,
 };
 use crate::{logging, plex, shaders};
 use gpui::{
@@ -25,15 +26,13 @@ const MPV_INFO: &str = concat!(
     env!("PLAIVO_FFMPEG_VERSION"),
     " · LGPL-2.1-or-later"
 );
-const CATEGORIES: [Category; 10] = [
+const CATEGORIES: [Category; 8] = [
     Category::General,
     Category::Appearance,
     Category::Playback,
     Category::Audio,
     Category::Services,
-    Category::WatchTogether,
     Category::Downloads,
-    Category::Connections,
     Category::Advanced,
     Category::About,
 ];
@@ -54,11 +53,29 @@ fn density_label(density: u32) -> &'static str {
 impl Plaivo {
     fn summary(&self, c: Category) -> String {
         match c {
-            Category::General => self.home_server().map_or("No home server".into(), |s| {
-                format!("Home server: {}", s.name)
-            }),
+            Category::General => {
+                let home = self.home_server().map_or("No home server".into(), |s| {
+                    format!("Home server: {}", s.name)
+                });
+                let count = |n: usize| {
+                    if n == 1 {
+                        "1 server".to_owned()
+                    } else {
+                        format!("{n} servers")
+                    }
+                };
+                let plex = if self.account.token.is_some() {
+                    count(self.account.servers.len())
+                } else {
+                    "Not signed in".into()
+                };
+                format!(
+                    "{home} · Plex: {plex} · Jellyfin: {}",
+                    count(self.account.jellyfin.len())
+                )
+            }
             Category::Appearance => format!(
-                "Theme: {} · Poster size: {}",
+                "Theme: {} · Library density: {}",
                 self.settings.theme.label(),
                 density_label(self.settings.density)
             ),
@@ -82,31 +99,11 @@ impl Plaivo {
             Category::Audio => self.languages_summary(),
             Category::Downloads => self.download_summary(),
             Category::Services => self.services.summary(),
-            Category::WatchTogether => self.watch_summary(),
             Category::Libraries
-            | Category::Shaders
             | Category::AudioLanguage
             | Category::SubtitleLanguage
             | Category::LanguageOverride
             | Category::PlaybackOverride => String::new(),
-            Category::Connections => {
-                let count = |n: usize| {
-                    if n == 1 {
-                        "1 server".to_owned()
-                    } else {
-                        format!("{n} servers")
-                    }
-                };
-                let plex = if self.account.token.is_some() {
-                    count(self.account.servers.len())
-                } else {
-                    "Not signed in".into()
-                };
-                format!(
-                    "Plex: {plex} · Jellyfin: {}",
-                    count(self.account.jellyfin.len())
-                )
-            }
             Category::About => match self.updates.summary() {
                 Some(update) => format!("Version {VERSION} · {update}"),
                 None => format!("Version {VERSION} · libmpv {MPV_VERSION}"),
@@ -114,9 +111,34 @@ impl Plaivo {
         }
     }
 
+    pub fn pick_choices(&self, p: Pick) -> (&'static str, Vec<Choice>) {
+        match p {
+            Pick::Quality => (
+                "Default quality",
+                self.quality_choices(self.settings.quality, "Direct play, no transcoding".into()),
+            ),
+            Pick::HomeServer => ("Home server", self.home_server_choices()),
+            Pick::Shader => ("Default shader", self.shader_choices(&self.settings.shader)),
+            Pick::RuleQuality => ("Quality", self.rule_choices(p)),
+            Pick::RuleShader => ("Shader", self.rule_choices(p)),
+        }
+    }
+
+    pub fn apply_pick(&mut self, p: Pick, id: &str, cx: &mut Context<Self>) {
+        match p {
+            Pick::Quality => self.set_default_quality(id.parse().unwrap_or(0), cx),
+            Pick::HomeServer => self.pick_home_server(id, cx),
+            Pick::Shader => {
+                self.settings.shader = id.to_owned();
+                self.save_settings_soon(cx);
+            }
+            Pick::RuleQuality | Pick::RuleShader => self.pick_rule(p, id, cx),
+        }
+    }
+
     fn render_playback_settings(&mut self, cx: &mut Context<Self>) -> Div {
+        let rules = self.render_playback_rules(cx);
         let s = &self.settings;
-        let quality = self.quality_choices(s.quality, "Direct play, no transcoding".into());
         let skip_row = |id: &'static str,
                         title: &'static str,
                         detail: &'static str,
@@ -233,6 +255,30 @@ impl Plaivo {
             .flex()
             .flex_col()
             .gap(px(28.))
+            .child(
+                section("Video")
+                    .child(
+                        nav_row(
+                            "quality",
+                            Icon::HighQuality,
+                            "Default quality",
+                            quality_label(s.quality),
+                        )
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.open_picker(Pick::Quality, cx)),
+                        ),
+                    )
+                    .child(
+                        nav_row(
+                            "shader",
+                            Icon::Sparkle,
+                            "Default shader",
+                            shaders::name(&s.shader),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.open_picker(Pick::Shader, cx))),
+                    ),
+            )
+            .child(rules)
             .child(up_next)
             .child(
                 section("Skip markers")
@@ -305,27 +351,6 @@ impl Plaivo {
                     })),
                 ),
             )
-            .child(
-                section("Video").child(
-                    nav_row(
-                        "shader",
-                        Icon::Sparkle,
-                        "Default shader",
-                        shaders::name(&s.shader),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.navigate(Nav::Settings(Some(Category::Shaders)), true, cx)
-                    })),
-                ),
-            )
-            .child(section("Default quality").children(self.choice_list(
-                "quality",
-                None,
-                quality,
-                |this, id, cx| this.set_default_quality(id.parse().unwrap_or(0), cx),
-                cx,
-            )))
-            .child(self.render_playback_rules(cx))
     }
 
     fn render_library_manager(&mut self, cx: &mut Context<Self>) -> Div {
@@ -383,6 +408,38 @@ impl Plaivo {
                 }),
             ));
         }
+        let unlisted: Vec<(String, String)> = self
+            .servers
+            .iter()
+            .filter(|s| !self.sections.iter().any(|x| x.server == s.id))
+            .map(|s| (s.id.clone(), s.name.clone()))
+            .collect();
+        for (id, name) in unlisted {
+            let hidden = self.settings.server_hidden(&id);
+            let detail = if hidden {
+                "Hidden · Plaivo won't connect to this server"
+            } else if plex::is_down(&id) {
+                "Couldn't connect, so its libraries aren't listed"
+            } else {
+                "Loading libraries…"
+            };
+            body = body.child(
+                section(name).child(
+                    row(
+                        SharedString::from(format!("server-{id}")),
+                        Some(Icon::Server),
+                        "All libraries",
+                        detail,
+                    )
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::tint(0.12)))
+                    .child(toggle(!hidden))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_server_hidden(&id, !hidden, cx)),
+                    ),
+                ),
+            );
+        }
         body
     }
 
@@ -406,32 +463,18 @@ impl Plaivo {
             .flex_col()
             .gap(px(28.))
             .child(
-                section("Storage")
-                    .child(
-                        row(
-                            "clear-cache",
-                            Some(Icon::Refresh),
-                            "Clear image cache",
-                            "Removes cached artwork and library data",
-                        )
-                        .child(
-                            pill("clear-cache-button", "Clear", None, false)
-                                .on_click(cx.listener(|this, _, _, cx| this.clear_image_cache(cx))),
-                        ),
+                section("Storage").child(
+                    row(
+                        "clear-cache",
+                        Some(Icon::Refresh),
+                        "Clear cache",
+                        "Removes cached artwork and library data",
                     )
                     .child(
-                        row(
-                            "reset-data",
-                            Some(Icon::Delete),
-                            "Delete all data",
-                            "Signs you out and deletes settings, cache, logs and downloads",
-                        )
-                        .child(
-                            pill("reset-data-button", "Delete", None, false).on_click(
-                                cx.listener(|this, _, window, cx| this.confirm_reset(window, cx)),
-                            ),
-                        ),
+                        pill("clear-cache-button", "Clear", None, false)
+                            .on_click(cx.listener(|this, _, _, cx| this.clear_image_cache(cx))),
                     ),
+                ),
             )
             .child(
                 section("Logging")
@@ -461,6 +504,21 @@ impl Plaivo {
                         )
                         .on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::Logs, true, cx))),
                     ),
+            )
+            .child(
+                section("Reset").child(
+                    row(
+                        "reset-data",
+                        Some(Icon::Delete),
+                        "Delete all data",
+                        "Signs you out and deletes settings, cache, logs and downloads",
+                    )
+                    .child(
+                        danger_pill("reset-data-button", "Delete").on_click(
+                            cx.listener(|this, _, window, cx| this.confirm_reset(window, cx)),
+                        ),
+                    ),
+                ),
             )
     }
 
@@ -503,19 +561,46 @@ impl Plaivo {
                 .flex_col()
                 .gap(px(28.))
                 .child(
-                    section("Home server")
-                        .children(self.server_rows(cx))
-                        .when(self.servers.is_empty(), |d| {
-                            d.child(note("No servers found."))
-                        }),
+                    section("Home server").child(match self.home_server() {
+                        Some(home) => nav_row(
+                            "home-server",
+                            Icon::Server,
+                            home.name,
+                            "Home shows Continue Watching and recommendations from this server",
+                        )
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.open_picker(Pick::HomeServer, cx)),
+                        )
+                        .into_any_element(),
+                        None => note(
+                            "No servers found. Sign in to Plex or add a Jellyfin server below.",
+                        )
+                        .into_any_element(),
+                    }),
+                )
+                .child(self.render_connections(cx))
+                .child(
+                    section("Watch Together").child(
+                        nav_row(
+                            "watch-relay",
+                            Icon::Group,
+                            "Relay",
+                            if self.settings.watch_relay.is_empty() {
+                                "Public relays".to_owned()
+                            } else {
+                                self.settings.watch_relay.clone()
+                            },
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.open_relay_picker(cx))),
+                    ),
                 )
                 .child(
-                    section("Sidebar").child(
+                    section("Libraries").child(
                         nav_row(
                             "libraries",
                             Icon::Sort,
                             "Manage libraries",
-                            "Reorder and hide the libraries in the sidebar",
+                            "Choose which libraries and servers Plaivo uses, and their order",
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.navigate(Nav::Settings(Some(Category::Libraries)), true, cx)
@@ -525,29 +610,14 @@ impl Plaivo {
             Some(Category::Libraries) => self.render_library_manager(cx),
             Some(Category::Appearance) => self.render_appearance(cx),
             Some(Category::Playback) => self.render_playback_settings(cx),
-            Some(Category::Shaders) => {
-                let choices = self.shader_choices(&self.settings.shader);
-                section("Default shader").children(self.choice_list(
-                    "shader",
-                    None,
-                    choices,
-                    |this, id, cx| {
-                        this.settings.shader = id.to_owned();
-                        this.save_settings_soon(cx);
-                    },
-                    cx,
-                ))
-            }
             Some(Category::Audio) => self.render_audio_settings(cx),
             Some(Category::AudioLanguage) => self.render_language_list(false, cx),
             Some(Category::SubtitleLanguage) => self.render_language_list(true, cx),
-            Some(Category::LanguageOverride) => self.render_language_override(cx),
+            Some(Category::LanguageOverride) => self.render_language_override(window, cx),
             Some(Category::PlaybackOverride) => self.render_playback_override(cx),
             Some(Category::Downloads) => self.render_download_settings(cx),
             Some(Category::Services) => self.render_services(cx),
-            Some(Category::WatchTogether) => self.render_watch_settings(window, cx),
             Some(Category::Advanced) => self.render_advanced_settings(cx),
-            Some(Category::Connections) => self.render_connections(cx),
             Some(Category::About) => div()
                 .flex()
                 .flex_col()
@@ -567,12 +637,6 @@ impl Plaivo {
                                     .on_click(|_, _, _| open_url(MPV_SOURCE)),
                             ),
                         )
-                        .child(row(
-                            "trakt",
-                            Some(Icon::Check),
-                            "Trakt",
-                            "Plaivo uses Trakt but is not endorsed or certified by Trakt",
-                        ))
                         .child(
                             nav_row(
                                 "licenses",
@@ -583,7 +647,10 @@ impl Plaivo {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.navigate(Nav::Licenses(None), true, cx)
                             })),
-                        ),
+                        )
+                        .child(note(
+                            "Plaivo uses Trakt but is not endorsed or certified by Trakt.",
+                        )),
                 ),
         };
         let header = div()
@@ -650,7 +717,6 @@ impl Category {
             Category::Libraries => "Manage libraries",
             Category::Appearance => "Appearance",
             Category::Playback => "Playback",
-            Category::Shaders => "Default shader",
             Category::Audio => "Audio & Subtitles",
             Category::AudioLanguage => "Audio language",
             Category::SubtitleLanguage => "Subtitle language",
@@ -658,8 +724,6 @@ impl Category {
             Category::PlaybackOverride => "Playback override",
             Category::Downloads => "Downloads",
             Category::Services => "Services",
-            Category::WatchTogether => "Watch Together",
-            Category::Connections => "Connections",
             Category::Advanced => "Advanced",
             Category::About => "About",
         }
@@ -669,15 +733,13 @@ impl Category {
         match self {
             Category::General | Category::Libraries => Icon::Settings,
             Category::Appearance => Icon::Palette,
-            Category::Playback | Category::Shaders | Category::PlaybackOverride => Icon::PlayCircle,
+            Category::Playback | Category::PlaybackOverride => Icon::PlayCircle,
             Category::Audio
             | Category::AudioLanguage
             | Category::SubtitleLanguage
             | Category::LanguageOverride => Icon::Subtitles,
             Category::Downloads => Icon::Download,
             Category::Services => Icon::Check,
-            Category::WatchTogether => Icon::Group,
-            Category::Connections => Icon::Link,
             Category::Advanced => Icon::Build,
             Category::About => Icon::Info,
         }

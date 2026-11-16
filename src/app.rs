@@ -83,7 +83,6 @@ pub enum Category {
     Libraries,
     Appearance,
     Playback,
-    Shaders,
     Audio,
     AudioLanguage,
     SubtitleLanguage,
@@ -91,8 +90,6 @@ pub enum Category {
     PlaybackOverride,
     Downloads,
     Services,
-    WatchTogether,
-    Connections,
     Advanced,
     About,
 }
@@ -704,7 +701,7 @@ impl Plaivo {
         })
         .detach();
         let add_server = AddServer::new(cx);
-        let watch = Watch::new(&settings.watch_name, &settings.watch_relay, cx);
+        let watch = Watch::new(&settings.watch_relay, cx);
         let (downloads_tx, mut downloads_rx) = futures::channel::mpsc::unbounded();
         cx.spawn(async move |this, cx| {
             while downloads_rx.next().await.is_some() {
@@ -1742,6 +1739,20 @@ impl Plaivo {
             self.home_ready = false;
         }
         true
+    }
+
+    pub fn set_server_hidden(&mut self, id: &str, hidden: bool, cx: &mut Context<Self>) {
+        let home = self.home_server().map(|s| s.id);
+        self.settings.set_server_hidden(id, hidden);
+        self.save_settings_soon(cx);
+        if !hidden {
+            self.discover(cx);
+        }
+        if self.home_server().map(|s| s.id) != home {
+            self.home_ready = false;
+        }
+        self.load_home(cx);
+        cx.notify();
     }
 
     pub fn sections_in_order(&self, hidden: bool) -> Vec<(&str, Vec<&SectionInfo>)> {

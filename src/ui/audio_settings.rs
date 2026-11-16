@@ -4,7 +4,67 @@ use crate::settings::{SUBTITLE_COLORS, Settings};
 use crate::ui::settings::nudge;
 use crate::ui::theme::Icon;
 use crate::ui::widgets::{chip, nav_row, row, section, stepper};
-use gpui::{Context, Div, div, prelude::*, px};
+use gpui::{Context, Div, FontWeight, Hsla, div, hsla, prelude::*, px, rgb};
+
+const PREVIEW_H: f32 = 150.;
+
+// Mirrors apply_sub_style: mpv drops the outline when the background box is on.
+fn subtitle_preview(s: &Settings) -> Div {
+    let color: Hsla = rgb(u32::from_str_radix(&s.subtitle_color, 16).unwrap_or(0xFF_FF_FF)).into();
+    let back = s.subtitle_background.min(100) as f32 / 100.;
+    let outline = if back > 0. {
+        0.
+    } else {
+        s.subtitle_outline as f32 * 0.6
+    };
+    let lift = (100 - s.subtitle_position.min(100)) as f32 / 100.;
+    let line = |c: Hsla| {
+        div()
+            .text_size(px(20. * s.subtitle_size as f32 / 100.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(c)
+            .whitespace_nowrap()
+            .child("Subtitles will look like this")
+    };
+    let black = hsla(0., 0., 0., 1.);
+    let mut caption = div().relative();
+    if outline > 0. {
+        for (dx, dy) in [
+            (-1., -1.),
+            (-1., 1.),
+            (1., -1.),
+            (1., 1.),
+            (0., -1.),
+            (0., 1.),
+            (-1., 0.),
+            (1., 0.),
+        ] {
+            caption = caption.child(
+                line(black)
+                    .absolute()
+                    .left(px(dx * outline))
+                    .top(px(dy * outline)),
+            );
+        }
+    }
+    div()
+        .h(px(PREVIEW_H))
+        .w_full()
+        .rounded(px(12.))
+        .overflow_hidden()
+        .bg(hsla(220. / 360., 0.12, 0.16, 1.))
+        .flex()
+        .flex_col()
+        .justify_end()
+        .items_center()
+        .pb(px(12. + lift * PREVIEW_H))
+        .child(
+            div()
+                .px(px(6.))
+                .bg(hsla(0., 0., 0., back))
+                .child(caption.child(line(color))),
+        )
+}
 
 impl Plaivo {
     pub fn languages_summary(&self) -> String {
@@ -151,6 +211,7 @@ impl Plaivo {
                 .child(div().flex().gap(px(6.)).children(modes)),
             );
         let style = section("Subtitle style")
+            .child(subtitle_preview(&self.settings))
             .child(self.style_row(
                 "subtitle-size",
                 "Size",

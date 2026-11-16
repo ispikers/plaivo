@@ -8,13 +8,14 @@ use crate::shaders;
 use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    bounds_probe, fmt_time, icon, pill, progress_bar, round_button, shadow, stepper, tip,
+    bounds_probe, fmt_time, icon, list_with_scrollbar, pill, progress_bar, round_button,
+    scroll_handle, scrollbar, shadow, stepper, tip,
 };
 use gpui::{
     Action, AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, ScrollDelta, ScrollEvent, SharedString,
-    Window, canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgb,
-    uniform_list,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, ScrollDelta, ScrollEvent, ScrollHandle,
+    SharedString, Window, canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px,
+    rgb, uniform_list,
 };
 use std::cell::Cell;
 use std::f32::consts::TAU;
@@ -1221,10 +1222,12 @@ impl Plaivo {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let max_h = f32::from(window.viewport_size().height) - 120.;
+        let scroll = scroll_handle("panel-body", window, cx);
         let body = div()
             .id("panel-body")
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&scroll)
             .py(px(6.))
             .flex()
             .flex_col();
@@ -1332,7 +1335,7 @@ impl Plaivo {
         self.panel_shell("settings-panel", panel, cx)
             .w(px(if panel == Panel::Info { 440. } else { 380. }))
             .max_h(px(max_h))
-            .child(body)
+            .child(body.child(scrollbar(&scroll)))
     }
 
     fn render_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1357,7 +1360,10 @@ impl Plaivo {
         )
         .track_scroll(&self.player.queue_scroll)
         .py(px(6.))
-        .h(px((count as f32 * QUEUE_ROW + 12.).min(max_h - 52.)));
+        .size_full();
+        let list = list_with_scrollbar(list, &self.player.queue_scroll)
+            .flex_none()
+            .h(px((count as f32 * QUEUE_ROW + 12.).min(max_h - 52.)));
         self.panel_shell("queue-panel", Panel::Queue, cx)
             .w(px(440.))
             .child(list)
@@ -1500,6 +1506,7 @@ impl Plaivo {
         title: &'static str,
         kind: &'static str,
         tracks: &[Choice],
+        scroll: ScrollHandle,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let list = div()
@@ -1507,6 +1514,7 @@ impl Plaivo {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&scroll)
             .p(px(8.))
             .flex()
             .flex_col()
@@ -1587,7 +1595,8 @@ impl Plaivo {
                         .child(div().text_size(px(14.)).child("Search subtitles…"))
                         .on_click(cx.listener(|this, _, _, cx| this.open_subtitle_search(cx))),
                 )
-            });
+            })
+            .child(scrollbar(&scroll));
         div()
             .flex_1()
             .min_w_0()
@@ -1609,6 +1618,8 @@ impl Plaivo {
             self.player.audio_tracks.clone(),
             self.player.sub_tracks.clone(),
         );
+        let audio_scroll = scroll_handle("Audio", window, cx);
+        let sub_scroll = scroll_handle("Subtitles", window, cx);
         self.panel_shell("tracks", Panel::Tracks, cx)
             .w(px(640.))
             .h(px(53. + list_h))
@@ -1617,9 +1628,9 @@ impl Plaivo {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(self.track_column("Audio", "aid", &audio, cx))
+                    .child(self.track_column("Audio", "aid", &audio, audio_scroll, cx))
                     .child(div().w(px(1.)).h_full().bg(theme::outline()))
-                    .child(self.track_column("Subtitles", "sid", &subs, cx)),
+                    .child(self.track_column("Subtitles", "sid", &subs, sub_scroll, cx)),
             )
     }
 

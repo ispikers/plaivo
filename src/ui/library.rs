@@ -3,7 +3,9 @@ use crate::plex::SORTS;
 use crate::settings::{DENSITY_MAX, ViewMode};
 use crate::ui::home::{card_height, card_width, content_width};
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{backdrop, chip, floating, icon, round_button, scrollbar, shadow};
+use crate::ui::widgets::{
+    backdrop, chip, floating, icon, list_with_scrollbar, round_button, scrollbar, shadow,
+};
 use gpui::{
     AnyElement, Context, Div, FontWeight, MouseButton, MouseDownEvent, ObjectFit, SharedString,
     Stateful, UniformListScrollHandle, Window, div, prelude::*, px, uniform_list,
@@ -65,7 +67,7 @@ impl Plaivo {
             Grid::Suggestions => "sug",
             Grid::Offline => "offline",
         };
-        uniform_list(
+        let list = uniform_list(
             tag,
             rows,
             cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
@@ -92,8 +94,8 @@ impl Plaivo {
             }),
         )
         .track_scroll(&scroll)
-        .flex_1()
-        .into_any_element()
+        .size_full();
+        list_with_scrollbar(list, &scroll).into_any_element()
     }
 
     fn list(&mut self, scroll: UniformListScrollHandle, cx: &mut Context<Self>) -> AnyElement {
@@ -103,7 +105,7 @@ impl Plaivo {
         let row_h = poster_w * 1.5 + 16.;
         let summary_lines = [2, 2, 3, 4, 5][density as usize - 1];
         let count = self.grid_len(Grid::Library);
-        uniform_list(
+        let list = uniform_list(
             "lib-list",
             count,
             cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
@@ -208,8 +210,8 @@ impl Plaivo {
             }),
         )
         .track_scroll(&scroll)
-        .flex_1()
-        .into_any_element()
+        .size_full();
+        list_with_scrollbar(list, &scroll).into_any_element()
     }
 
     pub fn render_library(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

@@ -2,10 +2,12 @@ use crate::app::{Nav, Page, Plaivo};
 use crate::plex::{DISCOVER_ID, Item};
 use crate::settings::Theme;
 use crate::ui::theme::{self, DARK, Icon, LIGHT, OLED, Palette};
-use crate::ui::widgets::{backdrop, floating, icon, pill, round_button, row, shadow};
+use crate::ui::widgets::{
+    backdrop, floating, icon, pill, round_button, row, scroll_handle, scrollbar, shadow,
+};
 use gpui::{
-    AnyElement, Context, Div, FontWeight, Hsla, Pixels, Point, SharedString, Window, div,
-    prelude::*, px, rgb, rgba,
+    AnyElement, Context, Div, ElementId, FontWeight, Hsla, Pixels, Point, SharedString, Stateful,
+    Window, div, prelude::*, px, rgb, rgba,
 };
 use plaivo_core::menu::{self, Action};
 
@@ -36,6 +38,62 @@ pub enum Dialog {
         lines: Vec<(String, String)>,
     },
     Theme,
+    Relay,
+    Pick(Pick),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Pick {
+    Quality,
+    HomeServer,
+    Shader,
+    RuleQuality,
+    RuleShader,
+}
+
+fn dialog_option(
+    id: impl Into<ElementId>,
+    leading: Option<Div>,
+    label: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    selected: bool,
+) -> Stateful<Div> {
+    let detail = detail.into();
+    div()
+        .id(id)
+        .min_h(px(56.))
+        .py(px(8.))
+        .px(px(12.))
+        .rounded(px(12.))
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .cursor_pointer()
+        .when(selected, |d| d.bg(theme::tint(0.06)))
+        .hover(|s| s.bg(theme::tint(0.1)))
+        .children(leading)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(label.into()),
+                )
+                .when(!detail.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(theme::muted())
+                            .child(detail),
+                    )
+                }),
+        )
+        .child(radio(selected))
 }
 
 fn swatch(p: &Palette) -> Div {
@@ -255,6 +313,16 @@ impl Plaivo {
         if let Some(m) = self.menu.as_mut().filter(|m| m.key == key) {
             m.watchlisted = Some(on);
         }
+    }
+
+    pub fn open_picker(&mut self, p: Pick, cx: &mut Context<Self>) {
+        self.dialog = Some(Dialog::Pick(p));
+        cx.notify();
+    }
+
+    pub fn open_relay_picker(&mut self, cx: &mut Context<Self>) {
+        self.dialog = Some(Dialog::Relay);
+        cx.notify();
     }
 
     pub fn open_theme_picker(&mut self, cx: &mut Context<Self>) {
@@ -601,7 +669,7 @@ impl Plaivo {
         .into_any_element()
     }
 
-    fn render_dialog(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let close = cx.listener(|this, _, _, cx| {
             this.dialog = None;
             cx.notify();
@@ -705,40 +773,82 @@ impl Plaivo {
                     .into_iter()
                     .enumerate()
                     .map(|(i, t)| {
-                        div()
-                            .id(("theme", i))
-                            .h(px(56.))
-                            .px(px(12.))
-                            .rounded(px(12.))
-                            .flex()
-                            .items_center()
-                            .gap(px(16.))
-                            .cursor_pointer()
-                            .when(t == current, |d| d.bg(theme::tint(0.06)))
-                            .hover(|s| s.bg(theme::tint(0.1)))
-                            .child(theme_preview(t))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(px(15.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(t.label()),
-                            )
-                            .child(radio(t == current))
+                        dialog_option(
+                            ("theme", i),
+                            Some(theme_preview(t)),
+                            t.label(),
+                            "",
+                            t == current,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.settings.theme = t;
+                            this.save_settings_soon(cx);
+                            this.dialog = None;
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                    })
+                    .collect();
+                ("Theme".into(), rows)
+            }
+            Some(Dialog::Pick(p)) => {
+                let p = *p;
+                let (title, choices) = self.pick_choices(p);
+                let rows = choices
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let id = c.id.clone();
+                        dialog_option(("pick", i), None, c.label, c.sub, c.selected)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.settings.theme = t;
-                                this.save_settings_soon(cx);
                                 this.dialog = None;
+                                this.apply_pick(p, &id, cx);
                                 cx.notify();
                             }))
                             .into_any_element()
                     })
                     .collect();
-                ("Theme".into(), rows)
+                (title.into(), rows)
+            }
+            Some(Dialog::Relay) => {
+                let custom = self.watch.custom_relay;
+                let mut rows = vec![
+                    dialog_option("relay-public", None, "Public relays", "", !custom)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.use_public_relay(true, cx);
+                            this.dialog = None;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    dialog_option("relay-custom", None, "Custom relay", "", custom)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.use_public_relay(false, cx);
+                            let focus = this.watch.relay.read(cx).focus.clone();
+                            window.focus(&focus, cx);
+                        }))
+                        .into_any_element(),
+                ];
+                if custom {
+                    rows.push(
+                        self.field("watch-relay", &self.watch.relay, window, cx)
+                            .into_any_element(),
+                    );
+                    if let Some(e) = self.watch.relay_error.clone() {
+                        rows.push(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(theme::error())
+                                .child(e)
+                                .into_any_element(),
+                        );
+                    }
+                }
+                ("Watch Together relay".into(), rows)
             }
             None => return div().into_any_element(),
         };
         let max_h = f32::from(window.viewport_size().height) * 0.8;
+        let scroll = scroll_handle("dialog", window, cx);
         backdrop("dialog-backdrop", close)
             .bg(theme::black(0.55))
             .flex()
@@ -749,6 +859,7 @@ impl Plaivo {
                     .w(px(460.))
                     .max_h(px(max_h))
                     .overflow_y_scroll()
+                    .track_scroll(&scroll)
                     .p(px(24.))
                     .rounded(px(16.))
                     .bg(theme::bg())
@@ -764,7 +875,8 @@ impl Plaivo {
                             .font_weight(FontWeight::BOLD)
                             .child(title),
                     )
-                    .children(body),
+                    .children(body)
+                    .child(scrollbar(&scroll)),
             )
             .into_any_element()
     }

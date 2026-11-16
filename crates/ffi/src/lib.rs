@@ -99,7 +99,6 @@ pub struct Settings {
     pub subtitle_position: u32,
     pub download_dir: String,
     pub auto_remove_watched: bool,
-    pub watch_name: String,
     pub watch_relay: String,
     pub watch_rooms: Vec<String>,
     pub check_updates: bool,
@@ -2022,6 +2021,12 @@ pub fn hide_library(
 ) -> Settings {
     settings.set_library_hidden(&id, hidden);
     settings.sync_server_hidden(&server, libraries.iter().map(String::as_str));
+    settings
+}
+
+#[uniffi::export]
+pub fn hide_server(mut settings: Settings, server: String, hidden: bool) -> Settings {
+    settings.set_server_hidden(&server, hidden);
     settings
 }
 

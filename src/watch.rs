@@ -6,9 +6,9 @@ use futures::StreamExt;
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{AppContext, Context, Entity, SharedString};
 use plaivo_core::watch_together::{
-    Connection, Event, Match, MatchState, Media, NAME_MAX, PartyError, PartyState, Phase,
-    PlaivoExt, PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, clean, describe,
-    find_copy, match_for, normalize_code,
+    Connection, Event, Match, MatchState, Media, PartyError, PartyState, Phase, PlaivoExt,
+    PlayerCommand, PlayerFeed, Relays, Update, WatchTogether, describe, display_name, find_copy,
+    match_for, normalize_code,
 };
 use std::time::{Duration, Instant};
 
@@ -42,13 +42,12 @@ pub struct Watch {
     pub custom_relay: bool,
     pub relay_error: Option<SharedString>,
     pub code: Entity<TextInput>,
-    pub name: Entity<TextInput>,
     pub relay: Entity<TextInput>,
     pub account_name: Option<String>,
 }
 
 impl Watch {
-    pub fn new(name: &str, relay: &str, cx: &mut Context<Plaivo>) -> Self {
+    pub fn new(relay: &str, cx: &mut Context<Plaivo>) -> Self {
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<(u64, Update)>();
         cx.spawn(async move |this, cx| {
             while let Some((generation, update)) = rx.next().await {
@@ -69,7 +68,6 @@ impl Watch {
             })
         };
         let code = input("Room code, like ABC-DEF", "", cx);
-        let name_input = input("Your Plex or Jellyfin name", name, cx);
         let relay_input = input("https://relay.example.com", relay, cx);
         cx.subscribe(
             &code,
@@ -80,17 +78,6 @@ impl Watch {
                         cx.notify();
                     }
                 }
-            },
-        )
-        .detach();
-        cx.subscribe(
-            &name_input,
-            |this: &mut Plaivo, _, ev: &InputEvent, cx| match ev {
-                InputEvent::Changed(name) => {
-                    this.settings.watch_name = name.trim().to_owned();
-                    this.save_settings_soon(cx);
-                }
-                InputEvent::Submit(_) => this.save_settings_now(),
             },
         )
         .detach();
@@ -119,7 +106,6 @@ impl Watch {
             custom_relay: !relay.is_empty(),
             relay_error: None,
             code,
-            name: name_input,
             relay: relay_input,
             account_name: None,
         }
@@ -155,18 +141,6 @@ pub fn relays(setting: &str) -> Option<Relays> {
     } else {
         Relays::custom(setting)
     }
-}
-
-pub fn pick_name(
-    setting: &str,
-    account: impl FnOnce() -> Option<String>,
-    jellyfin: Option<&str>,
-) -> String {
-    let usable = |s: &str| Some(clean(s, NAME_MAX)).filter(|s| !s.is_empty());
-    usable(setting)
-        .or_else(|| account().and_then(|n| usable(&n)))
-        .or_else(|| jellyfin.and_then(usable))
-        .unwrap_or_else(|| "Plaivo".into())
 }
 
 #[derive(Debug, PartialEq)]
@@ -238,12 +212,7 @@ impl Plaivo {
         w.share = None;
         let generation = w.generation;
         let (old, tx) = (w.wt.take(), w.tx.clone());
-        let (setting, relays, client, token) = (
-            self.settings.watch_name.clone(),
-            relays,
-            self.client.clone(),
-            self.account.token.clone(),
-        );
+        let (relays, client, token) = (relays, self.client.clone(), self.account.token.clone());
         let (jellyfin, mut account) = (
             self.account.jellyfin.first().map(|s| s.user.clone()),
             w.account_name.clone(),
@@ -252,16 +221,10 @@ impl Plaivo {
             cx,
             move || {
                 drop(old);
-                let name = pick_name(
-                    &setting,
-                    || {
-                        if account.is_none() {
-                            account = token.and_then(|t| client.user(&t).ok().map(|u| u.name));
-                        }
-                        account.clone()
-                    },
-                    jellyfin.as_deref(),
-                );
+                if account.is_none() {
+                    account = token.and_then(|t| client.user(&t).ok().map(|u| u.name));
+                }
+                let name = display_name(account.as_deref().into_iter().chain(jellyfin.as_deref()));
                 let wt = WatchTogether::new(&name, CLIENT, relays, move |u| {
                     let _ = tx.unbounded_send((generation, u));
                 });
@@ -291,10 +254,7 @@ impl Plaivo {
                     Err(e) => {
                         log::warn!("watch together: could not start: {e:?}");
                         this.watch.creating = false;
-                        this.watch.error = Some(
-                            "Couldn't start Watch Together. Check your display name in Settings."
-                                .into(),
-                        );
+                        this.watch.error = Some("Couldn't start Watch Together.".into());
                     }
                 }
             },
@@ -857,18 +817,6 @@ mod tests {
             Some(&ep1),
             Some(("srv", "ep1"))
         ));
-    }
-
-    #[test]
-    fn names_fall_back_and_stay_protocol_safe() {
-        assert_eq!(pick_name("  Alex  ", || panic!("not asked"), None), "Alex");
-        assert_eq!(
-            pick_name("", || Some("plexuser".into()), Some("jf")),
-            "plexuser"
-        );
-        assert_eq!(pick_name("\u{200E}", || None, Some("jf")), "jf");
-        assert_eq!(pick_name("", || None, None), "Plaivo");
-        assert_eq!(pick_name(&"x".repeat(40), || None, None).len(), NAME_MAX);
     }
 
     #[test]

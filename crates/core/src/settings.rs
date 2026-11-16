@@ -62,7 +62,6 @@ pub struct Settings {
     pub subtitle_position: u32,
     pub download_dir: String,
     pub auto_remove_watched: bool,
-    pub watch_name: String,
     pub watch_relay: String,
     pub watch_rooms: Vec<String>,
     pub check_updates: bool,
@@ -113,7 +112,6 @@ impl Default for Settings {
             subtitle_position: 100,
             download_dir: String::new(),
             auto_remove_watched: false,
-            watch_name: String::new(),
             watch_relay: String::new(),
             watch_rooms: Vec::new(),
             check_updates: true,
@@ -532,13 +530,30 @@ impl Settings {
         self.hidden_servers.iter().any(|k| k == id)
     }
 
+    pub fn set_server_hidden(&mut self, server: &str, hidden: bool) {
+        self.hidden_servers.retain(|k| k != server);
+        if hidden {
+            self.hidden_servers.push(server.to_owned());
+        } else {
+            self.hidden_libraries
+                .retain(|k| library_server(k) != server);
+        }
+    }
+
     pub fn sync_server_hidden<'a>(
         &mut self,
         server: &str,
         libraries: impl IntoIterator<Item = &'a str>,
     ) -> bool {
-        let mut keys = libraries.into_iter().peekable();
-        let hidden = keys.peek().is_some() && keys.all(|k| self.library_hidden(k));
+        let keys: Vec<&str> = libraries.into_iter().collect();
+        // A server hidden before its libraries were ever listed keeps hiding them once they are.
+        if self.server_hidden(server) && !keys.iter().any(|k| self.library_hidden(k)) {
+            for k in keys {
+                self.set_library_hidden(k, true);
+            }
+            return false;
+        }
+        let hidden = !keys.is_empty() && keys.iter().all(|k| self.library_hidden(k));
         if hidden == self.server_hidden(server) {
             return false;
         }
@@ -734,7 +749,7 @@ mod tests {
             (SubtitleMode::ForeignAudio, 100, "FFFFFF", 100)
         );
         assert!(s.download_dir.is_empty() && !s.auto_remove_watched);
-        assert!(s.watch_name.is_empty() && s.watch_relay.is_empty() && s.watch_rooms.is_empty());
+        assert!(s.watch_relay.is_empty() && s.watch_rooms.is_empty());
         let s: Settings =
             serde_json::from_str(r#"{"audio_language":"jpn","subtitle_mode":"always"}"#).unwrap();
         assert_eq!(
@@ -916,6 +931,13 @@ mod tests {
         assert!(!s.sync_server_hidden("a", ["a/1", "a/2"]));
         assert!(s.sync_server_hidden("a", ["a/1", "a/2", "a/3"]) && !s.server_hidden("a"));
         assert!(!s.sync_server_hidden("z", []) && !s.server_hidden("z"));
+
+        s.set_server_hidden("off", true);
+        assert!(!s.sync_server_hidden("off", []) && s.server_hidden("off"));
+        assert!(!s.sync_server_hidden("off", ["off/1", "off/2"]) && s.server_hidden("off"));
+        assert!(s.library_hidden("off/1") && s.library_hidden("off/2"));
+        s.set_server_hidden("off", false);
+        assert!(!s.server_hidden("off") && !s.library_hidden("off/1") && s.library_hidden("a/1"));
     }
 
     #[test]

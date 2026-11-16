@@ -4,7 +4,9 @@ use crate::prefs;
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::settings::note;
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{icon, nav_row, pill, round_button, row, section};
+use crate::ui::widgets::{
+    icon, nav_row, pill, round_button, row, scroll_handle, scrollbar, section,
+};
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, FocusHandle, FontWeight, SharedString, Window,
     div, prelude::*, px,
@@ -386,10 +388,12 @@ impl Plaivo {
             .when_some(a.error.clone(), |d, e| {
                 d.text_size(px(13.)).text_color(theme::error()).child(e)
             });
+        let scroll = scroll_handle("add-server", window, cx);
         div()
             .id("add-server")
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&scroll)
             .child(
                 div()
                     .w_full()
@@ -404,6 +408,7 @@ impl Plaivo {
                     .children(sign_in)
                     .child(status),
             )
+            .child(scrollbar(&scroll))
             .into_any_element()
     }
 

@@ -3,7 +3,9 @@ use crate::prefs::{LANGUAGES, LanguageRule, SubtitleMode, language_name};
 use crate::settings::library_key;
 use crate::ui::settings::note;
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{chip, icon, nav_row, pill, round_button, row, scroll_box, section};
+use crate::ui::widgets::{
+    chip, icon, nav_row, pill, round_button, row, scroll_box, scroll_handle, scrollbar, section,
+};
 use gpui::{
     AnyElement, Context, Div, ElementId, FontWeight, SharedString, Stateful, Window, div,
     prelude::*, px,
@@ -191,13 +193,20 @@ impl Plaivo {
         ))
     }
 
-    fn language_order(&self, d: &RuleDraft, subtitles: bool, cx: &mut Context<Self>) -> Div {
+    fn language_order(
+        &self,
+        d: &RuleDraft,
+        subtitles: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let list = if subtitles {
             &d.rule.subtitles
         } else {
             &d.rule.audio
         };
         let prefix = if subtitles { "rule-sub" } else { "rule-audio" };
+        let scroll = scroll_handle((prefix, 9999usize), window, cx);
         let n = list.len();
         let rows = list.iter().enumerate().map(|(i, code)| {
             let mv = move |delta: isize| {
@@ -303,6 +312,7 @@ impl Plaivo {
         let open = d.adding == Some(subtitles);
         let add_list = open.then(|| {
             scroll_box((prefix, 9999usize))
+                .track_scroll(&scroll)
                 .max_h(px(ADD_LIST_H))
                 .rounded(px(8.))
                 .border_1()
@@ -335,6 +345,7 @@ impl Plaivo {
                             ))
                         }),
                 )
+                .child(scrollbar(&scroll))
         });
         let (title, hint) = if subtitles {
             ("Subtitles", "The first language the video has is used")
@@ -381,7 +392,7 @@ impl Plaivo {
             .children(add_list)
     }
 
-    pub fn render_language_override(&mut self, cx: &mut Context<Self>) -> Div {
+    pub fn render_language_override(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let Some(d) = self.rule_draft.as_ref() else {
             return div().child(note("Open an override from Audio & Subtitles to edit it."));
         };
@@ -401,8 +412,8 @@ impl Plaivo {
         rule_columns(
             libraries,
             column("Languages")
-                .child(self.language_order(d, false, cx))
-                .child(self.language_order(d, true, cx))
+                .child(self.language_order(d, false, window, cx))
+                .child(self.language_order(d, true, window, cx))
                 .child(mode),
         )
     }

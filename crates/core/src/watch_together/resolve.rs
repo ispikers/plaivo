@@ -17,6 +17,14 @@ pub fn clean(s: &str, max: usize) -> String {
         .collect()
 }
 
+pub fn display_name<'a>(accounts: impl IntoIterator<Item = &'a str>) -> String {
+    accounts
+        .into_iter()
+        .map(|n| clean(n, super::NAME_MAX))
+        .find(|n| !n.is_empty())
+        .unwrap_or_else(|| "Plaivo".into())
+}
+
 pub fn item_ids(it: &Item) -> BTreeMap<String, String> {
     ids_from_guids(
         it.guids
@@ -264,6 +272,17 @@ mod tests {
     use super::*;
     use crate::plex::{Guid, Media as PlexMedia, Part};
     use crate::watch_together::protocol::tests::{assert_none_failed, vectors};
+
+    #[test]
+    fn display_name_takes_the_first_usable_account() {
+        assert_eq!(display_name(["  Alex  ", "jf"]), "Alex");
+        assert_eq!(display_name(["\u{200E}", "jf"]), "jf");
+        assert_eq!(display_name([]), "Plaivo");
+        assert_eq!(
+            display_name([&*"x".repeat(40)]).len(),
+            super::super::NAME_MAX
+        );
+    }
 
     fn guids(ids: &[&str]) -> Vec<Guid> {
         ids.iter().map(|id| Guid { id: (*id).into() }).collect()

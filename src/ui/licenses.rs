@@ -1,6 +1,6 @@
 use crate::app::{Nav, Plaivo};
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{icon, round_button, row, scrollbar};
+use crate::ui::widgets::{icon, list_with_scrollbar, round_button, row, scrollbar};
 use gpui::{AnyElement, Context, Div, FontWeight, SharedString, div, prelude::*, px, uniform_list};
 
 include!(concat!(env!("OUT_DIR"), "/licenses.rs"));
@@ -61,7 +61,7 @@ impl Plaivo {
             }),
         )
         .track_scroll(&self.licenses_scroll)
-        .flex_1();
+        .size_full();
         div()
             .size_full()
             .flex()
@@ -71,7 +71,7 @@ impl Plaivo {
                 format!("{} components", LICENSES.len()).into(),
                 cx,
             )))
-            .child(list)
+            .child(list_with_scrollbar(list, &self.licenses_scroll))
             .into_any_element()
     }
 }

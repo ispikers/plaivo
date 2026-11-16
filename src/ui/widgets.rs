@@ -3,8 +3,8 @@ use crate::ui::theme::{self, Icon};
 use gpui::{
     AnyElement, App, Bounds, BoxShadow, ClickEvent, Context, DispatchPhase, Div, ElementId,
     FontWeight, Hsla, Img, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
-    Pixels, ScrollHandle, SharedString, Stateful, Svg, Window, canvas, div, fill, img, point,
-    prelude::*, px, size, svg,
+    Pixels, ScrollHandle, SharedString, Stateful, Svg, UniformListScrollHandle, Window, canvas,
+    div, fill, img, point, prelude::*, px, size, svg,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -100,6 +100,28 @@ pub fn pill(
                     .child(label),
             )
         })
+}
+
+pub fn danger_pill(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> {
+    let bg = Hsla::from(theme::error());
+    div()
+        .id(id.into())
+        .h(px(44.))
+        .px(px(18.))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .bg(bg)
+        .cursor_pointer()
+        .no_context_menu()
+        .hover(move |s| s.bg(bg.opacity(0.88)))
+        .child(
+            div()
+                .text_size(px(14.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(gpui::white())
+                .child(label),
+        )
 }
 
 pub fn chip(
@@ -205,7 +227,8 @@ pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
     let handle = handle.clone();
     canvas(
         |_, _, _| (),
-        move |bounds, _, window, _| {
+        move |_, _, window, _| {
+            let bounds = handle.bounds();
             let max = f32::from(handle.max_offset().y);
             if max <= 0. {
                 return;
@@ -278,6 +301,23 @@ pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
     .top_0()
     .left_0()
     .size_full()
+}
+
+pub fn list_with_scrollbar(list: impl IntoElement, handle: &UniformListScrollHandle) -> Div {
+    let base = handle.0.borrow().base_handle.clone();
+    div()
+        .flex_1()
+        .min_h_0()
+        .relative()
+        .child(list)
+        .child(scrollbar(&base))
+}
+
+pub fn scroll_handle(id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> ScrollHandle {
+    window
+        .use_keyed_state(id, cx, |_, _| ScrollHandle::new())
+        .read(cx)
+        .clone()
 }
 
 pub fn scroll_box(id: impl Into<ElementId>) -> Stateful<Div> {

@@ -2,7 +2,7 @@ use crate::app::{Plaivo, first, join};
 use crate::player::Panel;
 use crate::plex::{Ctx, Source, Stream, SubtitleResult};
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{chip, icon};
+use crate::ui::widgets::{chip, icon, scroll_handle, scrollbar};
 use gpui::{Context, FontWeight, SharedString, Window, div, prelude::*, px};
 use plaivo_core::prefs::{LANGUAGES, language_label, two_letter};
 use std::time::Duration;
@@ -126,6 +126,7 @@ impl Plaivo {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let vh = f32::from(window.viewport_size().height);
+        let scroll = scroll_handle("sub-results", window, cx);
         let s = &self.player.sub_search;
         let current = s.language.clone();
         let preferred = two_letter(self.preferred_subtitle_language());
@@ -175,6 +176,7 @@ impl Plaivo {
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .track_scroll(&scroll)
                 .px(px(8.))
                 .pb(px(8.))
                 .flex()
@@ -245,6 +247,7 @@ impl Plaivo {
                             this.download_subtitle(result.clone(), cx)
                         }))
                 }))
+                .child(scrollbar(&scroll))
                 .into_any_element(),
         };
         self.panel_shell("sub-search", Panel::SubtitleSearch, cx)

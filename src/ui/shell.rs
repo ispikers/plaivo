@@ -1,7 +1,7 @@
 use crate::app::{Choice, Nav, Page, Plaivo, Status};
 use crate::ui::input;
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::{icon, pill, shadow};
+use crate::ui::widgets::{icon, pill, scroll_handle, scrollbar, shadow};
 use crate::{keymap, menu};
 use gpui::{
     Action, AnyElement, AnyView, App, Context, DispatchPhase, ElementId, Entity, EventEmitter,
@@ -324,7 +324,7 @@ impl Plaivo {
 
     fn render_chrome(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let page = match self.page {
-            Page::Servers => self.render_servers(cx),
+            Page::Servers => self.render_servers(window, cx),
             Page::Home => self.render_home(window, cx),
             Page::Library => self.render_library(window, cx),
             Page::HubList => self.render_hub_list(window, cx),
@@ -418,11 +418,13 @@ impl Plaivo {
         } else {
             None
         };
+        let libs_scroll = scroll_handle("libs", window, cx);
         let mut libs = div()
             .id("libs")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&libs_scroll)
             .flex()
             .flex_col()
             .gap(px(2.));
@@ -564,7 +566,7 @@ impl Plaivo {
                             .bg(theme::outline()),
                     ),
             )
-            .child(libs)
+            .child(libs.child(scrollbar(&libs_scroll)))
             .child(
                 item(
                     "fullscreen".into(),
@@ -781,11 +783,13 @@ impl Plaivo {
             .into_any_element()
     }
 
-    fn render_servers(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let scroll = scroll_handle("servers", window, cx);
         div()
             .id("servers")
             .size_full()
             .overflow_y_scroll()
+            .track_scroll(&scroll)
             .flex()
             .justify_center()
             .child(
@@ -816,13 +820,23 @@ impl Plaivo {
                     })
                     .children(self.server_rows(cx)),
             )
+            .child(scrollbar(&scroll))
             .into_any_element()
     }
 
     pub fn server_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        self.choice_list(
+            "srv",
+            Some(Icon::Server),
+            self.home_server_choices(),
+            |this, id, cx| this.pick_home_server(id, cx),
+            cx,
+        )
+    }
+
+    pub fn home_server_choices(&self) -> Vec<Choice> {
         let home = self.home_server().map(|s| s.id).unwrap_or_default();
-        let choices = self
-            .servers
+        self.servers
             .iter()
             .map(|s| {
                 let sub = if s.is_jellyfin() {
@@ -839,14 +853,7 @@ impl Plaivo {
                     selected: s.id == home,
                 }
             })
-            .collect();
-        self.choice_list(
-            "srv",
-            Some(Icon::Server),
-            choices,
-            |this, id, cx| this.pick_home_server(id, cx),
-            cx,
-        )
+            .collect()
     }
 }
 

@@ -2,7 +2,7 @@ use crate::app::Plaivo;
 use crate::logging;
 use crate::ui::licenses::header;
 use crate::ui::theme::{self, Icon};
-use crate::ui::widgets::pill;
+use crate::ui::widgets::{list_with_scrollbar, pill};
 use gpui::{
     AnyElement, ClipboardItem, Context, HighlightStyle, Hsla, MouseButton, MouseDownEvent,
     MouseMoveEvent, StyledText, div, hsla, prelude::*, px, uniform_list,
@@ -66,7 +66,7 @@ impl Plaivo {
             }),
         )
         .track_scroll(&self.logs_scroll)
-        .flex_1();
+        .size_full();
         let detail = match self.log_selection {
             Some((a, b)) => format!("{} of {count} lines selected", a.abs_diff(b) + 1),
             None => format!("{count} recent lines · drag or Shift+click to select"),
@@ -97,7 +97,7 @@ impl Plaivo {
                         ),
                 ),
             )
-            .child(list)
+            .child(list_with_scrollbar(list, &self.logs_scroll))
             .into_any_element()
     }
 
