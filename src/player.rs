@@ -1561,13 +1561,14 @@ impl Plaivo {
         self.player.active
     }
 
-    fn report(&mut self, state: &str, cx: &mut Context<Self>) {
+    fn report(&mut self, state: &str, cx: &mut Context<Self>) -> bool {
         let refresh = state == "stopped" || (self.player.mini && self.home_stale());
         let Some(job) = self.report_job(state, true) else {
-            return;
+            return false;
         };
         if !refresh {
-            return Self::detach(cx, job);
+            Self::detach(cx, job);
+            return false;
         }
         self.player.home_refreshed = Some(Instant::now());
         let stopped = state == "stopped";
@@ -1577,6 +1578,7 @@ impl Plaivo {
                 this.reload_detail(cx);
             }
         });
+        true
     }
 
     // Quit can't wait on a dead server: local files skip the network, streams get a short grace period.
@@ -1896,7 +1898,7 @@ impl Plaivo {
         );
         self.trim_images(false, cx);
         self.show_cursor();
-        self.report("stopped", cx);
+        let refreshing = self.report("stopped", cx);
         self.end_transcode(cx);
         let p = &mut self.player;
         p.active = false;
@@ -1917,7 +1919,9 @@ impl Plaivo {
         match self.nav.last().cloned() {
             Some(Nav::Home) => {
                 self.navigate(Nav::Home, false, cx);
-                self.load_home(cx);
+                if !refreshing {
+                    self.load_home(cx);
+                }
             }
             Some(nav) => self.navigate(nav, false, cx),
             None => {}

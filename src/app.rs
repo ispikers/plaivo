@@ -1270,7 +1270,7 @@ impl Plaivo {
     fn check_splash(&mut self, cx: &mut Context<Self>) {
         let Some(sp) = &self.splash else { return };
         if !sp.probes_done {
-            return log::debug!("splash: waiting for server probes");
+            return;
         }
         if self.home_server().is_some_and(|s| plex::is_down(&s.id)) {
             return self.finish_splash(cx);
@@ -1309,6 +1309,8 @@ impl Plaivo {
             return;
         }
         log::info!("startup complete, home ready: {}", self.home_ready);
+        // A cold libmpv load after boot (disk + Defender scan) can take ~10 s; pay it before the first play.
+        Self::detach(cx, crate::mpv::preload);
         if self.page == Page::Player {
             return;
         }
