@@ -2252,6 +2252,19 @@ impl Server {
             log::debug!("{} stop transcode {session}: {e}", self.name);
         }
     }
+
+    pub fn release_transcode(
+        &self,
+        c: &Client,
+        key: &str,
+        time_ms: u64,
+        duration_ms: u64,
+        session: &str,
+    ) {
+        // Plex answers 400 to a new transcode while the old playback is still reported as active
+        self.timeline(c, key, "stopped", time_ms, duration_ms, Some(session));
+        self.stop_transcode(c, session);
+    }
 }
 
 pub struct Quality {

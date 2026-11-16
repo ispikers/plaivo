@@ -292,10 +292,13 @@ class PlayerActivity : ComponentActivity() {
                 if (previous != null && session != null) {
                     val time = exo.currentPosition.coerceAtLeast(0).toULong()
                     exo.stop()
-                    // Plex answers 400 to a new transcode while the old playback is still reported as active
                     io {
-                        core.report(previous.server, previous.key, "stopped", time, previous.durationMs, session)
-                        core.stopTranscode(previous.server, session)
+                        if (previous.key == p.key) {
+                            core.releaseTranscode(previous.server, previous.key, time, previous.durationMs, session)
+                        } else {
+                            core.report(previous.server, previous.key, "stopped", time, previous.durationMs, session)
+                            core.stopTranscode(previous.server, session)
+                        }
                     }
                 }
                 playback = p

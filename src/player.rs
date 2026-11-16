@@ -1147,12 +1147,6 @@ impl Plaivo {
         else {
             return false;
         };
-        let report = self
-            .player
-            .transcode
-            .is_some()
-            .then(|| self.report_job("stopped", true))
-            .flatten();
         let old = self.player.transcode.take();
         let (c, key, media) = (
             self.client.clone(),
@@ -1160,8 +1154,8 @@ impl Plaivo {
             self.player.media.clone(),
         );
         let p = &mut self.player;
+        let (t, d) = ((p.time * 1000.0) as u64, (p.duration * 1000.0) as u64);
         let quality = p.quality;
-        p.stop_sent = false;
         p.buffering = true;
         p.cached = 0.0;
         p.pending_sub = None;
@@ -1174,12 +1168,8 @@ impl Plaivo {
         Self::bg(
             cx,
             move || {
-                // Plex answers 400 to a new transcode while the old playback is still reported as active
                 if let Some(old) = &old {
-                    if let Some(job) = report {
-                        job();
-                    }
-                    srv.stop_transcode(&c, old);
+                    srv.release_transcode(&c, &key, t, d, old);
                 }
                 let (url, transcode) =
                     srv.stream_url(&c, &key, &media, quality, false, AUDIO_CODECS, picks);

@@ -1800,6 +1800,19 @@ impl Plaivo {
         }
     }
 
+    pub fn release_transcode(
+        &self,
+        server_id: String,
+        key: String,
+        time_ms: u64,
+        duration_ms: u64,
+        session: String,
+    ) {
+        if let Ok(srv) = self.server(&server_id) {
+            srv.release_transcode(&self.client, &key, time_ms, duration_ms, &session);
+        }
+    }
+
     pub fn report(
         &self,
         server_id: String,
