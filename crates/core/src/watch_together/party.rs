@@ -101,6 +101,15 @@ impl PartyState {
             Connection::Connected | Connection::Reconnecting
         )
     }
+
+    pub fn offset_adjustable(&self) -> bool {
+        self.media.is_some()
+            && self.match_.is_some_and(|m| match m.state {
+                MatchState::Mismatched => true,
+                MatchState::Matched => self.offset_ms != 0,
+                _ => false,
+            })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

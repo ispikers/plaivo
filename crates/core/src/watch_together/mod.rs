@@ -19,4 +19,4 @@ pub use relays::{Relay, Relays, format_code, normalize_code};
 pub use resolve::{
     clean, describe, display_name, find_copy, find_owned, item_ids, match_for, title_key,
 };
-pub use text::sync_label;
+pub use text::{mismatch_text, sync_label};

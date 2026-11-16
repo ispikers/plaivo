@@ -4,7 +4,7 @@ use plaivo_core::settings::Settings;
 use plaivo_core::watch_together::{
     Connection, Control, Event, Match, MatchState, Media, Participant, PartyState, PlayerCommand,
     PlayerFeed, Relays, Update, WatchTogether, describe, display_name, find_copy, format_code,
-    match_for, normalize_code, sync_label,
+    match_for, mismatch_text, normalize_code, sync_label,
 };
 use std::sync::{Arc, Mutex};
 
@@ -162,8 +162,10 @@ impl Plaivo {
         self.with_watch(|w| w.set_offset(offset_ms));
     }
 
-    pub fn watch_unavailable(&self, epoch: i64) {
+    pub fn watch_unavailable(&self, epoch: i64) -> Option<String> {
+        let text = self.watch_media(epoch).map(|m| m.not_found_text());
         self.with_watch(|w| w.set_match(epoch, Match::UNAVAILABLE));
+        text
     }
 
     pub fn watch_resolve(&self, epoch: i64) -> Option<WatchItem> {
@@ -239,6 +241,11 @@ pub fn format_room_code(code: String) -> String {
 }
 
 #[uniffi::export]
+pub fn watch_mismatch_text(delta_ms: i64) -> String {
+    mismatch_text(delta_ms)
+}
+
+#[uniffi::export]
 pub fn valid_relay(url: String) -> bool {
     Relays::custom(&url).is_some()
 }
@@ -255,11 +262,7 @@ impl Plaivo {
             .map(|s| s.user.clone());
         let name = display_name(plex.iter().chain(&jellyfin).map(String::as_str));
         let relay = self.settings.lock().unwrap().watch_relay.trim().to_owned();
-        let relays = if relay.is_empty() {
-            Relays::public()
-        } else {
-            Relays::custom(&relay).ok_or("The custom relay address isn't valid")?
-        };
+        let relays = Relays::from_setting(&relay).ok_or("The custom relay address isn't valid")?;
         let listener = self
             .watch_listener
             .get()
@@ -343,8 +346,7 @@ fn view(s: &PartyState) -> WatchState {
     let room = s.room.as_ref();
     let me = s.peer_id.as_deref();
     let status = match s.match_.map(|m| m.state) {
-        Some(MatchState::Searching) => "Finding the video".into(),
-        Some(MatchState::Unavailable) => "Not on your servers".into(),
+        Some(MatchState::Searching | MatchState::Unavailable) => s.sync_text().into(),
         _ => s.waiting_text().unwrap_or_default(),
     };
     WatchState {
@@ -361,18 +363,13 @@ fn view(s: &PartyState) -> WatchState {
         host: s.is_host(),
         everyone_controls: room.is_some_and(|r| r.control == Control::Everyone),
         locked: room.is_some_and(|r| r.locked),
-        media: s.media.as_ref().map(media_title),
+        media: s.media.as_ref().map(Media::display_title),
         status,
         peers: room
             .map(|r| r.participants.iter().map(|p| peer(p, me)).collect())
             .unwrap_or_default(),
         offset_ms: s.offset_ms,
-        adjustable: s.media.is_some()
-            && s.match_.is_some_and(|m| match m.state {
-                MatchState::Mismatched => true,
-                MatchState::Matched => s.offset_ms != 0,
-                _ => false,
-            }),
+        adjustable: s.offset_adjustable(),
         mismatch_ms: s
             .match_
             .filter(|m| m.state == MatchState::Mismatched)
@@ -387,18 +384,6 @@ fn peer(p: &Participant, me: Option<&str>) -> WatchPeer {
         host: p.host,
         me: Some(p.peer_id.as_str()) == me,
         status: sync_label(p.player, p.match_, p.connected).into(),
-    }
-}
-
-fn media_title(m: &Media) -> String {
-    match (&m.series, m.season, m.episode) {
-        (Some(s), Some(season), Some(episode)) => {
-            format!("{} · S{season} E{episode} · {}", s.title, m.title)
-        }
-        (Some(s), _, _) => format!("{} · {}", s.title, m.title),
-        _ => m
-            .year
-            .map_or_else(|| m.title.clone(), |y| format!("{} ({y})", m.title)),
     }
 }
 

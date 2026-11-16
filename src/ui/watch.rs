@@ -5,7 +5,9 @@ use crate::ui::widgets::{icon, pill, row, scroll_handle, scrollbar, section};
 use gpui::{
     AnyElement, ClipboardItem, Context, Div, FontWeight, SharedString, Window, div, prelude::*, px,
 };
-use plaivo_core::watch_together::{Connection, Control, MatchState, format_code, sync_label};
+use plaivo_core::watch_together::{
+    Connection, Control, MatchState, Media, format_code, mismatch_text, sync_label,
+};
 
 fn error_text(text: SharedString) -> Div {
     div()
@@ -140,43 +142,24 @@ impl Plaivo {
                 .find(|p| p.host)
                 .map_or(String::new(), |p| format!("Hosted by {}", p.name)),
         };
-        let playing = s.media.as_ref().map(|m| match &m.series {
-            Some(series) => join(&[
-                series.title.clone(),
-                m.season
-                    .zip(m.episode)
-                    .map(|(s, e)| format!("S{s} · E{e}"))
-                    .unwrap_or_default(),
-                m.title.clone(),
-            ]),
-            None => m.title.clone(),
-        });
+        let playing = s.media.as_ref().map(Media::display_title);
         let mine = if self.watch.mismatch.is_some() {
             "Different cut"
-        } else if self.watch.unavailable() {
-            "Not in your libraries"
         } else {
-            sync_label(s.player, s.match_, true)
+            s.sync_text()
         };
-        let mismatch = self.watch.mismatch.as_ref().map(|m| {
-            let len = if m.delta_ms > 0 { "longer" } else { "shorter" };
-            format!(
-                "Your copy is {:.1} s {len} than the room's.",
-                m.delta_ms.abs() as f64 / 1000.0
-            )
-        });
+        let mismatch = self
+            .watch
+            .mismatch
+            .as_ref()
+            .map(|m| mismatch_text(m.delta_ms));
         let offset = s.offset_ms;
         let hint = s
             .match_
             .filter(|m| m.state == MatchState::Mismatched)
             .and_then(|m| m.delta_ms)
             .filter(|d| *d != offset);
-        let adjusting = s.media.is_some()
-            && s.match_.is_some_and(|m| match m.state {
-                MatchState::Mismatched => true,
-                MatchState::Matched => offset != 0,
-                _ => false,
-            });
+        let adjusting = s.offset_adjustable();
         let step = |id: &'static str, label: &'static str, ms: i64| {
             pill(id, label, None, false).on_click(
                 cx.listener(move |this, _, _, _| this.watch_call(|wt| wt.set_offset(offset + ms))),
@@ -356,11 +339,7 @@ impl Plaivo {
     pub fn render_watch_pill(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let s = &self.watch.state;
         let room = s.room.as_ref().filter(|_| self.watch.in_room())?;
-        let state = match s.connection {
-            Connection::Reconnecting => "Reconnecting",
-            _ if self.watch.unavailable() => "Not in your libraries",
-            _ => sync_label(s.player, s.match_, true),
-        };
+        let state = s.sync_text();
         Some(
             div()
                 .id("watch-pill")

@@ -115,12 +115,6 @@ impl Watch {
         self.state.in_room()
     }
 
-    pub fn unavailable(&self) -> bool {
-        self.state
-            .match_
-            .is_some_and(|m| m.state == MatchState::Unavailable)
-    }
-
     pub fn can_open(&self) -> bool {
         self.file.is_some()
     }
@@ -136,14 +130,6 @@ impl Watch {
     pub fn shutdown(&mut self) {
         self.generation += 1;
         drop(self.wt.take());
-    }
-}
-
-pub fn relays(setting: &str) -> Option<Relays> {
-    if setting.is_empty() {
-        Some(Relays::public())
-    } else {
-        Relays::custom(setting)
     }
 }
 
@@ -199,7 +185,7 @@ impl Plaivo {
         if self.watch.busy() {
             return;
         }
-        let Some(relays) = relays(&self.settings.watch_relay) else {
+        let Some(relays) = Relays::from_setting(&self.settings.watch_relay) else {
             let text = "The custom relay address in Settings isn't valid.";
             self.watch.error = Some(text.into());
             if self.page != Page::Watch {
@@ -266,7 +252,7 @@ impl Plaivo {
     }
 
     fn set_relay(&mut self, url: &str, cx: &mut Context<Self>) {
-        let valid = url.is_empty() || Relays::custom(url).is_some();
+        let valid = Relays::from_setting(url).is_some();
         self.watch.relay_error =
             (!valid).then(|| "Enter the relay's address, starting with https:// or http://".into());
         if valid && self.settings.watch_relay != url {
@@ -441,13 +427,7 @@ impl Plaivo {
                 let Some(wt) = &w.wt else { return };
                 let Some((server, it)) = found else {
                     wt.set_match(epoch, Match::UNAVAILABLE);
-                    return this.toast(
-                        format!(
-                            "{} isn't in your libraries.",
-                            media.series.as_ref().map_or(&media.title, |s| &s.title)
-                        ),
-                        cx,
-                    );
+                    return this.toast(media.not_found_text(), cx);
                 };
                 let m = match_for(it.duration.map(|d| d as i64), media.duration_ms);
                 if let (MatchState::Mismatched, Some(delta_ms)) = (m.state, m.delta_ms) {
@@ -786,12 +766,5 @@ mod tests {
             Some(&ep1),
             Some(("srv", "ep1"))
         ));
-    }
-
-    #[test]
-    fn relay_setting_falls_back_to_public() {
-        assert!(!relays("").unwrap().custom);
-        assert!(relays("https://relay.example.com").unwrap().custom);
-        assert!(relays("ftp://nope").is_none());
     }
 }

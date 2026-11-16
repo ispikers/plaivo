@@ -28,6 +28,15 @@ impl Relays {
         }
     }
 
+    pub fn from_setting(setting: &str) -> Option<Self> {
+        let setting = setting.trim();
+        if setting.is_empty() {
+            Some(Self::public())
+        } else {
+            Self::custom(setting)
+        }
+    }
+
     pub fn custom(base: &str) -> Option<Self> {
         let base = base.trim().trim_end_matches('/');
         let (scheme, rest) = match base.strip_prefix("https://") {
@@ -150,6 +159,17 @@ pub fn fetch_list() -> Option<Vec<Relay>> {
 mod tests {
     use super::*;
     use crate::watch_together::protocol::tests::vectors;
+
+    #[test]
+    fn relay_setting_falls_back_to_public() {
+        assert!(!Relays::from_setting(" ").unwrap().custom);
+        assert!(
+            Relays::from_setting("https://relay.example.com")
+                .unwrap()
+                .custom
+        );
+        assert!(Relays::from_setting("ftp://nope").is_none());
+    }
 
     #[test]
     fn code_routing_vectors() {

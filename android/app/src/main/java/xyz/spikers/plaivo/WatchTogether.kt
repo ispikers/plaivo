@@ -47,6 +47,7 @@ import uniffi.plaivo_ffi.WatchState
 import uniffi.plaivo_ffi.forgetRoom
 import uniffi.plaivo_ffi.formatRoomCode
 import uniffi.plaivo_ffi.rememberRoom
+import uniffi.plaivo_ffi.watchMismatchText
 
 private const val BACKGROUND_LEAVE_MS = 5 * 60_000L
 
@@ -199,8 +200,7 @@ object Watch : WatchListener {
             main.post {
                 if (resolving != target) return@post
                 if (found == null) {
-                    core.watchUnavailable(s.epoch)
-                    toast("${s.media} isn't on your servers")
+                    toast(core.watchUnavailable(s.epoch))
                 } else {
                     val bound = Bound(s.epoch, found.server, found.key)
                     val delta = found.mismatchMs
@@ -290,10 +290,9 @@ fun WatchTogetherScreen() {
                         if (Watch.item != null) ActionButton("Open party", Watch::open)
                     }
                     Watch.mismatch?.let { m ->
-                        val longer = if (m.deltaMs > 0) "longer" else "shorter"
                         SettingsRow(
                             Glyph.Info,
-                            "Your copy is ${seconds(kotlin.math.abs(m.deltaMs), false)} $longer than the room's",
+                            watchMismatchText(m.deltaMs),
                             "Play it anyway and line it up with the offset, or sit this one out",
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -304,7 +303,7 @@ fun WatchTogetherScreen() {
                     if (s.adjustable) {
                         SettingsRow(
                             Glyph.Tune,
-                            "Offset ${seconds(s.offsetMs, true)}",
+                            "Offset ${seconds(s.offsetMs)}",
                             "Shift your video when it runs ahead of or behind the room",
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -314,7 +313,7 @@ fun WatchTogetherScreen() {
                             }
                             s.mismatchMs
                                 ?.takeIf { it != s.offsetMs }
-                                ?.let { ActionButton("Use ${seconds(it, true)}", { core.watchSetOffset(it) }) }
+                                ?.let { ActionButton("Use ${seconds(it)}", { core.watchSetOffset(it) }) }
                             if (s.offsetMs != 0L) ActionButton("Reset", { core.watchSetOffset(0) })
                         }
                     }
@@ -433,5 +432,4 @@ fun WatchPill(s: WatchState, modifier: Modifier = Modifier) {
     }
 }
 
-private fun seconds(ms: Long, signed: Boolean): String =
-    String.format(java.util.Locale.ROOT, if (signed) "%+.1f s" else "%.1f s", ms / 1000.0)
+private fun seconds(ms: Long): String = String.format(java.util.Locale.ROOT, "%+.1f s", ms / 1000.0)

@@ -1,4 +1,5 @@
-use super::party::{EndReason, Event, PartyError, PartyState};
+use super::media::Media;
+use super::party::{Connection, EndReason, Event, PartyError, PartyState};
 use super::protocol::{Match, MatchState, PlayerState};
 
 impl PartyError {
@@ -50,6 +51,43 @@ impl PartyState {
             .collect();
         (!names.is_empty()).then(|| format!("Waiting for {}", names.join(", ")))
     }
+
+    pub fn sync_text(&self) -> &'static str {
+        match (self.connection, self.match_.map(|m| m.state)) {
+            (Connection::Reconnecting, _) => "Reconnecting",
+            (_, Some(MatchState::Unavailable)) => "Not in your libraries",
+            _ => sync_label(self.player, self.match_, true),
+        }
+    }
+}
+
+impl Media {
+    pub fn display_title(&self) -> String {
+        match &self.series {
+            Some(series) => crate::join(&[
+                series.title.clone(),
+                self.season
+                    .zip(self.episode)
+                    .map(|(s, e)| format!("S{s} · E{e}"))
+                    .unwrap_or_default(),
+                self.title.clone(),
+            ]),
+            None => self.title.clone(),
+        }
+    }
+
+    pub fn not_found_text(&self) -> String {
+        let title = self.series.as_ref().map_or(&self.title, |s| &s.title);
+        format!("{title} isn't in your libraries.")
+    }
+}
+
+pub fn mismatch_text(delta_ms: i64) -> String {
+    let len = if delta_ms > 0 { "longer" } else { "shorter" };
+    format!(
+        "Your copy is {:.1} s {len} than the room's.",
+        delta_ms.abs() as f64 / 1000.0
+    )
 }
 
 impl Event {
@@ -145,6 +183,48 @@ mod tests {
             let text = PartyError::local(code).text();
             assert!(text.is_some() && text != fallback, "{code}");
         }
+    }
+
+    #[test]
+    fn room_media_and_own_sync_read_the_same_everywhere() {
+        let mut media: Media = serde_json::from_value(serde_json::json!({
+            "kind": "episode", "title": "Pilot", "season": 1, "episode": 3,
+            "series": {"title": "Show"}, "durationMs": 1000
+        }))
+        .unwrap();
+        assert_eq!(media.display_title(), "Show · S1 · E3 · Pilot");
+        assert_eq!(media.not_found_text(), "Show isn't in your libraries.");
+        media.series = None;
+        assert_eq!(media.display_title(), "Pilot");
+        assert_eq!(
+            mismatch_text(-1500),
+            "Your copy is 1.5 s shorter than the room's."
+        );
+
+        let at = |state, offset_ms, connection| PartyState {
+            connection,
+            media: Some(media.clone()),
+            match_: Some(Match {
+                state,
+                delta_ms: None,
+            }),
+            offset_ms,
+            player: PlayerState::Ready,
+            ..Default::default()
+        };
+        let live = Connection::Connected;
+        assert_eq!(
+            at(MatchState::Unavailable, 0, live).sync_text(),
+            "Not in your libraries"
+        );
+        assert_eq!(
+            at(MatchState::Unavailable, 0, Connection::Reconnecting).sync_text(),
+            "Reconnecting"
+        );
+        assert!(at(MatchState::Mismatched, 0, live).offset_adjustable());
+        assert!(!at(MatchState::Matched, 0, live).offset_adjustable());
+        assert!(at(MatchState::Matched, 200, live).offset_adjustable());
+        assert!(!at(MatchState::Searching, 200, live).offset_adjustable());
     }
 
     #[test]
