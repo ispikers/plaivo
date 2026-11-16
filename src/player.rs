@@ -8,7 +8,7 @@ use crate::settings::{AUTO_SKIP_NOTICE, Scale, SkipMode, library_key};
 use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::video_host::{self, Region};
-use crate::{mpv, shaders, store};
+use crate::{media_session, mpv, shaders, store};
 use futures::StreamExt;
 use gpui::{Context, ScrollStrategy, SharedString, Task, UniformListScrollHandle};
 use plaivo_core::prefs::language_label;
@@ -24,6 +24,8 @@ pub const WATCH_HINT_FOR: Duration = Duration::from_secs(4);
 const QUIT_REPORT_WAIT: Duration = Duration::from_secs(2);
 const HOME_REFRESH: Duration = Duration::from_secs(120);
 const CACHE_RENDER: Duration = Duration::from_millis(250);
+const SESSION_SYNC_SECS: f64 = 5.0;
+const SESSION_POSTER: (u32, u32) = (400, 600);
 
 #[derive(Deserialize)]
 struct MpvTrack {
@@ -86,6 +88,8 @@ pub struct Player {
     pub server: Option<Server>,
     pub mpv: Option<mpv::Mpv>,
     pub host: Option<video_host::VideoHost>,
+    session: Option<media_session::Session>,
+    session_synced: f64,
     pub active: bool,
     pub key: String,
     pub time: f64,
@@ -306,8 +310,6 @@ impl Plaivo {
             ),
             ("user-agent", "Plaivo"),
             ("audio-client-name", "Plaivo"),
-            ("media-controls", "yes"),
-            ("input-media-keys", "yes"),
             ("config-dir", conf_dir.as_str()),
             ("config", "yes"),
             ("ytdl", "no"),
@@ -342,16 +344,27 @@ impl Plaivo {
             }
             let _ = tx.unbounded_send(e);
         })?;
-        for (key, cmd) in [
-            ("PLAYONLY", "set pause no"),
-            ("PAUSEONLY", "set pause yes"),
-            ("PLAY", "cycle pause"),
-        ] {
-            mpv.command(&["keybind", key, cmd]);
-        }
         cx.spawn(async move |this, cx| {
             while let Some(e) = rx.next().await {
                 if this.update(cx, |this, cx| this.on_mpv(e, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        match media_session::Session::new(self.window, move |c| {
+            let _ = tx.unbounded_send(c);
+        }) {
+            Ok(s) => self.player.session = Some(s),
+            Err(e) => log::warn!("media session: {e}"),
+        }
+        cx.spawn(async move |this, cx| {
+            while let Some(c) = rx.next().await {
+                if this
+                    .update(cx, |this, cx| this.on_media_command(c, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -669,6 +682,7 @@ impl Plaivo {
             self.player.queue.clear();
             self.player.queue_show = Default::default();
         }
+        self.show_in_session(&title, &subtitle, it.card_art(false), cx);
         let p = &mut self.player;
         p.title_link = title_link;
         p.crumbs = crumbs;
@@ -716,6 +730,7 @@ impl Plaivo {
             |this, r, _| match r {
                 Ok((wanted, eps)) if this.player.queue_show == wanted => {
                     this.player.queue = eps.iter().map(|e| queue_card(e, &wanted.0)).collect();
+                    this.sync_session();
                 }
                 Ok(_) => {}
                 Err(e) => log::warn!("could not load episode queue: {e}"),
@@ -733,6 +748,82 @@ impl Plaivo {
     pub fn neighbor(&self, step: isize) -> Option<Card> {
         let i = self.queue_index()?.checked_add_signed(step)?;
         self.player.queue.get(i).cloned()
+    }
+
+    fn show_in_session(
+        &mut self,
+        title: &str,
+        subtitle: &str,
+        poster: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(s) = &mut self.player.session else {
+            return;
+        };
+        s.set_item(title, subtitle);
+        self.sync_session();
+        let Some(srv) = self.player.server.as_ref().map(|s| s.id.clone()) else {
+            return;
+        };
+        if poster.is_empty() {
+            return;
+        }
+        let local = self.downloads.as_ref().and_then(|d| d.image(&srv, poster));
+        let url = self.image_url(&srv, poster, SESSION_POSTER);
+        let (c, key) = (self.client.clone(), self.player.key.clone());
+        Self::bg(
+            cx,
+            move || {
+                let bytes = match (local, url) {
+                    (Some(file), _) => std::fs::read(file).map_err(|e| e.to_string()),
+                    (None, Some(url)) => c.fetch(&url).map_err(|e| e.to_string()),
+                    (None, None) => Err("no poster url".into()),
+                };
+                bytes
+                    .inspect_err(|e| log::warn!("media session poster: {e}"))
+                    .ok()
+                    .and_then(media_session::artwork)
+            },
+            move |this, art, _| {
+                if let Some(art) = art.filter(|_| this.player.key == key)
+                    && let Some(s) = &mut this.player.session
+                {
+                    s.set_artwork(art);
+                }
+            },
+        );
+    }
+
+    fn sync_session(&mut self) {
+        let state = media_session::State {
+            playing: !self.player.paused,
+            speed: self.player.speed,
+            position: self.player.time,
+            duration: self.player.duration,
+            previous: self.neighbor(-1).is_some(),
+            next: self.neighbor(1).is_some(),
+        };
+        self.player.session_synced = self.player.time;
+        if let Some(s) = &mut self.player.session {
+            s.set_state(&state);
+        }
+    }
+
+    fn on_media_command(&mut self, c: media_session::Command, cx: &mut Context<Self>) {
+        use media_session::Command::*;
+        if !self.playing() {
+            return;
+        }
+        match c {
+            Play if !self.player.paused => {}
+            Pause if self.player.paused => {}
+            Play | Pause | Toggle => self.toggle_pause(),
+            Stop => self.stop_playback(cx),
+            Next => self.play_neighbor(1, cx),
+            Previous => self.play_neighbor(-1, cx),
+            Seek(t) => self.seek_to(t),
+        }
+        cx.notify();
     }
 
     pub fn play_card(&mut self, card: Card, cx: &mut Context<Self>) {
@@ -1653,6 +1744,9 @@ impl Plaivo {
                     self.report(state, cx);
                 }
                 self.watch_feed(false);
+                if (t - self.player.session_synced).abs() >= SESSION_SYNC_SECS {
+                    self.sync_session();
+                }
                 self.auto_skip(cx);
                 if self.up_next().is_some_and(|(_, left)| left <= 0.0) {
                     self.play_up_next(cx);
@@ -1662,6 +1756,7 @@ impl Plaivo {
             mpv::Event::Duration(d) => {
                 self.player.duration = d;
                 self.watch_feed(true);
+                self.sync_session();
                 true
             }
             mpv::Event::Cached(t) => {
@@ -1684,13 +1779,12 @@ impl Plaivo {
             mpv::Event::Pause(p) => {
                 let outside = p != self.player.paused && self.watch_holds();
                 self.player.paused = p;
-                #[cfg(target_os = "macos")]
-                mpv::now_playing(p);
                 if outside {
                     self.watch_relay_pause(p);
                 }
                 self.report(if p { "paused" } else { "playing" }, cx);
                 self.watch_feed(true);
+                self.sync_session();
                 if !p {
                     self.wake_controls(cx);
                 }
@@ -1745,6 +1839,7 @@ impl Plaivo {
                 self.player.video_ready = true;
                 self.sync_shader(cx);
                 self.watch_feed(true);
+                self.sync_session();
                 true
             }
             mpv::Event::Ended { eof, error } => {
@@ -1911,6 +2006,9 @@ impl Plaivo {
         p.queue_show = Default::default();
         if let Some(mpv) = &p.mpv {
             mpv.command(&["stop"]);
+        }
+        if let Some(s) = &mut p.session {
+            s.clear();
         }
         if let Some(h) = &p.host {
             h.set_visible(false);

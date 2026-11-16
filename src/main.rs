@@ -5,6 +5,7 @@ mod clock;
 mod images;
 mod keymap;
 mod logging;
+mod media_session;
 mod menu;
 mod mpv;
 mod placement;

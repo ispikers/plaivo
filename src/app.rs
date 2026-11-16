@@ -849,11 +849,6 @@ impl Plaivo {
             if this.page == Page::Player {
                 this.wake_controls(cx);
             }
-            // mpv's RemoteCommandCenter resets Now Playing to Playing whenever the app activates.
-            #[cfg(target_os = "macos")]
-            if this.player.mpv.is_some() {
-                crate::mpv::now_playing(this.player.paused);
-            }
         })
         .detach();
         window.focus(&s.focus, cx);
@@ -1071,7 +1066,7 @@ impl Plaivo {
         )
     }
 
-    fn image_url(&self, server: &str, path: &str, (w, h): (u32, u32)) -> Option<String> {
+    pub fn image_url(&self, server: &str, path: &str, (w, h): (u32, u32)) -> Option<String> {
         if path.starts_with("http") {
             let resizer = |id: &str| {
                 self.active_servers()

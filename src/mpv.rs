@@ -74,27 +74,6 @@ pub fn preload() {
     let _ = api();
 }
 
-// mpv skips Now Playing state unless NSApp is its own class.
-#[cfg(target_os = "macos")]
-pub fn now_playing(paused: bool) {
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
-    const PLAYBACK_STATE_PLAYING: usize = 1;
-    const PLAYBACK_STATE_PAUSED: usize = 2;
-    let Some(cls) = AnyClass::get(c"MPNowPlayingInfoCenter") else {
-        return;
-    };
-    let state = if paused {
-        PLAYBACK_STATE_PAUSED
-    } else {
-        PLAYBACK_STATE_PLAYING
-    };
-    unsafe {
-        let center: *mut AnyObject = msg_send![cls, defaultCenter];
-        let _: () = msg_send![center, setPlaybackState: state];
-    }
-}
-
 fn api() -> Result<&'static Api, String> {
     static API: OnceLock<Result<Api, String>> = OnceLock::new();
     API.get_or_init(|| unsafe {
