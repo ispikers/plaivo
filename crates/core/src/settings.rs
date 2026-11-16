@@ -290,16 +290,6 @@ pub struct CardPrefs {
     pub spoilers: bool,
 }
 
-impl Default for CardPrefs {
-    fn default() -> Self {
-        Self {
-            poster: EpisodePoster::Thumbnail,
-            numbers: true,
-            spoilers: false,
-        }
-    }
-}
-
 impl CardPrefs {
     pub fn wide_hub(&self, h: &Hub) -> bool {
         h.wide() && (self.poster == EpisodePoster::Thumbnail || h.kind == "clip")
@@ -641,7 +631,7 @@ mod tests {
             kind: "episode".into(),
             ..Default::default()
         };
-        let thumbs = CardPrefs::default();
+        let thumbs = Settings::default().card_prefs();
         assert!(thumbs.wide_hub(&hub));
         assert_eq!(
             (thumbs.art(&ep, true), thumbs.art(&ep, false)),

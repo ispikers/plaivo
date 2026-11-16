@@ -1,6 +1,7 @@
 use crate::app::{Card, Nav, Plaivo, card_for, download_root, episode_card, join};
 use crate::downloads::{Entry, State};
 use crate::plex::{DISCOVER_ID, Item};
+use crate::settings::CardPrefs;
 use crate::ui::home::content_width;
 use crate::ui::library::Grid;
 use crate::ui::settings::{note, toggle_row};
@@ -87,12 +88,12 @@ pub fn fmt_size(bytes: u64) -> String {
     }
 }
 
-pub fn offline_cards(items: &[(String, Item)]) -> Vec<Card> {
+pub fn offline_cards(items: &[(String, Item)], prefs: &CardPrefs) -> Vec<Card> {
     let mut cards = Vec::new();
     let mut episodes: HashMap<(&str, &str), usize> = HashMap::new();
     for (server, it) in items {
         if it.kind != "episode" || it.grandparent_rating_key.is_empty() {
-            cards.push(card_for(it, false, server));
+            cards.push(card_for(it, false, server, prefs));
             continue;
         }
         let n = episodes
@@ -100,7 +101,7 @@ pub fn offline_cards(items: &[(String, Item)]) -> Vec<Card> {
             .or_default();
         *n += 1;
         if *n == 1 {
-            cards.push(card_for(&it.clone().as_show(), false, server));
+            cards.push(card_for(&it.clone().as_show(), false, server, prefs));
         }
     }
     for c in &mut cards {
@@ -603,6 +604,7 @@ impl Plaivo {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let offline = std::mem::take(&mut self.offline);
+        let prefs = self.settings.card_prefs();
         let items = offline_episodes(&offline, &server, &key);
         let title = items.first().map_or(String::new(), |it| {
             if it.kind == "episode" {
@@ -647,7 +649,7 @@ impl Plaivo {
                 let (s, k) = (s.clone(), k.clone());
                 this.with_downloads(cx, move |d| d.remove(&s, &k));
             }));
-            let card = episode_card(it, &server);
+            let card = episode_card(it, &server, &prefs);
             list = list.child(self.episode_row(i, &card, Some(remove.into_any_element()), cx));
         }
         let nothing = items.is_empty();
@@ -771,7 +773,8 @@ mod tests {
             ("a".into(), ep("2", "s1", "Zed")),
             ("b".into(), ep("3", "s1", "Zed")),
         ];
-        let cards: Vec<_> = offline_cards(&items)
+        let prefs = crate::settings::Settings::default().card_prefs();
+        let cards: Vec<_> = offline_cards(&items, &prefs)
             .into_iter()
             .map(|c| {
                 (

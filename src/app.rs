@@ -4,7 +4,7 @@ use crate::player::Player;
 use crate::plex::{
     self, Client, Ctx, DISCOVER_ID, Item, R, SORTS, Server, Source, initial_sort, sort_items,
 };
-use crate::settings::{BLUR_PARAM, CardPrefs, EpisodePoster, Settings, ViewMode, library_key};
+use crate::settings::{BLUR_PARAM, CardPrefs, Settings, ViewMode, library_key};
 use crate::store;
 use crate::ui::add_server::AddServer;
 use crate::ui::input::{InputEvent, TextInput};
@@ -109,24 +109,6 @@ pub struct Thumb {
     pub blur: bool,
 }
 
-static CARD_PREFS: std::sync::Mutex<CardPrefs> = std::sync::Mutex::new(CardPrefs {
-    poster: EpisodePoster::Thumbnail,
-    numbers: true,
-    spoilers: false,
-});
-
-pub fn set_card_prefs(s: &Settings) {
-    *CARD_PREFS.lock().unwrap_or_else(|e| e.into_inner()) = s.card_prefs();
-}
-
-fn card_prefs() -> CardPrefs {
-    *CARD_PREFS.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-pub fn wide_hub(h: &plex::Hub) -> bool {
-    card_prefs().wide_hub(h)
-}
-
 #[derive(Clone, Default, Debug)]
 pub struct Card {
     pub key: SharedString,
@@ -214,14 +196,14 @@ pub struct HubList {
 }
 
 impl HubList {
-    fn rebuild(&mut self) {
+    fn rebuild(&mut self, prefs: &CardPrefs) {
         let mut items: Vec<&Item> = self.items.iter().collect();
         sort_items(&mut items, &self.sort);
         self.cards = items
             .into_iter()
             .map(|it| Card {
                 resume: self.resume,
-                ..card_for(it, false, &self.server)
+                ..card_for(it, false, &self.server, prefs)
             })
             .collect();
     }
@@ -444,8 +426,7 @@ pub fn thumb(server: &str, path: &str) -> Option<Thumb> {
     })
 }
 
-pub fn card_for(it: &Item, wide: bool, server: &str) -> Card {
-    let prefs = card_prefs();
+pub fn card_for(it: &Item, wide: bool, server: &str, prefs: &CardPrefs) -> Card {
     let (title, subtitle) = prefs.text(it);
     let art = prefs.art(it, wide);
     let blur = prefs.blur(it, art);
@@ -470,10 +451,14 @@ pub fn card_for(it: &Item, wide: bool, server: &str) -> Card {
     }
 }
 
-fn hub_rows<'a>(hubs: impl IntoIterator<Item = (&'a str, &'a plex::Hub)>, old: &[Hub]) -> Vec<Hub> {
+fn hub_rows<'a>(
+    hubs: impl IntoIterator<Item = (&'a str, &'a plex::Hub)>,
+    old: &[Hub],
+    prefs: &CardPrefs,
+) -> Vec<Hub> {
     hubs.into_iter()
         .map(|(server, h)| {
-            let wide = wide_hub(h);
+            let wide = prefs.wide_hub(h);
             let resume = h.is_continue();
             let scroll = old
                 .iter()
@@ -488,7 +473,7 @@ fn hub_rows<'a>(hubs: impl IntoIterator<Item = (&'a str, &'a plex::Hub)>, old: &
                 .iter()
                 .map(|it| Card {
                     resume,
-                    ..card_for(it, wide, server)
+                    ..card_for(it, wide, server, prefs)
                 })
                 .collect();
             Hub {
@@ -506,9 +491,9 @@ fn hub_rows<'a>(hubs: impl IntoIterator<Item = (&'a str, &'a plex::Hub)>, old: &
         .collect()
 }
 
-pub fn episode_card(e: &Item, server: &str) -> Card {
-    let mut card = card_for(e, true, server);
-    let hide = card_prefs().spoiler(e);
+pub fn episode_card(e: &Item, server: &str, prefs: &CardPrefs) -> Card {
+    let mut card = card_for(e, true, server, prefs);
+    let hide = prefs.spoiler(e);
     if e.kind == "episode" {
         card.title = e.episode_title().into();
         card.thumb = thumb(server, &e.thumb).map(|t| Thumb { blur: hide, ..t });
@@ -522,8 +507,8 @@ pub fn episode_card(e: &Item, server: &str) -> Card {
     card
 }
 
-fn hero_card(it: &Item, server: &str) -> Card {
-    let mut card = card_for(it, true, server);
+fn hero_card(it: &Item, server: &str, prefs: &CardPrefs) -> Card {
+    let mut card = card_for(it, true, server, prefs);
     card.title = first(&[&it.grandparent_title, &it.title]).to_owned().into();
     card.meta = it.meta_line().into();
     card.summary = it.summary.clone().into();
@@ -596,7 +581,6 @@ impl Plaivo {
         images_rx: ImageRx,
     ) -> Self {
         let raw = window.window_handle().expect("window handle").as_raw();
-        set_card_prefs(&settings);
         let search = cx.new(|cx| TextInput::new("Search movies and shows", cx));
         cx.subscribe(
             &search,
@@ -884,7 +868,8 @@ impl Plaivo {
                 .as_ref()
                 .map(|d| d.library())
                 .unwrap_or_default();
-            self.offline_cards = crate::ui::downloads::offline_cards(&self.offline);
+            self.offline_cards =
+                crate::ui::downloads::offline_cards(&self.offline, &self.settings.card_prefs());
         }
         let visible = match self.page {
             Page::Downloads => changed || library_changed,
@@ -1995,6 +1980,7 @@ impl Plaivo {
             return;
         };
         let none = plex::Hub::default();
+        let prefs = self.settings.card_prefs();
         let row = plex::continue_row(
             &home.id,
             self.remote_continue.get(&home.id).unwrap_or(&none),
@@ -2004,7 +1990,7 @@ impl Plaivo {
                     &self.remote_continue.get(&s.id)?.metadata[..],
                 ))
             }),
-            &card_prefs(),
+            &prefs,
         );
         let old = self
             .hubs
@@ -2029,7 +2015,7 @@ impl Plaivo {
                     .iter()
                     .map(|&(s, it)| Card {
                         resume: true,
-                        ..card_for(it, row.wide, s)
+                        ..card_for(it, row.wide, s, &prefs)
                     })
                     .collect(),
                 scroll,
@@ -2040,12 +2026,17 @@ impl Plaivo {
 
     pub fn build_home(&mut self, cx: &mut Context<Self>) {
         let rows = plex::arrange_home(&self.home_rows, &self.home_order(), &self.settings);
+        let prefs = self.settings.card_prefs();
         self.hero = plex::pick_hero(&rows)
             .into_iter()
-            .map(|(server, it)| hero_card(it, server))
+            .map(|(server, it)| hero_card(it, server, &prefs))
             .collect();
         self.hero_index = self.hero_index.min(self.hero.len().saturating_sub(1));
-        self.hubs = hub_rows(rows.iter().map(|h| (h.server.as_str(), &h.hub)), &self.hubs);
+        self.hubs = hub_rows(
+            rows.iter().map(|h| (h.server.as_str(), &h.hub)),
+            &self.hubs,
+            &prefs,
+        );
         for (hub, row) in self.hubs.iter_mut().zip(&rows) {
             hub.source = row.source.clone().into();
         }
@@ -2058,7 +2049,7 @@ impl Plaivo {
                     && seen.insert((*server, it.rating_key.as_str()))
             })
             .take(SUGGESTIONS)
-            .map(|(server, it)| card_for(it, false, server))
+            .map(|(server, it)| card_for(it, false, server, &prefs))
             .collect();
         self.home_error = None;
         self.apply_continue();
@@ -2155,6 +2146,7 @@ impl Plaivo {
                         this.lib_hubs = Some(hub_rows(
                             hubs.iter().map(|h| (key.0.as_str(), h)),
                             this.lib_hubs.as_deref().unwrap_or_default(),
+                            &this.settings.card_prefs(),
                         ))
                     }
                     Err(e) => {
@@ -2188,7 +2180,7 @@ impl Plaivo {
                 match r {
                     Ok(items) => {
                         l.items = items;
-                        l.rebuild();
+                        l.rebuild(&this.settings.card_prefs());
                     }
                     Err(e) => this.toast(format!("Could not load list: {e}"), cx),
                 }
@@ -2200,7 +2192,7 @@ impl Plaivo {
         self.sort_open = false;
         if let Some(l) = &mut self.hub_list {
             l.sort = sort.to_owned();
-            l.rebuild();
+            l.rebuild(&self.settings.card_prefs());
         }
         cx.notify();
     }
@@ -2277,6 +2269,7 @@ impl Plaivo {
             Listing::Watchlist => srv.watchlist(c, &k.section, page * PAGE, PAGE, &k.sort),
         };
         self.load(cx, fetch, move |this, r, cx| {
+            let prefs = this.settings.card_prefs();
             let current = this.library.as_ref().is_some_and(|l| l.key == key);
             let Some(lib) = this
                 .library
@@ -2304,7 +2297,7 @@ impl Plaivo {
                             *slot = Some(Card {
                                 summary: it.summary.clone().into(),
                                 meta: join(&meta).into(),
-                                ..card_for(it, false, &key.server)
+                                ..card_for(it, false, &key.server, &prefs)
                             });
                         }
                     }
@@ -2391,11 +2384,12 @@ impl Plaivo {
                     })
                     .collect();
                 let home = this.home_server().map(|h| h.id).unwrap_or_default();
+                let prefs = this.settings.card_prefs();
                 this.results =
                     plaivo_core::search::rank(&q, &home, local, discover.unwrap_or_default())
                         .iter()
                         .map(|(server, it)| {
-                            let mut c = card_for(it, false, server);
+                            let mut c = card_for(it, false, server, &prefs);
                             if server == DISCOVER_ID {
                                 c.subtitle =
                                     join(&[c.subtitle.to_string(), "Not in your library".into()])
@@ -2531,6 +2525,7 @@ impl Plaivo {
         info: plex::PersonInfo,
         items: Vec<(String, Item)>,
     ) {
+        let prefs = self.settings.card_prefs();
         let art = items
             .iter()
             .map(|(s, it)| (s.as_str(), it))
@@ -2541,9 +2536,12 @@ impl Plaivo {
         let known_for: Vec<Card> = info
             .known_for
             .iter()
-            .map(|it| card_for(it, false, DISCOVER_ID))
+            .map(|it| card_for(it, false, DISCOVER_ID, &prefs))
             .collect();
-        let library = items.iter().map(|(s, it)| card_for(it, false, s)).collect();
+        let library = items
+            .iter()
+            .map(|(s, it)| card_for(it, false, s, &prefs))
+            .collect();
         let related = [
             ("Media in Library".into(), library),
             ("Known For".into(), known_for),
@@ -2574,6 +2572,7 @@ impl Plaivo {
 
     fn apply_detail(&mut self, server: &str, it: Item, seasons: Vec<Item>, cx: &mut Context<Self>) {
         let summary = plaivo_core::detail::summary(&it, server != DISCOVER_ID);
+        let prefs = self.settings.card_prefs();
         let extras = it
             .extras()
             .iter()
@@ -2584,7 +2583,7 @@ impl Plaivo {
                     .map(plex::fmt_duration)
                     .unwrap_or_default()
                     .into(),
-                ..card_for(x, true, server)
+                ..card_for(x, true, server, &prefs)
             })
             .collect();
         let watchlisted = self
@@ -2708,7 +2707,11 @@ impl Plaivo {
                 }
                 match r {
                     Ok(eps) => {
-                        this.episodes = eps.iter().map(|e| episode_card(e, &server)).collect();
+                        let prefs = this.settings.card_prefs();
+                        this.episodes = eps
+                            .iter()
+                            .map(|e| episode_card(e, &server, &prefs))
+                            .collect();
                         this.episode_items = eps;
                     }
                     Err(e) => this.toast(format!("Could not load episodes: {e}"), cx),
@@ -2719,7 +2722,6 @@ impl Plaivo {
     }
 
     pub fn cards_changed(&mut self, cx: &mut Context<Self>) {
-        set_card_prefs(&self.settings);
         self.save_settings_soon(cx);
         self.library = None;
         self.library_cache.clear();
@@ -2824,6 +2826,7 @@ impl Plaivo {
             cx,
             move |c| srv.related(c, &k),
             move |this, r, _| {
+                let prefs = this.settings.card_prefs();
                 let Some(d) = this
                     .detail
                     .as_mut()
@@ -2840,7 +2843,7 @@ impl Plaivo {
                                     h.title.into(),
                                     h.metadata
                                         .iter()
-                                        .map(|it| card_for(it, false, &server))
+                                        .map(|it| card_for(it, false, &server, &prefs))
                                         .collect(),
                                 )
                             })
@@ -2904,7 +2907,9 @@ mod tests {
             title: title.into(),
             ..Default::default()
         };
-        let rows = |hubs: &[plex::Hub], old: &[Hub]| hub_rows(hubs.iter().map(|h| ("s", h)), old);
+        let prefs = Settings::default().card_prefs();
+        let rows =
+            |hubs: &[plex::Hub], old: &[Hub]| hub_rows(hubs.iter().map(|h| ("s", h)), old, &prefs);
         let old = rows(&[hub("a", "/a", "A"), hub("b", "/b", "B")], &[]);
         old[1].scroll.set_offset(point(px(0.), px(-40.)));
         let mut shifted = rows(&[hub("continueWatching", "", "Continue Watching")], &[]);

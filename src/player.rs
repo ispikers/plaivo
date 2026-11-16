@@ -4,7 +4,7 @@ use crate::plex::{
     self, Ctx, Item, Media, Picks, Quality, Server, Source, Transcode, resolve_playable,
 };
 use crate::prefs::{self, LanguagePrefs, LanguageRule, TrackInfo};
-use crate::settings::{AUTO_SKIP_NOTICE, Scale, SkipMode, library_key};
+use crate::settings::{AUTO_SKIP_NOTICE, CardPrefs, Scale, SkipMode, library_key};
 use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::video_host::{self, Region};
@@ -257,14 +257,14 @@ fn heading(it: &Item) -> (String, String) {
     }
 }
 
-fn queue_card(e: &Item, server: &str) -> Card {
+fn queue_card(e: &Item, server: &str, prefs: &CardPrefs) -> Card {
     Card {
         meta: e
             .duration
             .map(plex::fmt_duration)
             .unwrap_or_default()
             .into(),
-        ..card_for(e, true, server)
+        ..card_for(e, true, server, prefs)
     }
 }
 
@@ -670,13 +670,14 @@ impl Plaivo {
                     .as_ref()
                     .map(|s| s.id.clone())
                     .unwrap_or_default();
+                let prefs = self.settings.card_prefs();
                 self.player.queue = crate::ui::downloads::offline_episodes(
                     &self.offline,
                     &server,
                     &it.grandparent_rating_key,
                 )
                 .into_iter()
-                .map(|e| queue_card(e, &server))
+                .map(|e| queue_card(e, &server, &prefs))
                 .collect();
             }
         } else {
@@ -730,7 +731,11 @@ impl Plaivo {
             },
             |this, r, _| match r {
                 Ok((wanted, eps)) if this.player.queue_show == wanted => {
-                    this.player.queue = eps.iter().map(|e| queue_card(e, &wanted.0)).collect();
+                    let prefs = this.settings.card_prefs();
+                    this.player.queue = eps
+                        .iter()
+                        .map(|e| queue_card(e, &wanted.0, &prefs))
+                        .collect();
                     this.sync_session();
                 }
                 Ok(_) => {}
