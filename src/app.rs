@@ -1397,6 +1397,30 @@ impl Plaivo {
         cx.notify();
     }
 
+    fn fetch_account_name(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self
+            .account
+            .token
+            .clone()
+            .filter(|_| self.watch.account_name.is_none())
+        else {
+            return;
+        };
+        let c = self.client.clone();
+        Self::bg(
+            cx,
+            move || c.user(&t).map(|u| (u.name, t)),
+            |this, r, cx| match r {
+                Ok((name, t)) if this.account.token.as_ref() == Some(&t) => {
+                    this.watch.account_name = Some(name);
+                    cx.notify();
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("plex user: {e}"),
+            },
+        );
+    }
+
     fn discover(&mut self, cx: &mut Context<Self>) {
         let Some(token) = self.account.token.clone() else {
             if let Some(sp) = &mut self.splash {
@@ -1404,21 +1428,7 @@ impl Plaivo {
             }
             return;
         };
-        if self.watch.account_name.is_none() {
-            let (c, t) = (self.client.clone(), token.clone());
-            Self::bg(
-                cx,
-                move || c.user(&t).map(|u| (u.name, t)),
-                |this, r, cx| match r {
-                    Ok((name, t)) if this.account.token.as_ref() == Some(&t) => {
-                        this.watch.account_name = Some(name);
-                        cx.notify();
-                    }
-                    Ok(_) => {}
-                    Err(e) => log::warn!("plex user: {e}"),
-                },
-            );
-        }
+        self.fetch_account_name(cx);
         self.servers_loading = true;
         let c = self.client.clone();
         let started = token.clone();
@@ -1765,7 +1775,10 @@ impl Plaivo {
                 self.page = Page::Downloads;
                 self.offline_view = view;
             }
-            Nav::Watch => self.page = Page::Watch,
+            Nav::Watch => {
+                self.page = Page::Watch;
+                self.fetch_account_name(cx);
+            }
             Nav::Watchlist => {
                 self.page = Page::Library;
                 let section = if self.watchlist_shows { "2" } else { "1" };
