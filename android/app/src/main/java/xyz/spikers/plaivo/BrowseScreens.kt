@@ -339,14 +339,14 @@ private fun TouchRow(row: MediaRow, open: (MediaCard) -> Unit, openRow: (MediaRo
 }
 
 @Composable
-fun HubListScreen(server: String, key: String, title: String, open: (MediaCard) -> Unit) {
+fun HubListScreen(server: String, key: String, title: String, resume: Boolean, open: (MediaCard) -> Unit) {
     var list by remember { mutableStateOf<HubList?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var sort by remember { mutableStateOf("") }
     var loads by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(loads) {
-        io { runCatching { core.hubList(server, key) } }
+        io { runCatching { core.hubList(server, key, resume) } }
             .onSuccess {
                 list = it
                 if (loads == 0) sort = it.initial

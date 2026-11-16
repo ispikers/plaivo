@@ -1969,6 +1969,10 @@ impl Server {
         !self.is_jellyfin() && self.id != DISCOVER_ID
     }
 
+    pub fn can_remove_next_up(&self) -> bool {
+        !self.is_jellyfin() && self.id != DISCOVER_ID
+    }
+
     pub fn rate(&self, c: &Client, key: &str, stars: Option<u8>) -> R<()> {
         let rating = stars.map_or(-1, |s| i32::from(s.min(5)) * 2);
         self.library_action(

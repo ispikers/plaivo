@@ -416,7 +416,7 @@ impl Plaivo {
                 action("more", Icon::MoreVert, "More").on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                        this.open_item_menu(s.clone(), menu_key.clone(), ev.position, cx)
+                        this.open_item_menu(s.clone(), menu_key.clone(), false, ev.position, cx)
                     }),
                 )
             })
@@ -771,7 +771,7 @@ impl Plaivo {
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                     let (server, key) = page_menu.clone();
-                    this.open_item_menu(server, key, ev.position, cx)
+                    this.open_item_menu(server, key, false, ev.position, cx)
                 }),
             )
             .child(
@@ -872,7 +872,13 @@ impl Plaivo {
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
-                    this.open_item_menu(menu_server.clone(), menu_key.clone(), ev.position, cx)
+                    this.open_item_menu(
+                        menu_server.clone(),
+                        menu_key.clone(),
+                        false,
+                        ev.position,
+                        cx,
+                    )
                 }),
             )
             .child(

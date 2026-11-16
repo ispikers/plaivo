@@ -107,7 +107,7 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit, onDe
     val first = remember { FocusRequester() }
     val local = remember(card.server) { card.server != discoverId() }
     LaunchedEffect(card) {
-        io { runCatching { core.itemMenu(card.server, card.key) } }
+        io { runCatching { core.itemMenu(card.server, card.key, card.resume) } }
             .onSuccess { menu = it }
             .onFailure { failed = it.message }
     }

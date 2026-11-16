@@ -58,6 +58,7 @@ pub struct Context {
     pub can_download: bool,
     pub signed_in: bool,
     pub watchlisted: Option<bool>,
+    pub continue_watching: bool,
 }
 
 pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
@@ -91,6 +92,9 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
         } else {
             Action::MarkWatched
         });
+    }
+    if library && c.continue_watching {
+        v.push(Action::ClearProgress);
     }
     if library && c.can_rate {
         v.push(Action::Rate);
@@ -192,7 +196,25 @@ mod tests {
             can_download: true,
             signed_in: true,
             watchlisted: None,
+            continue_watching: false,
         }
+    }
+
+    #[test]
+    fn next_up_items_in_continue_watching_can_be_removed() {
+        let ep = Item {
+            kind: "episode".into(),
+            ..Default::default()
+        };
+        assert!(!actions(&ep, &ctx()).contains(&Action::ClearProgress));
+        let row = Context {
+            continue_watching: true,
+            ..ctx()
+        };
+        assert_eq!(
+            &actions(&ep, &row)[..2],
+            [Action::MarkWatched, Action::ClearProgress]
+        );
     }
 
     #[test]

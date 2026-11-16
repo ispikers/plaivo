@@ -451,6 +451,8 @@ pub struct Card {
     pub unwatched: u64,
     #[uniffi(default)]
     pub left: Option<String>,
+    #[uniffi(default)]
+    pub resume: bool,
 }
 
 #[derive(uniffi::Record)]
@@ -716,6 +718,7 @@ fn card_with(
         watched: it.watched(),
         unwatched: it.unwatched(),
         left: it.time_left(),
+        resume: false,
     }
 }
 
@@ -1105,7 +1108,10 @@ impl Plaivo {
                 .iter()
                 .filter_map(|&(id, it)| {
                     let srv = servers.iter().find(|s| s.id == id)?;
-                    Some(card(srv, it, row.wide, &prefs))
+                    Some(Card {
+                        resume: true,
+                        ..card(srv, it, row.wide, &prefs)
+                    })
                 })
                 .collect(),
         })
@@ -1127,14 +1133,17 @@ impl Plaivo {
         ))
     }
 
-    pub fn hub_list(&self, server_id: String, key: String) -> R<HubList> {
+    pub fn hub_list(&self, server_id: String, key: String, resume: bool) -> R<HubList> {
         let srv = self.server(&server_id)?;
         let items = srv.hub_items(&Ctx::new(self.client.clone(), Source::Live), &key)?;
         let prefs = self.card_prefs();
         Ok(HubList {
             cards: items
                 .iter()
-                .map(|it| card(&srv, it, false, &prefs))
+                .map(|it| Card {
+                    resume,
+                    ..card(&srv, it, false, &prefs)
+                })
                 .collect(),
             sorts: hub_sorts(&items, &key),
             initial: plex::initial_sort(&key),
@@ -1450,7 +1459,12 @@ impl Plaivo {
         Ok(rows(&srv, &hubs, &self.card_prefs()))
     }
 
-    pub fn item_menu(&self, server_id: String, key: String) -> R<ItemMenu> {
+    pub fn item_menu(
+        &self,
+        server_id: String,
+        key: String,
+        continue_watching: bool,
+    ) -> R<ItemMenu> {
         let srv = self.server(&server_id)?;
         let it = srv.metadata(&Ctx::new(self.client.clone(), Source::Network), &key)?;
         let token = self.account.lock().unwrap().token.clone();
@@ -1468,6 +1482,7 @@ impl Plaivo {
             can_download: self.downloads.get().is_some(),
             signed_in: token.is_some(),
             watchlisted,
+            continue_watching: continue_watching && srv.can_remove_next_up(),
         };
         Ok(ItemMenu {
             actions: menu::actions(&it, &ctx),
@@ -2133,19 +2148,23 @@ fn rows(srv: &Server, hubs: &[Hub], prefs: &CardPrefs) -> Vec<Row> {
         .filter(|h| titles.insert(h.title.as_str()))
         .map(|h| {
             let wide = prefs.wide_hub(h);
+            let resume = h.is_continue();
             let mut keys = HashSet::new();
             Row {
                 server: srv.id.clone(),
                 source: String::new(),
                 key: h.key.clone(),
                 title: h.title.clone(),
-                resume: h.is_continue(),
+                resume,
                 wide,
                 cards: h
                     .metadata
                     .iter()
                     .filter(|it| keys.insert(it.rating_key.as_str()))
-                    .map(|it| card(srv, it, wide, prefs))
+                    .map(|it| Card {
+                        resume,
+                        ..card(srv, it, wide, prefs)
+                    })
                     .collect(),
             }
         })

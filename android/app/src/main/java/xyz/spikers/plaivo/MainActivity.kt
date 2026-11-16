@@ -470,7 +470,8 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
                     Box(if (touch) Modifier.safeDrawingPadding() else Modifier) {
                         key(if (p is SubPage.Detail) SubPage.Detail::class else p) {
                             when (p) {
-                                is SubPage.Hub -> HubListScreen(p.server, p.key, p.title, if (p.resume) play else open)
+                                is SubPage.Hub ->
+                                    HubListScreen(p.server, p.key, p.title, p.resume, if (p.resume) play else open)
                                 is SubPage.Detail ->
                                     DetailScreen(
                                         p.server,
