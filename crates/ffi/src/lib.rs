@@ -999,14 +999,7 @@ impl Plaivo {
     }
 
     pub fn home(&self, server_id: String, cached: bool) -> R<Home> {
-        let ctx = Ctx::new(
-            self.client.clone(),
-            if cached {
-                Source::Cache
-            } else {
-                Source::Network
-            },
-        );
+        let ctx = self.ctx(cached);
         let settings = self.settings.lock().unwrap().clone();
         let mut servers = self.active_servers();
         servers.sort_by_key(|s| s.id != server_id);
@@ -1062,12 +1055,7 @@ impl Plaivo {
         let Ok(srv) = self.server(&server_id) else {
             return;
         };
-        let source = if cached {
-            Source::Cache
-        } else {
-            Source::Network
-        };
-        match srv.continue_watching(&Ctx::new(self.client.clone(), source)) {
+        match srv.continue_watching(&self.ctx(cached)) {
             Ok(mut hub) => {
                 let settings = self.settings.lock().unwrap();
                 hub.metadata
@@ -1121,14 +1109,7 @@ impl Plaivo {
         cached: bool,
     ) -> R<Vec<Row>> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(
-            self.client.clone(),
-            if cached {
-                Source::Cache
-            } else {
-                Source::Network
-            },
-        );
+        let ctx = self.ctx(cached);
         Ok(rows(
             &srv,
             &srv.section_hubs(&ctx, &key, if movies { "movie" } else { "show" })?,
@@ -1152,14 +1133,7 @@ impl Plaivo {
 
     pub fn libraries(&self, cached: bool) -> Vec<Section> {
         let servers = self.account.lock().unwrap().all_servers();
-        let ctx = Ctx::new(
-            self.client.clone(),
-            if cached {
-                Source::Cache
-            } else {
-                Source::Network
-            },
-        );
+        let ctx = self.ctx(cached);
         let disk = Ctx::new(self.client.clone(), Source::Cache);
         let hidden = self.settings.lock().unwrap().hidden_servers.clone();
         let sections: Vec<Section> = std::thread::scope(|s| {
@@ -1251,14 +1225,7 @@ impl Plaivo {
 
     pub fn detail(&self, server_id: String, key: String, cached: bool) -> R<Detail> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(
-            self.client.clone(),
-            if cached {
-                Source::Cache
-            } else {
-                Source::Network
-            },
-        );
+        let ctx = self.ctx(cached);
         let mut it = srv.metadata(&ctx, &key)?;
         let mut wanted = None;
         if it.kind == "season" && !it.parent_rating_key.is_empty() {
@@ -1346,14 +1313,7 @@ impl Plaivo {
 
     pub fn person(&self, server_id: String, id: String, name: String, cached: bool) -> R<Detail> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(
-            self.client.clone(),
-            if cached {
-                Source::Cache
-            } else {
-                Source::Network
-            },
-        );
+        let ctx = self.ctx(cached);
         let discover = self.server(DISCOVER_ID).ok();
         let servers = self.live_servers();
         let matched: &[Server] = if server_id == DISCOVER_ID {
@@ -1440,14 +1400,7 @@ impl Plaivo {
 
     pub fn episodes(&self, server_id: String, season_key: String, cached: bool) -> R<Vec<Card>> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(
-            self.client.clone(),
-            if cached {
-                Source::Cache
-            } else {
-                Source::Network
-            },
-        );
+        let ctx = self.ctx(cached);
         let prefs = self.card_prefs();
         Ok(srv
             .episodes(&ctx, &season_key)?
@@ -1467,14 +1420,7 @@ impl Plaivo {
         cached: bool,
     ) -> R<Vec<EpisodeStep>> {
         let srv = self.server(&server_id)?;
-        let ctx = Ctx::new(
-            self.client.clone(),
-            if cached {
-                Source::Cache
-            } else {
-                Source::Network
-            },
-        );
+        let ctx = self.ctx(cached);
         Ok(detail::all_neighbours(&srv.all_episodes(&ctx, &show_key)?)
             .into_iter()
             .map(|(key, [previous, next])| EpisodeStep {
@@ -2427,6 +2373,15 @@ impl Plaivo {
             library: library_key(server, &it.library_section_id),
             quality_kbps,
         }
+    }
+
+    fn ctx(&self, cached: bool) -> Ctx {
+        let source = if cached {
+            Source::Cache
+        } else {
+            Source::Network
+        };
+        Ctx::new(self.client.clone(), source)
     }
 
     fn server(&self, id: &str) -> R<Server> {
