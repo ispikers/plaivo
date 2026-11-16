@@ -19,7 +19,7 @@ case "$(uname -s)" in
   Darwin)
     ffmpeg_os=(--enable-videotoolbox --enable-audiotoolbox --enable-securetransport --enable-iconv)
     placebo_os=(-Dd3d11=disabled)
-    mpv_os=(-Dcocoa=enabled -Dswift-build=enabled -Dvulkan=enabled -Dmacos-media-player=disabled -Dmacos-touchbar=disabled)
+    mpv_os=(-Dcocoa=enabled -Dswift-build=enabled -Dvulkan=enabled -Dmacos-media-player=disabled -Dmacos-touchbar=disabled -Dgl=disabled)
     ;;
   *) echo "unsupported host: $(uname -s)" >&2; exit 1 ;;
 esac
@@ -57,7 +57,7 @@ case "$(uname -s)" in
     cp "$prefix/bin/libmpv-2.dll" "$out/"
     libs=$(PATH="$prefix/bin:$PATH" ldd "$out/libmpv-2.dll")
     if grep -qE 'not found|\?\?\?' <<<"$libs"; then echo "$libs" >&2; exit 1; fi
-    grep -vi '=> /c/windows/' <<<"$libs" | awk '{print $3}' | grep -v "^$out/" | xargs -r cp -t "$out"
+    grep -vi '=> /c/windows/' <<<"$libs" | awk '{print $3}' | grep -v "^$out/" | sort -u | xargs -r cp -t "$out"
     strip --strip-unneeded "$out"/*.dll
     ;;
   Darwin)
