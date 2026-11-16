@@ -38,7 +38,6 @@ impl Plaivo {
         let generation = s.generation;
         s.language = language.clone();
         s.results = None;
-        s.downloading = None;
         Self::bg(
             cx,
             move || srv.search_subtitles(&c, &key, &language),
@@ -65,12 +64,12 @@ impl Plaivo {
             self.player.key.clone(),
             self.player.sub_search.language.clone(),
         );
-        let before = self
+        let (part, before) = self
             .player
             .media
             .part
             .first()
-            .map(|p| subtitle_keys(&p.stream))
+            .map(|p| (p.id, subtitle_keys(&p.stream)))
             .unwrap_or_default();
         let watching = key.clone();
         Self::bg(
@@ -87,6 +86,7 @@ impl Plaivo {
                         .media
                         .into_iter()
                         .flat_map(|m| m.part)
+                        .filter(|p| p.id == part)
                         .flat_map(|p| p.stream);
                     if let Some(new) = streams
                         .filter(|s| s.is_external_subtitle())
