@@ -1175,6 +1175,26 @@ impl Client {
         self.headers(self.agent.get(url), token)
     }
 
+    pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        token: Option<&str>,
+    ) -> R<T> {
+        self.get(url, token)
+            .call()
+            .map_err(err)?
+            .body_mut()
+            .read_json()
+            .map_err(err)
+    }
+
+    pub(crate) fn put(&self, url: &str, token: Option<&str>) -> R<()> {
+        self.headers(self.agent.put(url), token)
+            .send_empty()
+            .map(drain)
+            .map_err(err)
+    }
+
     pub(crate) fn headers<B>(
         &self,
         r: ureq::RequestBuilder<B>,
@@ -1194,16 +1214,15 @@ impl Client {
     }
 
     pub fn create_pin(&self, strong: bool) -> R<Pin> {
-        self.agent
-            .post(format!("{PLEX_TV}/pins?strong={strong}"))
-            .header("Accept", "application/json")
-            .header("X-Plex-Product", PRODUCT)
-            .header("X-Plex-Client-Identifier", &*self.client_id)
-            .send_empty()
-            .map_err(err)?
-            .body_mut()
-            .read_json()
-            .map_err(err)
+        self.headers(
+            self.agent.post(format!("{PLEX_TV}/pins?strong={strong}")),
+            None,
+        )
+        .send_empty()
+        .map_err(err)?
+        .body_mut()
+        .read_json()
+        .map_err(err)
     }
 
     pub fn fetch(&self, url: &str) -> R<Vec<u8>> {
@@ -1253,13 +1272,7 @@ impl Client {
 
     pub fn watchlisted(&self, account_token: &str, guid: &str) -> R<bool> {
         let url = format!("{DISCOVER_URI}/library/metadata/{}/userState", encode(guid));
-        let v: serde_json::Value = self
-            .get(&url, Some(account_token))
-            .call()
-            .map_err(err)?
-            .body_mut()
-            .read_json()
-            .map_err(err)?;
+        let v: serde_json::Value = self.get_json(&url, Some(account_token))?;
         log::debug!(
             "watchlist userState {guid}: {}",
             v["MediaContainer"]["UserState"]
@@ -1277,11 +1290,7 @@ impl Client {
             },
             encode(guid)
         );
-        self.headers(self.agent.put(&url), Some(account_token))
-            .send_empty()
-            .map(drain)
-            .map_err(err)?;
-        Ok(())
+        self.put(&url, Some(account_token))
     }
 
     pub fn auth_url(&self, code: &str) -> String {
@@ -1296,38 +1305,20 @@ impl Client {
     }
 
     pub fn check_pin(&self, id: u64) -> R<Option<String>> {
-        let pin: Pin = self
-            .get(&format!("{PLEX_TV}/pins/{id}"), None)
-            .call()
-            .map_err(err)?
-            .body_mut()
-            .read_json()
-            .map_err(err)?;
+        let pin: Pin = self.get_json(&format!("{PLEX_TV}/pins/{id}"), None)?;
         Ok(pin.auth_token.filter(|t| !t.is_empty()))
     }
 
     pub fn user(&self, token: &str) -> R<PlexUser> {
-        let u: User = self
-            .get(&format!("{PLEX_TV}/user"), Some(token))
-            .call()
-            .map_err(err)?
-            .body_mut()
-            .read_json()
-            .map_err(err)?;
+        let u: User = self.get_json(&format!("{PLEX_TV}/user"), Some(token))?;
         Ok(u.into())
     }
 
     pub fn servers(&self, token: &str) -> R<Vec<Resource>> {
-        let all: Vec<Resource> = self
-            .get(
-                &format!("{PLEX_TV}/resources?includeHttps=1&includeRelay=1"),
-                Some(token),
-            )
-            .call()
-            .map_err(err)?
-            .body_mut()
-            .read_json()
-            .map_err(err)?;
+        let all: Vec<Resource> = self.get_json(
+            &format!("{PLEX_TV}/resources?includeHttps=1&includeRelay=1"),
+            Some(token),
+        )?;
         Ok(all
             .into_iter()
             .filter(|r| r.provides.split(',').any(|p| p == "server"))
@@ -1838,13 +1829,13 @@ impl Server {
     fn library_action(&self, c: &Client, path: &str, put: bool) -> R<()> {
         let url = format!("{}{path}&identifier=com.plexapp.plugins.library", self.uri);
         if put {
-            c.headers(c.agent.put(&url), Some(&self.token)).send_empty()
+            c.put(&url, Some(&self.token))
         } else {
-            c.get(&url, Some(&self.token)).call()
+            c.get(&url, Some(&self.token))
+                .call()
+                .map(drain)
+                .map_err(err)
         }
-        .map(drain)
-        .map_err(err)?;
-        Ok(())
     }
 
     pub fn set_watched(&self, c: &Client, key: &str, watched: bool) -> R<()> {
@@ -1871,11 +1862,7 @@ impl Server {
             self.uri,
             encode(key)
         );
-        c.headers(c.agent.put(&url), Some(&self.token))
-            .send_empty()
-            .map(drain)
-            .map_err(err)?;
-        Ok(())
+        c.put(&url, Some(&self.token))
     }
 
     pub fn can_search_subtitles(&self) -> bool {
@@ -1894,13 +1881,7 @@ impl Server {
             encode(key),
             encode(language)
         );
-        let env: Envelope<SubtitleResults> = c
-            .get(&url, Some(&self.token))
-            .call()
-            .map_err(err)?
-            .body_mut()
-            .read_json()
-            .map_err(err)?;
+        let env: Envelope<SubtitleResults> = c.get_json(&url, Some(&self.token))?;
         Ok(env.media_container.stream)
     }
 
@@ -1931,11 +1912,7 @@ impl Server {
             encode(key),
             query.join("&")
         );
-        c.headers(c.agent.put(&url), Some(&self.token))
-            .send_empty()
-            .map(drain)
-            .map_err(err)?;
-        Ok(())
+        c.put(&url, Some(&self.token))
     }
 
     pub fn can_rate(&self) -> bool {
@@ -2183,11 +2160,7 @@ impl Server {
             self.uri,
             query.join("&")
         );
-        c.headers(c.agent.put(&url), Some(&self.token))
-            .send_empty()
-            .map(drain)
-            .map_err(err)?;
-        Ok(())
+        c.put(&url, Some(&self.token))
     }
 
     pub fn transcode_url(

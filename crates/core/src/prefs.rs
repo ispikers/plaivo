@@ -1,5 +1,5 @@
 use crate::jellyfin;
-use crate::plex::{Client, Item, Media, Picks, R, Server, Stream, drain, encode, err};
+use crate::plex::{Client, Item, Media, Picks, R, Server, Stream, encode};
 use crate::settings::library_key;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -354,12 +354,7 @@ impl From<&LanguagePrefs> for jellyfin::LanguagePrefs {
 }
 
 fn profile_json(c: &Client, token: &str) -> R<Value> {
-    c.headers(c.agent.get(PROFILE), Some(token))
-        .call()
-        .map_err(err)?
-        .body_mut()
-        .read_json()
-        .map_err(err)
+    c.get_json(PROFILE, Some(token))
 }
 
 pub fn plex_account(c: &Client, token: &str) -> R<LanguagePrefs> {
@@ -367,14 +362,7 @@ pub fn plex_account(c: &Client, token: &str) -> R<LanguagePrefs> {
 }
 
 fn set_plex_account(c: &Client, token: &str, p: &LanguagePrefs) -> R<()> {
-    c.headers(
-        c.agent.put(format!("{PROFILE}?{}", profile_query(p))),
-        Some(token),
-    )
-    .send_empty()
-    .map(drain)
-    .map_err(err)?;
-    Ok(())
+    c.put(&format!("{PROFILE}?{}", profile_query(p)), Some(token))
 }
 
 enum Cached {
