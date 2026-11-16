@@ -449,57 +449,14 @@ fn libmpv() -> anyhow::Result<()> {
 }
 
 fn download(tag: &str, asset: &str) -> anyhow::Result<Vec<u8>> {
-    let token = github_token();
-    let get = |url: &str, accept: &str| {
-        let mut req = ureq::get(url).header("Accept", accept);
-        if let Some(t) = &token {
-            req = req.header("Authorization", format!("Bearer {t}"));
-        }
-        req.call()
-    };
-    let release: serde_json::Value = serde_json::from_str(
-        &get(
-            &format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}"),
-            "application/vnd.github+json",
-        )
-        .with_context(|| format!("release {tag} not found on {REPO}; run the libmpv workflow"))?
-        .into_body()
-        .read_to_string()?,
-    )?;
-    let url = release["assets"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|a| a["name"] == asset)
-        .and_then(|a| a["url"].as_str())
-        .with_context(|| format!("release {tag} has no {asset}"))?;
     println!("downloading {asset} from {tag}");
-    let mut body = get(url, "application/octet-stream")?.into_body();
+    let mut body = ureq::get(format!(
+        "https://github.com/{REPO}/releases/download/{tag}/{asset}"
+    ))
+    .call()
+    .with_context(|| {
+        format!("{asset} not found in release {tag} on {REPO}; run the libmpv workflow")
+    })?
+    .into_body();
     Ok(body.with_config().limit(1 << 30).read_to_vec()?)
-}
-
-fn github_token() -> Option<String> {
-    if let Some(t) = ["GITHUB_TOKEN", "GH_TOKEN"]
-        .into_iter()
-        .find_map(|k| std::env::var(k).ok())
-    {
-        return Some(t);
-    }
-    let mut git = Command::new("git")
-        .args(["credential", "fill"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    git.stdin
-        .take()?
-        .write_all(b"protocol=https\nhost=github.com\n\n")
-        .ok()?;
-    let out = git.wait_with_output().ok()?;
-    String::from_utf8(out.stdout)
-        .ok()?
-        .lines()
-        .find_map(|l| l.strip_prefix("password=").map(str::to_owned))
 }
