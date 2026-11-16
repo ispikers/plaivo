@@ -8,7 +8,7 @@ use gpui::{
     AnyElement, Context, Div, FontWeight, SharedString, canvas, div, fill, point, prelude::*, px,
     size,
 };
-use plaivo_core::trackers::{Media, Poll, Service, SignIn, Trackers};
+use plaivo_core::trackers::{Media, Poll, Service, SignIn, SignInFailure, Trackers};
 use qrcodegen::{QrCode, QrCodeEcc};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -123,11 +123,11 @@ fn qr_code((n, modules): (usize, Vec<bool>)) -> impl IntoElement {
     .size(px(QR_SIZE))
 }
 
-fn failure(e: &str) -> String {
+fn failure(e: &SignInFailure) -> String {
     match e {
-        "expired" => "The sign-in request expired. Try again.".into(),
-        "denied" => "Sign-in was denied.".into(),
-        e => format!("Sign-in failed: {e}"),
+        SignInFailure::Expired => "The sign-in request expired. Try again.".into(),
+        SignInFailure::Denied => "Sign-in was denied.".into(),
+        SignInFailure::Other { reason } => format!("Sign-in failed: {reason}"),
     }
 }
 
@@ -237,7 +237,7 @@ impl Plaivo {
                 poll_until(&flag, attempt, every, deadline, || {
                     Some(t.poll_sign_in(&mut sign_in)).filter(|r| !matches!(r, Poll::Pending))
                 })
-                .unwrap_or_else(|| Poll::Failed("expired".into()))
+                .unwrap_or(Poll::Failed(SignInFailure::Expired))
             },
             move |this, r, _| {
                 if !this.services.current(attempt) {

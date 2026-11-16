@@ -230,7 +230,28 @@ pub struct SignIn {
 pub enum Poll {
     Pending,
     Done,
-    Failed(String),
+    Failed(SignInFailure),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInFailure {
+    Expired,
+    Denied,
+    Other { reason: String },
+}
+
+fn rejected(s: Service, resp: &Response) -> Option<SignInFailure> {
+    match (s, resp.status) {
+        (Service::Trakt, 404) | (_, 410) => Some(SignInFailure::Expired),
+        (Service::Trakt, 409 | 418) => Some(SignInFailure::Denied),
+        (Service::Mal, 403) => Some(match resp.json()["error"].as_str() {
+            None | Some("access_denied") => SignInFailure::Denied,
+            Some(reason) => SignInFailure::Other {
+                reason: reason.to_owned(),
+            },
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -519,18 +540,15 @@ impl Trackers {
                     let _ = self.0.tx.send(Job::Retry);
                     Poll::Done
                 }
-                None => Poll::Failed("invalid response".into()),
+                None => Poll::Failed(SignInFailure::Other {
+                    reason: "invalid response".into(),
+                }),
             },
             (Service::Trakt, 429) => {
                 sign_in.interval_secs += 5;
                 Poll::Pending
             }
-            (Service::Trakt, 404) | (_, 410) => Poll::Failed("expired".into()),
-            (Service::Trakt, 409 | 418) => Poll::Failed("denied".into()),
-            (Service::Mal, 403) => {
-                Poll::Failed(resp.json()["error"].as_str().unwrap_or("denied").to_owned())
-            }
-            _ => Poll::Pending,
+            _ => rejected(s, &resp).map_or(Poll::Pending, Poll::Failed),
         }
     }
 
@@ -1366,5 +1384,39 @@ mod tests {
         u.on_progress(&b, PlayState::Playing, 95, 100);
         assert!(rx.try_iter().next().is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sign_in_rejections_are_typed() {
+        let resp = |status, body: &str| Response {
+            status,
+            body: body.as_bytes().to_vec(),
+            etag: None,
+        };
+        let other = |r: &str| Some(SignInFailure::Other { reason: r.into() });
+        let cases = [
+            (Service::Trakt, resp(404, ""), Some(SignInFailure::Expired)),
+            (
+                Service::Mal,
+                resp(410, r#"{"error":"expired"}"#),
+                Some(SignInFailure::Expired),
+            ),
+            (Service::Trakt, resp(418, ""), Some(SignInFailure::Denied)),
+            (
+                Service::Mal,
+                resp(403, r#"{"error":"access_denied"}"#),
+                Some(SignInFailure::Denied),
+            ),
+            (
+                Service::Mal,
+                resp(403, r#"{"error":"exchange_failed"}"#),
+                other("exchange_failed"),
+            ),
+            (Service::Mal, resp(404, ""), None),
+            (Service::Trakt, resp(400, ""), None),
+        ];
+        for (s, r, want) in cases {
+            assert_eq!(rejected(s, &r), want, "{s:?} {}", r.status);
+        }
     }
 }

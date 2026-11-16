@@ -10,7 +10,9 @@ use plaivo_core::settings::{
     PlaybackRule, SUBTITLE_COLORS, Scale, Settings, SkipMode, Theme, ViewMode, library_key,
     rank_in,
 };
-use plaivo_core::trackers::{self, Media, PlayState, Poll, Service, Status, Trackers};
+use plaivo_core::trackers::{
+    self, Media, PlayState, Poll, Service, SignInFailure, Status, Trackers,
+};
 use plaivo_core::{Account, detail, first, jellyfin, join, store};
 use qrcodegen::{QrCode, QrCodeEcc};
 use std::collections::{HashMap, HashSet};
@@ -366,7 +368,7 @@ impl TrackerSession {
                 interval_secs: s.interval_secs,
             },
             Poll::Done => TrackerPoll::Done,
-            Poll::Failed(reason) => TrackerPoll::Failed { reason },
+            Poll::Failed(failure) => TrackerPoll::Failed { failure },
         }
     }
 }
@@ -375,7 +377,14 @@ impl TrackerSession {
 pub enum TrackerPoll {
     Pending { interval_secs: u64 },
     Done,
-    Failed { reason: String },
+    Failed { failure: SignInFailure },
+}
+
+#[uniffi::remote(Enum)]
+pub enum SignInFailure {
+    Expired,
+    Denied,
+    Other { reason: String },
 }
 
 #[derive(uniffi::Record, Clone)]

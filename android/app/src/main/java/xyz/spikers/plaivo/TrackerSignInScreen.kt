@@ -36,6 +36,7 @@ import androidx.tv.material3.Text
 import kotlinx.coroutines.delay
 import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.Service
+import uniffi.plaivo_ffi.SignInFailure
 import uniffi.plaivo_ffi.TrackerPoll
 import uniffi.plaivo_ffi.TrackerSignIn
 
@@ -46,11 +47,11 @@ val Service.title
             Service.MAL -> "MyAnimeList"
         }
 
-private fun failure(reason: String) =
-    when (reason) {
-        "expired" -> "The code expired. Press Back and try again."
-        "denied" -> "Access was denied."
-        else -> "Sign-in failed: $reason"
+private fun failure(failure: SignInFailure) =
+    when (failure) {
+        SignInFailure.Expired -> "The code expired. Press Back and try again."
+        SignInFailure.Denied -> "Access was denied."
+        is SignInFailure.Other -> "Sign-in failed: ${failure.reason}"
     }
 
 @Composable
@@ -82,12 +83,12 @@ fun TrackerSignInScreen(service: Service, onClose: () -> Unit) {
                     return@LaunchedEffect onClose()
                 }
                 is TrackerPoll.Failed -> {
-                    status = failure(r.reason)
+                    status = failure(r.failure)
                     return@LaunchedEffect
                 }
             }
         }
-        status = failure("expired")
+        status = failure(SignInFailure.Expired)
     }
     val touch = LocalTouch.current
     Column(
