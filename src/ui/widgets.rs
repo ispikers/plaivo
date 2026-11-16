@@ -3,9 +3,9 @@ use crate::ui::home::{art_height, card_height};
 use crate::ui::theme::{self, Icon};
 use gpui::{
     AnyElement, App, Bounds, BoxShadow, ClickEvent, Context, DispatchPhase, Div, ElementId,
-    FontWeight, Hsla, Img, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
-    Pixels, ScrollHandle, SharedString, Stateful, Svg, UniformListScrollHandle, Window, canvas,
-    div, fill, img, point, prelude::*, px, rgb, size, svg,
+    FontWeight, HitboxBehavior, Hsla, Img, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ObjectFit, Pixels, ScrollHandle, SharedString, Stateful, Svg,
+    UniformListScrollHandle, Window, canvas, div, fill, img, point, prelude::*, px, rgb, size, svg,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -228,30 +228,42 @@ const SCROLLBAR_INSET: f32 = 10.;
 
 pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
     let handle = handle.clone();
+    let area = handle.clone();
     canvas(
-        |_, _, _| (),
-        move |_, _, window, _| {
-            let bounds = handle.bounds();
-            let max = f32::from(handle.max_offset().y);
-            if max <= 0. {
+        move |_, window, _| {
+            (area.max_offset().y > px(0.)).then(|| {
+                let bounds = area.bounds();
+                let track_h = (f32::from(bounds.size.height) - 2. * SCROLLBAR_INSET).max(0.);
+                let track = Bounds::new(
+                    point(
+                        bounds.right() - px(SCROLLBAR_W + 10.),
+                        bounds.top() + px(SCROLLBAR_INSET),
+                    ),
+                    size(px(SCROLLBAR_W + 12.), px(track_h)),
+                );
+                window.insert_hitbox(track, HitboxBehavior::Normal)
+            })
+        },
+        move |_, hitbox, window, _| {
+            let Some(hitbox) = hitbox else {
                 return;
-            }
-            let top = bounds.top() + px(SCROLLBAR_INSET);
-            let track_h = (f32::from(bounds.size.height) - 2. * SCROLLBAR_INSET).max(0.);
+            };
+            let max = f32::from(handle.max_offset().y);
+            let track = hitbox.bounds;
+            let track_h = f32::from(track.size.height);
             let thumb_h = (track_h * track_h / (track_h + max))
                 .clamp(SCROLLBAR_MIN_THUMB.min(track_h), track_h);
             let ratio = max / (track_h - thumb_h).max(1.);
             let offset = (-f32::from(handle.offset().y)).clamp(0., max);
-            let x = bounds.right() - px(SCROLLBAR_W + 4.);
             let thumb = Bounds::new(
-                point(x, top + px(offset / ratio)),
+                point(track.left() + px(6.), track.top() + px(offset / ratio)),
                 size(px(SCROLLBAR_W), px(thumb_h)),
             );
-            let track = Bounds::new(
-                point(x - px(6.), top),
-                size(px(SCROLLBAR_W + 12.), px(track_h)),
-            );
-            let dragging = SCROLL_DRAG.with(|d| d.borrow().is_some());
+            let dragging = SCROLL_DRAG.with(|d| {
+                d.borrow()
+                    .as_ref()
+                    .is_some_and(|s| s.handle.bounds() == handle.bounds())
+            });
             window.paint_quad(
                 fill(thumb, theme::tint(if dragging { 0.5 } else { 0.25 }))
                     .corner_radii(px(SCROLLBAR_W / 2.)),
@@ -260,7 +272,7 @@ pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
             window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble
                     || e.button != MouseButton::Left
-                    || !track.contains(&e.position)
+                    || !hitbox.is_hovered(window)
                 {
                     return;
                 }
