@@ -797,7 +797,7 @@ impl Plaivo {
     fn sync_session(&mut self) {
         let state = media_session::State {
             playing: !self.player.paused,
-            speed: self.player.speed,
+            speed: self.speed(),
             position: self.player.time,
             duration: self.player.duration,
             previous: self.neighbor(-1).is_some(),
@@ -1231,8 +1231,15 @@ impl Plaivo {
         self.mpv(|m| m.set("speed", &speed.to_string()));
     }
 
+    pub fn speed(&self) -> f64 {
+        match &self.watch.state.room {
+            Some(room) if self.watch_holds() => room.rate,
+            _ => self.player.speed,
+        }
+    }
+
     pub fn start_boost(&mut self) {
-        if self.view.boost.is_none() {
+        if self.view.boost.is_none() && !self.watch_holds() {
             self.view.boost = Some(self.player.speed);
             self.set_speed(2.0);
         }

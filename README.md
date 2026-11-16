@@ -30,7 +30,7 @@ Coming later: chapters and Plex Home user switching.
 
 | Key | Action |
 | --- | --- |
-| Space, K | Play or pause (hold Space for 2× speed) |
+| Space, K | Play or pause (hold Space for 2× speed, except in Watch Together) |
 | ← / → | Seek 10 s |
 | Shift+← / → | Seek 30 s |
 | ↑ / ↓ | Volume |

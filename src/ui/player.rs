@@ -633,7 +633,7 @@ impl Plaivo {
         let ends = (dur > 0.).then(|| {
             format!(
                 "Ends at {}",
-                clock::local_time_in((dur - pos).max(0.) / self.player.speed.max(0.1))
+                clock::local_time_in((dur - pos).max(0.) / self.speed().max(0.1))
             )
         });
         let controls = div()
@@ -1260,7 +1260,7 @@ impl Plaivo {
                 .child(self.setting_row(
                     Icon::Speed,
                     "Playback Speed",
-                    fmt_speed(self.player.speed),
+                    fmt_speed(self.speed()),
                     Panel::Speed,
                     cx,
                 ))
@@ -1318,7 +1318,7 @@ impl Plaivo {
                             id: s.to_string().into(),
                             label: fmt_speed(s).into(),
                             sub: "".into(),
-                            selected: s == self.player.speed,
+                            selected: s == self.speed(),
                         })
                         .collect(),
                     Panel::Shader => self.shader_choices(&self.player.shader),
