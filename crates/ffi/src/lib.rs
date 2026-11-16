@@ -2660,6 +2660,18 @@ mod tests {
                 && core.settings().home_server.is_empty()
                 && core.tracked.lock().unwrap().is_empty()
         );
+        core.account
+            .lock()
+            .unwrap()
+            .jellyfin
+            .push(plaivo_core::plex::Server {
+                id: "j1".into(),
+                backend: plaivo_core::plex::Backend::Jellyfin,
+                ..Default::default()
+            });
+        core.settings.lock().unwrap().home_server = "j1".into();
+        core.sign_out();
+        assert_eq!(core.settings().home_server, "j1");
         let _ = std::fs::remove_dir_all(dir);
     }
 

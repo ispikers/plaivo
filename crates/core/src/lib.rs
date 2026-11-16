@@ -82,7 +82,9 @@ pub fn sign_out(account: &mut Account, settings: &mut Settings) {
     account.servers.clear();
     account.save();
     prefs::forget();
-    settings.home_server.clear();
+    if account.server(&settings.home_server).is_none() {
+        settings.home_server.clear();
+    }
     settings.recent_searches.clear();
     settings.save();
     std::thread::spawn(store::clear_cache);
