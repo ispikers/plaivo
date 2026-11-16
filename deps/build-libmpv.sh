@@ -14,12 +14,12 @@ case "$(uname -s)" in
   MINGW*)
     ffmpeg_os=(--enable-d3d11va --enable-dxva2 --enable-openssl)
     placebo_os=(-Dd3d11=enabled)
-    mpv_os=(-Dd3d11=enabled -Dd3d-hwaccel=enabled -Dshaderc=enabled -Dspirv-cross=enabled -Dvulkan=enabled -Dwin32-smtc=enabled)
+    mpv_os=(-Dd3d11=enabled -Dd3d-hwaccel=enabled -Dshaderc=enabled -Dspirv-cross=enabled -Dvulkan=enabled -Dwin32-smtc=disabled)
     ;;
   Darwin)
     ffmpeg_os=(--enable-videotoolbox --enable-audiotoolbox --enable-securetransport --enable-iconv)
     placebo_os=(-Dd3d11=disabled)
-    mpv_os=(-Dcocoa=enabled -Dswift-build=enabled -Dvulkan=enabled)
+    mpv_os=(-Dcocoa=enabled -Dswift-build=enabled -Dvulkan=enabled -Dmacos-media-player=disabled -Dmacos-touchbar=disabled)
     ;;
   *) echo "unsupported host: $(uname -s)" >&2; exit 1 ;;
 esac
