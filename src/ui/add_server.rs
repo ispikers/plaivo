@@ -245,7 +245,7 @@ impl Plaivo {
             },
         );
         self.account.add_jellyfin(srv);
-        self.account.save();
+        self.save_account(cx);
         self.add_server.leave(cx);
         self.servers_changed(cx);
         if self.nav.len() > 1 {
@@ -259,7 +259,7 @@ impl Plaivo {
 
     fn remove_jellyfin(&mut self, id: &str, cx: &mut Context<Self>) {
         self.account.jellyfin.retain(|s| s.id != id);
-        self.account.save();
+        self.save_account(cx);
         self.servers_changed(cx);
     }
 

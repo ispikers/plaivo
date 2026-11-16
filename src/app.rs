@@ -736,7 +736,7 @@ impl Plaivo {
         cx.on_app_quit(move |this, _| {
             this.report_stopped_blocking();
             this.watch.shutdown();
-            this.save_settings_now();
+            this.flush_saves();
             if let Some(p) = &*placement.borrow() {
                 crate::placement::save(p);
             }
@@ -1255,7 +1255,7 @@ impl Plaivo {
                     Ok(Some(token)) => {
                         log::info!("sign-in: approved");
                         this.account.token = Some(token);
-                        this.account.save();
+                        this.save_account(cx);
                         this.begin_splash(cx);
                         this.discover(cx);
                     }
@@ -1564,7 +1564,7 @@ impl Plaivo {
         self.failed.clear();
         if list != self.account.servers {
             self.account.servers = list;
-            self.account.save();
+            self.save_account(cx);
             self.set_servers(cx);
         }
         self.check_splash(cx);

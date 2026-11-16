@@ -2,8 +2,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 const TOUCH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
@@ -99,6 +99,54 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> bool {
     result.is_ok()
 }
 
+pub struct Writes {
+    issued: AtomicU64,
+    written: Mutex<u64>,
+}
+
+impl Writes {
+    pub const fn new() -> Self {
+        Writes {
+            issued: AtomicU64::new(0),
+            written: Mutex::new(0),
+        }
+    }
+
+    pub fn later<T: Serialize + Send + 'static>(
+        &'static self,
+        path: PathBuf,
+        value: T,
+    ) -> impl FnOnce() + Send + 'static {
+        let ticket = self.issued.fetch_add(1, Ordering::SeqCst) + 1;
+        move || {
+            self.write(ticket, &path, &value);
+        }
+    }
+
+    pub fn now<T: Serialize>(&self, path: &Path, value: &T) -> bool {
+        self.write(self.issued.fetch_add(1, Ordering::SeqCst) + 1, path, value)
+    }
+
+    pub fn flush<T: Serialize>(&self, path: &Path, value: &T) {
+        if self.issued.load(Ordering::SeqCst) > *self.lock() {
+            self.now(path, value);
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, u64> {
+        self.written.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write<T: Serialize>(&self, ticket: u64, path: &Path, value: &T) -> bool {
+        let mut written = self.lock();
+        if *written > ticket {
+            return true;
+        }
+        *written = ticket;
+        write_json(path, value)
+    }
+}
+
 pub(crate) fn fnv1a(key: &str) -> u64 {
     key.bytes().fold(0xcbf29ce484222325, |h, b| {
         (h ^ b as u64).wrapping_mul(0x100000001b3)
@@ -170,6 +218,24 @@ pub fn clear_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_snapshot_never_lands_last() {
+        static WRITES: Writes = Writes::new();
+        let p = std::env::temp_dir().join(format!("plaivo-writes-test-{}", std::process::id()));
+        let old = WRITES.later(p.clone(), 1);
+        let new = WRITES.later(p.clone(), 2);
+        new();
+        old();
+        assert_eq!(read_json::<i32>(&p), Some(2));
+        WRITES.flush(&p, &3);
+        assert_eq!(read_json::<i32>(&p), Some(2));
+        let pending = WRITES.later(p.clone(), 4);
+        WRITES.flush(&p, &5);
+        pending();
+        assert_eq!(read_json::<i32>(&p), Some(5));
+        std::fs::remove_file(&p).unwrap();
+    }
 
     #[test]
     fn cache_keys_are_stable_and_distinct() {

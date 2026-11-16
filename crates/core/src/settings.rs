@@ -366,6 +366,8 @@ impl Scale {
     }
 }
 
+static WRITES: store::Writes = store::Writes::new();
+
 fn path() -> PathBuf {
     store::config_dir().join("settings.json")
 }
@@ -376,7 +378,15 @@ impl Settings {
     }
 
     pub fn save(&self) -> bool {
-        store::write_json(&path(), self)
+        WRITES.now(&path(), self)
+    }
+
+    pub fn save_later(&self) -> impl FnOnce() + Send + 'static {
+        WRITES.later(path(), self.clone())
+    }
+
+    pub fn flush(&self) {
+        WRITES.flush(&path(), self);
     }
 
     pub fn remember_search(&mut self, q: &str) {

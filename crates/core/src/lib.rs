@@ -14,7 +14,7 @@ use plex::Server;
 use serde::{Deserialize, Serialize};
 use settings::Settings;
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Account {
     pub client_id: String,
     pub token: Option<String>,
@@ -23,6 +23,8 @@ pub struct Account {
     #[serde(default)]
     pub jellyfin: Vec<Server>,
 }
+
+static ACCOUNT_WRITES: store::Writes = store::Writes::new();
 
 impl Account {
     fn path() -> std::path::PathBuf {
@@ -41,7 +43,15 @@ impl Account {
     }
 
     pub fn save(&self) {
-        store::write_json(&Self::path(), self);
+        ACCOUNT_WRITES.now(&Self::path(), self);
+    }
+
+    pub fn save_later(&self) -> impl FnOnce() + Send + 'static {
+        ACCOUNT_WRITES.later(Self::path(), self.clone())
+    }
+
+    pub fn flush(&self) {
+        ACCOUNT_WRITES.flush(&Self::path(), self);
     }
 
     pub fn all_servers(&self) -> Vec<Server> {

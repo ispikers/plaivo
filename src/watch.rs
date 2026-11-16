@@ -236,7 +236,7 @@ impl Plaivo {
 
     fn watch_forget(&mut self, code: &str, cx: &mut Context<Self>) {
         self.settings.forget_room(code);
-        self.settings.save();
+        self.save_settings_soon(cx);
         cx.notify();
     }
 
@@ -266,14 +266,31 @@ impl Plaivo {
     pub fn save_settings_soon(&mut self, cx: &mut Context<Self>) {
         self.settings_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SAVE_AFTER).await;
-            this.update(cx, |this, _| this.save_settings_now()).ok();
+            this.update(cx, |this, cx| {
+                this.settings_save = None;
+                let save = this.settings.save_later();
+                cx.background_executor()
+                    .spawn(async move { save() })
+                    .detach();
+            })
+            .ok();
         }));
     }
 
-    pub fn save_settings_now(&mut self) {
+    pub fn save_account(&self, cx: &mut Context<Self>) {
+        let save = self.account.save_later();
+        cx.background_executor()
+            .spawn(async move { save() })
+            .detach();
+    }
+
+    pub fn flush_saves(&mut self) {
         if self.settings_save.take().is_some() {
             self.settings.save();
+        } else {
+            self.settings.flush();
         }
+        self.account.flush();
     }
 
     pub fn use_public_relay(&mut self, public: bool, cx: &mut Context<Self>) {
@@ -378,12 +395,13 @@ impl Plaivo {
 
     fn watch_state(&mut self, s: PartyState, cx: &mut Context<Self>) {
         let w = &mut self.watch;
+        let mut remembered = false;
         if s.connection == Connection::Connected && w.state.connection != Connection::Connected {
             w.creating = false;
             if let Some(room) = &s.room {
                 w.room_code = Some(room.code.clone());
                 self.settings.remember_room(&room.code);
-                self.settings.save();
+                remembered = true;
             }
         }
         let epoch = s.room.as_ref().map(|r| r.epoch);
@@ -405,6 +423,9 @@ impl Plaivo {
             w.resuming = false;
         }
         w.state = s;
+        if remembered {
+            self.save_settings_soon(cx);
+        }
         if let Some((media, epoch)) = resolve {
             self.watch_resolve(media, epoch, cx);
         }
