@@ -303,18 +303,11 @@ class PlayerActivity : ComponentActivity() {
                     }
                 val previous = playback
                 if (previous?.key != p.key) fellBack = false
-                val session = previous?.transcodeSession
-                if (previous != null && previous.key != p.key && session == null) report("stopped")
-                if (previous != null && session != null) {
-                    val time = exo.currentPosition.coerceAtLeast(0).toULong()
-                    exo.stop()
-                    io {
-                        if (previous.key == p.key) {
-                            core.releaseTranscode(previous.server, previous.key, time, previous.durationMs, session)
-                        } else {
-                            core.report(previous.server, previous.key, "stopped", time, previous.durationMs, session)
-                            core.stopTranscode(previous.server, session)
-                        }
+                if (previous != null && (previous.key != p.key || previous.transcodeSession != null)) {
+                    val ending = end(previous, release = previous.key == p.key)
+                    if (previous.transcodeSession != null) {
+                        exo.stop()
+                        ending.join()
                     }
                 }
                 playback = p
@@ -456,11 +449,6 @@ class PlayerActivity : ComponentActivity() {
         val params = exo.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, group == null)
         group?.let { params.setOverrideForType(TrackSelectionOverride(it.mediaTrackGroup, 0)) }
         exo.trackSelectionParameters = params.build()
-    }
-
-    private fun stopTranscode(p: Playback) {
-        val session = p.transcodeSession ?: return
-        background.launch { core.stopTranscode(p.server, session) }
     }
 
     fun neighbor(step: Int): MediaCard? {
@@ -723,10 +711,22 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (Watch.player === this) Watch.player = null
-        report("stopped")
-        playback?.let { stopTranscode(it) }
+        playback?.let { end(it) }
         if (::exo.isInitialized) exo.release()
         super.onDestroy()
+    }
+
+    private fun end(p: Playback, release: Boolean = false): Job {
+        val time = exo.currentPosition.coerceAtLeast(0).toULong()
+        val session = p.transcodeSession
+        return background.launch(reports) {
+            if (release && session != null) {
+                core.releaseTranscode(p.server, p.key, time, p.durationMs, session)
+            } else {
+                core.report(p.server, p.key, "stopped", time, p.durationMs, session)
+                session?.let { core.stopTranscode(p.server, it) }
+            }
+        }
     }
 
     private fun report(state: String) {
