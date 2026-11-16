@@ -220,6 +220,7 @@ mod imp {
     }
 
     pub struct Session {
+        transport: [*mut AnyObject; 5],
         next: *mut AnyObject,
         previous: *mut AnyObject,
         title: Retained<NSString>,
@@ -261,6 +262,13 @@ mod imp {
                 });
                 let _: *mut AnyObject = msg_send![seek, addTargetWithHandler: &*handler];
                 Ok(Self {
+                    transport: [
+                        commands[0].0,
+                        commands[1].0,
+                        commands[2].0,
+                        commands[3].0,
+                        seek,
+                    ],
                     next: commands[4].0,
                     previous: commands[5].0,
                     title: NSString::new(),
@@ -275,7 +283,16 @@ mod imp {
             self.title = NSString::from_str(title);
             self.subtitle = NSString::from_str(subtitle);
             self.artwork = None;
+            self.set_transport_enabled(true);
             self.publish();
+        }
+
+        fn set_transport_enabled(&self, enabled: bool) {
+            for command in self.transport {
+                unsafe {
+                    let _: () = msg_send![command, setEnabled: enabled];
+                }
+            }
         }
 
         pub fn set_artwork(&mut self, art: Artwork) {
@@ -316,6 +333,7 @@ mod imp {
                 let _: () = msg_send![self.next, setEnabled: false];
                 let _: () = msg_send![self.previous, setEnabled: false];
             }
+            self.set_transport_enabled(false);
         }
 
         fn publish(&self) {
