@@ -442,7 +442,7 @@ impl Settings {
             *anchor = None;
             return None;
         }
-        Some(countdown_left(self.autoplay_countdown, time, anchor))
+        Some(countdown_left(self.autoplay_countdown, time, anchor).min(duration - time))
     }
 
     pub fn languages(&self) -> LanguagePrefs {
@@ -792,7 +792,7 @@ mod tests {
             run(&s, None, &[1000.0, 1290.0, 1297.5]),
             [None, Some(10.0), Some(2.5)]
         );
-        assert_eq!(run(&s, None, &[1299.0, 1300.0]), [Some(10.0), Some(9.0)]);
+        assert_eq!(run(&s, None, &[1299.0, 1300.0]), [Some(1.0), Some(0.0)]);
         assert_eq!(
             run(&s, Some(1200.0), &[1199.0, 1204.0, 1211.0, 1215.0]),
             [None, Some(10.0), Some(3.0), Some(-1.0)]
@@ -802,7 +802,7 @@ mod tests {
             [Some(10.0), None, Some(10.0)]
         );
         assert_eq!(run(&s, Some(1296.0), &[1289.0, 1290.0]), [None, Some(10.0)]);
-        assert_eq!(run(&s, Some(0.0), &[1295.0]), [Some(10.0)]);
+        assert_eq!(run(&s, Some(0.0), &[1295.0]), [Some(5.0)]);
         let zero = Settings {
             autoplay_countdown: 0,
             ..s.clone()
