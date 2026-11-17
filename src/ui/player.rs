@@ -213,7 +213,7 @@ impl Plaivo {
         self.view.seek_preview = None;
         if self.view.seek_drag.take().is_some() {
             let t = self.frac_in(x, self.view.timeline) as f64 * self.player.duration;
-            self.seek_to(t);
+            self.jump_to(t);
             self.player.time = t;
             cx.notify();
         }

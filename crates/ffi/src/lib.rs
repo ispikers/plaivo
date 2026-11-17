@@ -1972,6 +1972,17 @@ pub fn grid_columns(width: f32, card: f32, gap: f32) -> i32 {
 }
 
 #[uniffi::export]
+pub fn seek_cancels_auto_skip(marker: SkipMarker, position_ms: u64) -> bool {
+    let s = |ms: u64| ms as f64 / 1000.0;
+    plaivo_core::settings::seek_cancels_auto_skip(
+        s(position_ms),
+        s(marker.start_ms),
+        s(marker.end_ms),
+        s(marker.auto_at_ms),
+    )
+}
+
+#[uniffi::export]
 pub fn merge_cast(own: Vec<CastMember>, show: Vec<CastMember>) -> Vec<CastMember> {
     detail::merge_cast(&own, &show, |p| p.name.as_str())
 }

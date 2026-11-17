@@ -4,7 +4,9 @@ use crate::plex::{
     self, Ctx, Item, Media, Picks, Quality, Server, Source, Transcode, resolve_playable,
 };
 use crate::prefs::{self, LanguagePrefs, LanguageRule, TrackInfo};
-use crate::settings::{AUTO_SKIP_NOTICE, CardPrefs, Scale, SkipMode, library_key};
+use crate::settings::{
+    AUTO_SKIP_NOTICE, CardPrefs, Scale, SkipMode, library_key, seek_cancels_auto_skip,
+};
 use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::video_host::{self, Region};
@@ -478,7 +480,7 @@ impl Plaivo {
             && self.player.key == key
             && self.player.server.as_ref().is_some_and(|s| s.id == server)
         {
-            self.seek_by(-self.player.time);
+            self.seek_to(0.0);
             return self.expand_player(cx);
         }
         self.play_with(server, key, None, true, cx);
@@ -827,7 +829,7 @@ impl Plaivo {
             Stop => self.stop_playback(cx),
             Next => self.play_neighbor(1, cx),
             Previous => self.play_neighbor(-1, cx),
-            Seek(t) => self.seek_to(t),
+            Seek(t) => self.jump_to(t),
         }
         cx.notify();
     }
@@ -2062,7 +2064,21 @@ impl Plaivo {
         }
     }
 
-    pub fn seek_by(&self, d: f64) {
+    pub fn jump_to(&mut self, t: f64) {
+        self.cancel_auto_skips_at(t);
+        self.seek_to(t);
+    }
+
+    fn cancel_auto_skips_at(&mut self, t: f64) {
+        for s in self.player.skips.iter_mut() {
+            if seek_cancels_auto_skip(t, s.start, s.end, s.at) {
+                s.auto = false;
+            }
+        }
+    }
+
+    pub fn seek_by(&mut self, d: f64) {
+        self.cancel_auto_skips_at(self.player.time + d);
         if self.watch_holds() {
             return self.seek_to(self.player.time + d);
         }

@@ -496,7 +496,7 @@ fun PlayerScreen(player: PlayerActivity) {
                                 onDone = {
                                     scrub?.let {
                                         position = (it * duration).toLong()
-                                        player.seekTo(position)
+                                        player.jumpTo(position)
                                     }
                                     scrub = null
                                 },

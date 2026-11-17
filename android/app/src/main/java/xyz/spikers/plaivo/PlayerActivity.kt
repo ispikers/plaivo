@@ -64,6 +64,7 @@ import uniffi.plaivo_ffi.WatchFeed
 import uniffi.plaivo_ffi.nextScale
 import uniffi.plaivo_ffi.pickTracks
 import uniffi.plaivo_ffi.scaleLabel
+import uniffi.plaivo_ffi.seekCancelsAutoSkip
 import uniffi.plaivo_ffi.setPlaybackQuality
 
 val Scale.label
@@ -512,7 +513,12 @@ class PlayerActivity : ComponentActivity() {
         val from =
             watchSeek?.takeIf { (_, at) -> SystemClock.elapsedRealtime() - at < WATCH_SEEK_MS }?.first
                 ?: exo.currentPosition
-        seekTo((from + ms).coerceIn(0, duration))
+        jumpTo((from + ms).coerceIn(0, duration))
+    }
+
+    fun jumpTo(ms: Long) {
+        playback?.markers?.forEachIndexed { i, m -> if (seekCancelsAutoSkip(m, ms.toULong())) cancelAutoSkip(i) }
+        seekTo(ms)
     }
 
     fun seekTo(ms: Long) {

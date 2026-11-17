@@ -122,6 +122,10 @@ impl Default for Settings {
     }
 }
 
+pub fn seek_cancels_auto_skip(to: f64, start: f64, end: f64, auto_at: f64) -> bool {
+    to >= start.min(auto_at) && to < end
+}
+
 pub fn countdown_left(seconds: u32, time: f64, anchor: &mut Option<f64>) -> f64 {
     let since = *anchor.insert(anchor.filter(|a| *a <= time).unwrap_or(time));
     seconds.min(COUNTDOWN_MAX) as f64 - (time - since)
@@ -762,6 +766,18 @@ mod tests {
         assert_eq!(s.auto_skip_at("intro", 1.0), 0.0);
         assert_eq!(s.auto_skip_at("credits", 1200.0), 1215.0);
         assert_eq!(s.auto_skip_at("commercial", 60.0), 60.0);
+    }
+
+    #[test]
+    fn seeking_into_a_marker_or_its_auto_point_cancels_auto_skip() {
+        let intro = |to| seek_cancels_auto_skip(to, 60.0, 90.0, 57.0);
+        assert!(!intro(52.0));
+        assert!(intro(58.0));
+        assert!(intro(75.0));
+        assert!(!intro(90.0));
+        let credits = |to| seek_cancels_auto_skip(to, 1200.0, 1300.0, 1215.0);
+        assert!(!credits(1199.0));
+        assert!(credits(1205.0));
     }
 
     #[test]
