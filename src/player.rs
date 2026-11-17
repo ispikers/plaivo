@@ -1278,13 +1278,13 @@ impl Plaivo {
         }
     }
 
-    pub fn active_skip(&self) -> Option<(&Skip, bool)> {
+    pub fn active_skip(&self) -> Option<(&Skip, Option<f64>)> {
         let t = self.player.time;
         let skipping = !self.watch_holds() || self.watch_controls();
         self.player.skips.iter().find_map(|s| match s.auto {
-            false => (t >= s.start && t < s.end - 1.0).then_some((s, false)),
+            false => (t >= s.start && t < s.end - 1.0).then_some((s, None)),
             true => (skipping && t >= s.at - AUTO_SKIP_NOTICE && t < s.at && s.at < s.end - 1.0)
-                .then_some((s, true)),
+                .then_some((s, Some(s.at - t))),
         })
     }
 
@@ -1301,10 +1301,15 @@ impl Plaivo {
     }
 
     pub fn skip_marker(&mut self) {
-        if let Some(end) = self.active_skip().map(|(s, _)| s.end) {
-            self.player.time = end;
-            self.seek_to(end);
+        let Some((end, pending)) = self.active_skip().map(|(s, left)| (s.end, left.is_some()))
+        else {
+            return;
+        };
+        if pending {
+            self.cancel_auto_skip();
         }
+        self.player.time = end;
+        self.seek_to(end);
     }
 
     pub fn open_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
@@ -1726,7 +1731,7 @@ impl Plaivo {
                 let shown = |this: &mut Self| {
                     (
                         this.controls_shown().then_some(this.player.time as u64),
-                        this.active_skip().map(|(_, pending)| pending),
+                        this.active_skip().map(|(_, left)| left.map(|l| l.ceil() as u64)),
                         this.up_next().map(|(_, left)| left.max(0.).ceil() as u64),
                     )
                 };

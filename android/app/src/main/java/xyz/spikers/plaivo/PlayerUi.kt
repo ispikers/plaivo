@@ -199,10 +199,12 @@ fun PlayerScreen(player: PlayerActivity) {
     val skip = skipState.value?.second
     val skipPending = skipState.value?.third == true
     val skipNow: () -> Unit = {
-        skipState.value?.let { (i, m, pending) ->
-            if (pending) player.cancelAutoSkip(i) else player.seekTo(m.endMs.toLong())
+        skipState.value?.let { (i, m, _) ->
+            player.cancelAutoSkip(i)
+            player.seekTo(m.endMs.toLong())
         }
     }
+    val skipCancel: () -> Unit = { skipState.value?.let { (i, _, _) -> player.cancelAutoSkip(i) } }
     val scrubbing by remember { derivedStateOf { scrub != null } }
     val hideable = !paused && panel == null && !scrubbing
     LaunchedEffect(controls, lastInput, hideable) {
@@ -250,6 +252,7 @@ fun PlayerScreen(player: PlayerActivity) {
                 if (open.parent == null) target = Target.Play
             }
             upNext != null && !controls -> player.cancelUpNext()
+            skipPending && !controls -> skipCancel()
             controls && !paused -> {
                 controls = false
                 runCatching { root.requestFocus() }
@@ -616,7 +619,21 @@ fun PlayerScreen(player: PlayerActivity) {
                 Modifier.align(Alignment.BottomEnd)
                     .padding(horizontal = cutout)
                     .padding(end = 40.dp, bottom = if (controls) 128.dp else 40.dp)
-        if (skip != null && panel == null) {
+        if (skip != null && skipPending && panel == null) {
+            val left = (skip.autoAtMs.toLong() - position) / 1000.0
+            Countdown(
+                null,
+                "${skip.label.replaceFirst("Skip", "Skipping")} in ${ceil(left).toInt().coerceAtLeast(0)}s",
+                "Jumps to ${fmtTime(skip.endMs.toLong())}",
+                "Skip now",
+                Glyph.FastForward,
+                "OK skips now · Back cancels",
+                controls,
+                skipNow,
+                skipCancel,
+                corner,
+            )
+        } else if (skip != null && panel == null) {
             val source = remember { MutableInteractionSource() }
             FocusSurface(
                 skipNow,
@@ -634,13 +651,8 @@ fun PlayerScreen(player: PlayerActivity) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (!skipPending) GlyphIcon(Glyph.FastForward, 20.dp, Palette.bg)
-                    Text(
-                        if (skipPending) "Cancel Autoskip" else skip.label,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Palette.bg,
-                    )
+                    GlyphIcon(Glyph.FastForward, 20.dp, Palette.bg)
+                    Text(skip.label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Palette.bg)
                 }
             }
         }
@@ -648,7 +660,18 @@ fun PlayerScreen(player: PlayerActivity) {
         val next = player.neighbor(1)
         val left = upNext
         if (left != null && next != null && panel == null) {
-            UpNext(next, left, controls, player::playNext, player::cancelUpNext, corner)
+            Countdown(
+                next.image,
+                "Up next in ${ceil(left).toInt().coerceAtLeast(0)}s",
+                next.subtitle,
+                "Play now",
+                Glyph.Play,
+                "OK plays now · Back cancels",
+                controls,
+                player::playNext,
+                player::cancelUpNext,
+                corner,
+            )
         }
 
         if (cue != 0L)
@@ -730,11 +753,15 @@ private fun seekStep(e: KeyEvent, small: Long, large: Long): Long {
 }
 
 @Composable
-private fun UpNext(
-    next: MediaCard,
-    left: Double,
+private fun Countdown(
+    image: String?,
+    heading: String,
+    title: String,
+    action: String,
+    glyph: Glyph,
+    keys: String,
     controls: Boolean,
-    onPlay: () -> Unit,
+    onAction: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier,
 ) {
@@ -747,9 +774,9 @@ private fun UpNext(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f, fill = false).padding(horizontal = 8.dp)) {
-                Text("Up next in ${ceil(left).toInt().coerceAtLeast(0)}s", fontSize = 12.sp, color = Palette.muted)
+                Text(heading, fontSize = 12.sp, color = Palette.muted)
                 Text(
-                    next.subtitle,
+                    title,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Palette.text,
@@ -757,41 +784,43 @@ private fun UpNext(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            TapIcon(Glyph.Play, "Play now", onPlay)
+            TapIcon(glyph, action, onAction)
             TapIcon(Glyph.Close, "Cancel", onCancel)
         }
         return
     }
     Column(
         modifier
-            .width(440.dp)
+            .width(if (image != null) 440.dp else 320.dp)
             .background(Palette.surface.copy(alpha = 0.97f), RoundedCornerShape(12.dp))
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(
-                model = next.image,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.width(128.dp).height(72.dp).clip(RoundedCornerShape(6.dp)).background(Palette.bg),
-            )
+            if (image != null)
+                AsyncImage(
+                    model = image,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier =
+                        Modifier.width(128.dp).height(72.dp).clip(RoundedCornerShape(6.dp)).background(Palette.bg),
+                )
             Column(Modifier.weight(1f)) {
-                Text("Up next in ${ceil(left).toInt().coerceAtLeast(0)}s", fontSize = 12.sp, color = Palette.muted)
+                Text(heading, fontSize = 12.sp, color = Palette.muted)
                 Text(
-                    next.subtitle,
+                    title,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Palette.text,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (!controls) Text("OK plays now · Back cancels", fontSize = 12.sp, color = Palette.muted)
+                if (!controls) Text(keys, fontSize = 12.sp, color = Palette.muted)
             }
         }
         if (controls) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PanelRow(Glyph.Play, "Play now", "", Modifier.weight(1f), onClick = onPlay)
+                PanelRow(glyph, action, "", Modifier.weight(1f), onClick = onAction)
                 PanelRow(Glyph.Close, "Cancel", "", Modifier.weight(1f), onClick = onCancel)
             }
         }

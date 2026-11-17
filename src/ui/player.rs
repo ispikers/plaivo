@@ -21,6 +21,11 @@ use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+enum Countdown {
+    UpNext(Card),
+    Skip(&'static str, f64),
+}
+
 const QUEUE_ROW: f32 = 75.;
 const SEEK_PREVIEW: Duration = Duration::from_millis(500);
 const BOOST_HOLD: Duration = Duration::from_millis(300);
@@ -342,11 +347,15 @@ impl Plaivo {
                 .justify_center()
                 .child(spinner(44., theme::white()))
         });
-        let up_next = self.up_next();
-        let skip = self
-            .active_skip()
-            .filter(|_| up_next.is_none())
-            .map(|(s, pending)| {
+        let skip = self.active_skip().map(|(s, left)| (s.label, s.end, left));
+        let countdown = match (self.up_next(), skip) {
+            (Some((card, left)), _) => Some((Countdown::UpNext(card), left)),
+            (None, Some((label, end, Some(left)))) => Some((Countdown::Skip(label, end), left)),
+            _ => None,
+        };
+        let skip = skip
+            .filter(|_| countdown.is_none())
+            .map(|(label, ..)| {
                 div()
                     .id("skip")
                     .occlude()
@@ -366,16 +375,10 @@ impl Plaivo {
                     .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::bg())
-                    .child(if pending { "Cancel Autoskip" } else { s.label })
-                    .when(!pending, |d| {
-                        d.child(icon(Icon::FastForward, 20., theme::bg()))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if pending {
-                            this.cancel_auto_skip();
-                        } else {
-                            this.skip_marker();
-                        }
+                    .child(label)
+                    .child(icon(Icon::FastForward, 20., theme::bg()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.skip_marker();
                         cx.notify();
                     }))
             });
@@ -416,7 +419,7 @@ impl Plaivo {
             .child(background)
             .children(spinner);
         if hide {
-            let up_next = up_next.map(|(card, left)| self.render_up_next(card, left, hide, cx));
+            let up_next = countdown.map(|(c, left)| self.render_countdown(c, left, hide, cx));
             return base
                 .children(hint)
                 .children(skip)
@@ -599,7 +602,7 @@ impl Plaivo {
                     cx.listener(|this, _, _, cx| this.end_volume_drag(cx)),
                 )
         };
-        let up_next = up_next.map(|(card, left)| self.render_up_next(card, left, hide, cx));
+        let up_next = countdown.map(|(c, left)| self.render_countdown(c, left, hide, cx));
         let small = self.settings.seek_small;
         let stop_on_close = self.settings.stop_on_close;
         let paused = self.player.paused;
@@ -887,42 +890,60 @@ impl Plaivo {
             .into_any_element()
     }
 
-    fn render_up_next(
+    fn render_countdown(
         &mut self,
-        card: crate::app::Card,
+        countdown: Countdown,
         left: f64,
         hide: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let image = self.picture(&card.thumb, Shape::Wide);
+        let secs = left.max(0.).ceil();
+        let up_next = matches!(countdown, Countdown::UpNext(_));
+        let (image, heading, title, action, glyph): (_, _, SharedString, _, _) = match countdown {
+            Countdown::UpNext(card) => (
+                self.picture(&card.thumb, Shape::Wide),
+                format!("Up next in {secs}s"),
+                card.subtitle,
+                "Play now",
+                Icon::Play,
+            ),
+            Countdown::Skip(label, end) => (
+                None,
+                format!("{} in {secs}s", label.replacen("Skip", "Skipping", 1)),
+                format!("Jumps to {}", fmt_time(end)).into(),
+                "Skip now",
+                Icon::FastForward,
+            ),
+        };
         div()
-            .id("up-next")
+            .id("countdown")
             .occlude()
             .absolute()
             .right(px(24.))
             .bottom(px(if hide { 32. } else { 116. }))
-            .w(px(420.))
+            .max_w(px(420.))
             .p(px(12.))
             .rounded(px(12.))
             .bg(theme::surface())
             .shadow(shadow(24., 0.5))
             .flex()
             .gap(px(12.))
+            .when(up_next, |d| {
+                d.child(
+                    div()
+                        .w(px(128.))
+                        .h(px(72.))
+                        .flex_none()
+                        .rounded(px(6.))
+                        .overflow_hidden()
+                        .bg(theme::bg())
+                        .when_some(image, |d, im| {
+                            d.child(im.size_full().object_fit(ObjectFit::Cover))
+                        }),
+                )
+            })
             .child(
                 div()
-                    .w(px(128.))
-                    .h(px(72.))
-                    .flex_none()
-                    .rounded(px(6.))
-                    .overflow_hidden()
-                    .bg(theme::bg())
-                    .when_some(image, |d, im| {
-                        d.child(im.size_full().object_fit(ObjectFit::Cover))
-                    }),
-            )
-            .child(
-                div()
-                    .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
@@ -935,14 +956,14 @@ impl Plaivo {
                                 div()
                                     .text_size(px(12.))
                                     .text_color(theme::muted())
-                                    .child(format!("Up next in {}s", left.max(0.).ceil())),
+                                    .child(heading),
                             )
                             .child(
                                 div()
                                     .text_size(px(14.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .truncate()
-                                    .child(card.subtitle),
+                                    .child(title),
                             ),
                     )
                     .child(
@@ -950,19 +971,28 @@ impl Plaivo {
                             .flex()
                             .gap(px(8.))
                             .child(
-                                pill("up-next-play", "Play now", Some(Icon::Play), true)
+                                pill("countdown-go", action, Some(glyph), true)
                                     .h(px(36.))
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
-                                        this.play_up_next(cx);
+                                        if up_next {
+                                            this.play_up_next(cx);
+                                        } else {
+                                            this.skip_marker();
+                                            cx.notify();
+                                        }
                                     })),
                             )
                             .child(
-                                pill("up-next-cancel", "Cancel", None, false)
+                                pill("countdown-cancel", "Cancel", None, false)
                                     .h(px(36.))
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    .on_click(cx.listener(move |this, _, _, cx| {
                                         cx.stop_propagation();
-                                        this.cancel_up_next();
+                                        if up_next {
+                                            this.cancel_up_next();
+                                        } else {
+                                            this.cancel_auto_skip();
+                                        }
                                         cx.notify();
                                     })),
                             ),
