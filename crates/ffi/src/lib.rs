@@ -213,12 +213,18 @@ pub struct Rating {
     pub value: String,
 }
 
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 pub struct CastMember {
     pub id: String,
     pub name: String,
     pub role: String,
     pub image: Option<String>,
+}
+
+#[derive(uniffi::Record)]
+pub struct Related {
+    pub rows: Vec<Row>,
+    pub show_cast: Vec<CastMember>,
 }
 
 #[derive(uniffi::Record)]
@@ -670,6 +676,18 @@ impl Plaivo {
 
 fn file_url(path: &Path) -> String {
     format!("file://{}", path.display())
+}
+
+fn cast_members(srv: &Server, people: &[plex::Person]) -> Vec<CastMember> {
+    people
+        .iter()
+        .map(|p| CastMember {
+            id: p.id.clone(),
+            name: p.tag.clone(),
+            role: p.role.clone(),
+            image: (!p.thumb.is_empty()).then(|| srv.image_url(&p.thumb, 300, 300)),
+        })
+        .collect()
 }
 
 fn card(srv: &Server, it: &Item, wide: bool, prefs: &CardPrefs) -> Card {
@@ -1236,10 +1254,10 @@ impl Plaivo {
     pub fn detail(&self, server_id: String, key: String, cached: bool) -> R<Detail> {
         let srv = self.server(&server_id)?;
         let ctx = self.ctx(cached);
-        let mut it = srv.metadata(&ctx, &key)?;
+        let mut it = srv.detail(&ctx, &key)?;
         let mut wanted = None;
         if it.kind == "season" && !it.parent_rating_key.is_empty() {
-            let show = srv.metadata(&ctx, &it.parent_rating_key)?;
+            let show = srv.detail(&ctx, &it.parent_rating_key)?;
             wanted = Some(std::mem::replace(&mut it, show).rating_key);
         }
         let seasons = if it.kind == "show" {
@@ -1286,16 +1304,7 @@ impl Plaivo {
                     value,
                 })
                 .collect(),
-            cast: it
-                .cast()
-                .iter()
-                .map(|p| CastMember {
-                    id: p.id.clone(),
-                    name: p.tag.clone(),
-                    role: p.role.clone(),
-                    image: image(&p.thumb, 300, 300),
-                })
-                .collect(),
+            cast: cast_members(&srv, it.cast()),
             extras: it
                 .extras()
                 .iter()
@@ -1441,13 +1450,20 @@ impl Plaivo {
             .collect())
     }
 
-    pub fn related(&self, server_id: String, key: String) -> R<Vec<Row>> {
+    pub fn related(&self, server_id: String, key: String) -> R<Related> {
         if server_id == DISCOVER_ID {
-            return Ok(Vec::new());
+            return Ok(Related {
+                rows: Vec::new(),
+                show_cast: Vec::new(),
+            });
         }
         let srv = self.server(&server_id)?;
-        let hubs = srv.related(&Ctx::new(self.client.clone(), Source::Network), &key)?;
-        Ok(rows(&srv, &hubs, &self.card_prefs()))
+        let it = srv.detail(&self.ctx(true), &key)?;
+        let (hubs, cast) = srv.detail_rows(&self.ctx(false), &it)?;
+        Ok(Related {
+            rows: rows(&srv, &hubs, &self.card_prefs()),
+            show_cast: cast_members(&srv, &cast),
+        })
     }
 
     pub fn item_menu(&self, server_id: String, key: String) -> R<ItemMenu> {
@@ -1953,6 +1969,11 @@ pub fn library_sorts() -> Vec<SortOption> {
 #[uniffi::export]
 pub fn grid_columns(width: f32, card: f32, gap: f32) -> i32 {
     plaivo_core::grid_columns(width, card, gap)
+}
+
+#[uniffi::export]
+pub fn merge_cast(own: Vec<CastMember>, show: Vec<CastMember>) -> Vec<CastMember> {
+    detail::merge_cast(&own, &show, |p| p.name.as_str())
 }
 
 #[uniffi::export]
@@ -2625,6 +2646,7 @@ mod tests {
         assert!(
             core.related(DISCOVER_ID.into(), "1".into())
                 .unwrap()
+                .rows
                 .is_empty()
         );
         let _ = std::fs::remove_dir_all(dir);

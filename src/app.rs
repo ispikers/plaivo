@@ -240,6 +240,7 @@ pub struct DetailView {
     pub media_line: SharedString,
     pub info: Vec<(SharedString, SharedString)>,
     pub cast: Vec<CastMember>,
+    pub show_cast: Vec<plex::Person>,
     pub extras: Vec<Card>,
     pub related: Vec<(SharedString, Vec<Card>)>,
     pub watchlisted: Option<bool>,
@@ -413,6 +414,19 @@ pub fn thumb(server: &str, path: &str) -> Option<Thumb> {
         path: path.to_owned(),
         blur: false,
     })
+}
+
+fn full_cast(server: &str, it: &Item, show_cast: &[plex::Person]) -> Vec<CastMember> {
+    plaivo_core::detail::merge_cast(it.cast(), show_cast, |p| p.tag.as_str())
+        .iter()
+        .map(|p| CastMember {
+            server: server.to_owned().into(),
+            id: p.id.clone(),
+            name: p.tag.clone().into(),
+            role: p.role.clone().into(),
+            thumb: thumb(server, &p.thumb),
+        })
+        .collect()
 }
 
 pub fn card_for(it: &Item, wide: bool, server: &str, prefs: &CardPrefs) -> Card {
@@ -2464,7 +2478,7 @@ impl Plaivo {
         self.load(
             cx,
             move |c| -> R<(Item, Vec<Item>)> {
-                let mut it = srv.metadata(c, &key)?;
+                let mut it = srv.detail(c, &key)?;
                 let seasons = if it.kind == "show" {
                     srv.seasons(c, &mut it, discover.as_ref())?
                 } else {
@@ -2619,25 +2633,31 @@ impl Plaivo {
             .and_then(|d| d.watchlisted);
         let owned_swap =
             self.owned_swap.as_ref() == Some(&(server.to_owned(), it.rating_key.clone()));
-        let same_show = self.detail.as_ref().filter(|d| {
+        let same_show = self.detail.as_ref().is_some_and(|d| {
             owned_swap
                 || *d.server == *server
                     && d.item.kind == "episode"
                     && it.kind == "episode"
                     && d.item.grandparent_rating_key == it.grandparent_rating_key
         });
-        let (episodes, art, logo) = match same_show {
-            Some(d) => (d.episodes.clone(), d.art.clone(), d.logo.clone()),
+        let (episodes, art, logo, show_cast) = match self.detail.as_ref().filter(|_| same_show) {
+            Some(d) => (
+                d.episodes.clone(),
+                d.art.clone(),
+                d.logo.clone(),
+                d.show_cast.clone(),
+            ),
             None => (
                 Rc::default(),
                 thumb(server, first(&[&it.art, &it.grandparent_art])),
                 thumb(server, it.logo()),
+                Vec::new(),
             ),
         };
         let related = self
             .detail
             .as_mut()
-            .filter(|d| d.item.rating_key == it.rating_key)
+            .filter(|d| same_show || d.item.rating_key == it.rating_key)
             .map(|d| std::mem::take(&mut d.related))
             .unwrap_or_default();
         let fresh = related.is_empty();
@@ -2654,17 +2674,8 @@ impl Plaivo {
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
-            cast: it
-                .cast()
-                .iter()
-                .map(|p| CastMember {
-                    server: server.to_owned().into(),
-                    id: p.id.clone(),
-                    name: p.tag.clone().into(),
-                    role: p.role.clone().into(),
-                    thumb: thumb(server, &p.thumb),
-                })
-                .collect(),
+            cast: full_cast(server, &it, &show_cast),
+            show_cast,
             extras,
             related,
             watchlisted,
@@ -2840,17 +2851,14 @@ impl Plaivo {
         if self.owned_check.take_if(|k| *k == it.rating_key).is_some() {
             self.open_owned_copy(it, cx);
         }
-        let Some(srv) = self
-            .server(server)
-            .filter(|_| server != DISCOVER_ID && matches!(it.kind.as_str(), "movie" | "show"))
-        else {
+        let Some(srv) = self.server(server).filter(|_| server != DISCOVER_ID) else {
             return;
         };
         let (server, key) = (server.to_owned(), it.rating_key.clone());
-        let k = key.clone();
+        let it = it.clone();
         self.load(
             cx,
-            move |c| srv.related(c, &k),
+            move |c| srv.detail_rows(c, &it),
             move |this, r, _| {
                 let prefs = this.settings.card_prefs();
                 let Some(d) = this
@@ -2861,7 +2869,11 @@ impl Plaivo {
                     return;
                 };
                 match r {
-                    Ok(hubs) => {
+                    Ok((hubs, show_cast)) => {
+                        if !show_cast.is_empty() {
+                            d.cast = full_cast(&server, &d.item, &show_cast);
+                            d.show_cast = show_cast;
+                        }
                         d.related = hubs
                             .into_iter()
                             .map(|h| {

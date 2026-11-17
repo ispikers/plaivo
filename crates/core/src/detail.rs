@@ -125,6 +125,14 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
     }
 }
 
+pub fn merge_cast<T: Clone>(own: &[T], show: &[T], name: fn(&T) -> &str) -> Vec<T> {
+    let mut seen: std::collections::HashSet<&str> = own.iter().map(name).collect();
+    own.iter()
+        .chain(show.iter().filter(|p| seen.insert(name(p))))
+        .cloned()
+        .collect()
+}
+
 pub fn pick_season(show: &Item, seasons: &[Item], wanted: Option<&str>) -> Option<String> {
     let valid = |k: &str| seasons.iter().any(|s| s.rating_key == k);
     let on_deck = show
@@ -178,6 +186,13 @@ pub fn all_neighbours(episodes: &[Item]) -> Vec<(String, [Option<String>; 2])> {
 mod tests {
     use super::*;
     use crate::plex::OnDeck;
+
+    #[test]
+    fn episode_cast_comes_first_and_the_show_fills_in_the_rest() {
+        let merged = merge_cast(&["Guest", "Lead"], &["Lead", "Second", "Guest"], |s| *s);
+        assert_eq!(merged, ["Guest", "Lead", "Second"]);
+        assert_eq!(merge_cast(&[], &["Lead"], |s| *s), ["Lead"]);
+    }
 
     fn season(key: &str, index: i64) -> Item {
         Item {

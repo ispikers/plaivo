@@ -262,6 +262,8 @@ pub struct Item {
     pub extras: Option<Extras>,
     #[serde(rename = "OnDeck")]
     pub on_deck: Option<Box<OnDeck>>,
+    #[serde(rename = "Related", skip_serializing)]
+    pub related: RelatedHubs,
     #[serde(rename = "Genre")]
     pub genre: Vec<Tag>,
     #[serde(rename = "Guid")]
@@ -290,6 +292,13 @@ impl Marker {
             _ => None,
         }
     }
+}
+
+#[derive(Deserialize, Default, Clone)]
+#[serde(default)]
+pub struct RelatedHubs {
+    #[serde(rename = "Hub")]
+    pub hub: Vec<Hub>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -1854,26 +1863,49 @@ impl Server {
     }
 
     pub fn metadata(&self, c: &Ctx, key: &str) -> R<Item> {
+        self.fetch_metadata(c, key, "")
+    }
+
+    pub fn detail(&self, c: &Ctx, key: &str) -> R<Item> {
+        let include = if self.id == DISCOVER_ID {
+            ""
+        } else {
+            "&includeRelated=1&includeRelatedCount=20"
+        };
+        self.fetch_metadata(c, key, include)
+    }
+
+    fn fetch_metadata(&self, c: &Ctx, key: &str, include: &str) -> R<Item> {
         if self.is_jellyfin() {
             return jellyfin::metadata(self, c, key);
         }
-        let mut it = self.get::<Container>(c, &format!("/library/metadata/{key}?includeOnDeck=1&includeMarkers=1&includeGuids=1&includeExtras=1"))?.metadata.into_iter().next().ok_or("Item not found")?;
+        let mut it = self.get::<Container>(c, &format!("/library/metadata/{key}?includeOnDeck=1&includeMarkers=1&includeGuids=1&includeExtras=1{include}"))?.metadata.into_iter().next().ok_or("Item not found")?;
         for (i, m) in it.media.iter_mut().enumerate() {
             m.source_id = i.to_string();
         }
         Ok(it)
     }
 
-    pub fn related(&self, c: &Ctx, key: &str) -> R<Vec<Hub>> {
+    fn related(&self, c: &Ctx, it: &Item) -> R<Vec<Hub>> {
         let mut hubs = if self.is_jellyfin() {
-            jellyfin::related(self, c, key)?
+            jellyfin::related(self, c, &it.rating_key)?
         } else {
-            self.get::<Container>(c, &format!("/library/metadata/{key}/related?count=20"))?
-                .hub
+            it.related.hub.clone()
         };
         hubs.retain(|h| !h.metadata.is_empty());
         hubs.truncate(3);
         Ok(hubs)
+    }
+
+    pub fn detail_rows(&self, c: &Ctx, it: &Item) -> R<(Vec<Hub>, Vec<Person>)> {
+        match it.kind.as_str() {
+            "movie" | "show" => Ok((self.related(c, it)?, Vec::new())),
+            "episode" if !it.grandparent_rating_key.is_empty() => {
+                let show = self.detail(c, &it.grandparent_rating_key)?;
+                Ok((self.related(c, &show)?, show.cast().to_vec()))
+            }
+            _ => Ok(Default::default()),
+        }
     }
 
     fn library_action(&self, c: &Client, path: &str, put: bool) -> R<()> {
@@ -2596,6 +2628,20 @@ mod tests {
         assert_eq!(it.progress(), 0.25);
         assert_eq!(it.media[0].part[0].stream[0].key, "/library/streams/9");
         assert!(it.media[0].part[0].stream[0].forced);
+    }
+
+    #[test]
+    fn parses_related_hubs_inline_with_metadata() {
+        let json = r#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"5","type":"show","Related":{"Hub":[{"title":"More with Yoko Hikasa","hubIdentifier":"actor","Metadata":[{"ratingKey":"8","type":"show"}]},{"title":"Empty","Metadata":[]}]}}]}}"#;
+        let ct: Envelope<Container> = serde_json::from_str(json).unwrap();
+        let it = ct.media_container.metadata.into_iter().next().unwrap();
+        let srv = Server::default();
+        let ctx = Ctx::new(Client::new("c".into()), Source::Cache);
+        let (hubs, cast) = srv.detail_rows(&ctx, &it).unwrap();
+        assert_eq!(hubs.len(), 1);
+        assert_eq!(hubs[0].title, "More with Yoko Hikasa");
+        assert_eq!(hubs[0].metadata[0].rating_key, "8");
+        assert!(cast.is_empty());
     }
 
     #[test]

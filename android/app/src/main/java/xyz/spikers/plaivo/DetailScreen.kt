@@ -75,8 +75,10 @@ import uniffi.plaivo_ffi.CastMember
 import uniffi.plaivo_ffi.Detail
 import uniffi.plaivo_ffi.EpisodeStep
 import uniffi.plaivo_ffi.RatingSource
+import uniffi.plaivo_ffi.Related
 import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.discoverId
+import uniffi.plaivo_ffi.mergeCast
 
 private val rowShape = RoundedCornerShape(10.dp)
 
@@ -126,7 +128,7 @@ fun DetailScreen(
     var season by remember { mutableStateOf<String?>(null) }
     var episodes by remember { mutableStateOf<List<MediaCard>>(emptyList()) }
     var episodesOf by remember { mutableStateOf<String?>(null) }
-    var related by remember { mutableStateOf<List<MediaRow>>(emptyList()) }
+    var related by remember { mutableStateOf<Related?>(null) }
     val focus = remember { FocusRequester() }
     val discover = remember { discoverId() }
     fun fetch(cached: Boolean) =
@@ -174,11 +176,11 @@ fun DetailScreen(
     }
     val d = detail
     val chosen = season ?: d?.season
-    LaunchedEffect(d?.key) {
+    LaunchedEffect(d?.server, d?.kind, d?.showKey?.ifEmpty { null } ?: d?.key) {
         if (d == null) return@LaunchedEffect
-        if (d.kind !in setOf("movie", "show")) related = emptyList()
-        else io { runCatching { core.related(d.server, d.key) } }.onSuccess { related = it }
+        io { runCatching { core.related(d.server, d.key) } }.onSuccess { related = it }
     }
+    val cast = remember(d?.cast, related) { mergeCast(d?.cast.orEmpty(), related?.showCast.orEmpty()) }
     LaunchedEffect(chosen, refresh) {
         val srv = d?.server
         if (chosen == null || srv == null) return@LaunchedEffect
@@ -392,10 +394,10 @@ fun DetailScreen(
             }
             items(episodes, key = { "ep/${it.key}" }) { EpisodeRow(it, edge) { play(it) } }
         }
-        if (d.cast.isNotEmpty())
+        if (cast.isNotEmpty())
             item(key = "cast") {
                 Shelf("Cast", edge) {
-                    items(d.cast) { p ->
+                    items(cast) { p ->
                         CastCard(
                             p,
                             if (p.id.isEmpty()) null
@@ -412,7 +414,7 @@ fun DetailScreen(
                     items(d.extras, key = { it.key }) { MediaTile(it, wide = true) { play(it) } }
                 }
             }
-        itemsIndexed(if (isPerson) d.rows else related, key = { i, _ -> "related/$i" }) { _, row ->
+        itemsIndexed(if (isPerson) d.rows else related?.rows.orEmpty(), key = { i, _ -> "related/$i" }) { _, row ->
             Shelf(row.title, edge) {
                 items(row.cards, key = { "${it.server}/${it.key}" }) { MediaTile(it, wide = false) { open(it) } }
                 if (row.key.isNotEmpty()) item(key = "see-all") { SeeAll(wide = false, dim = false) { openRow(row) } }
