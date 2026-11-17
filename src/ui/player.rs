@@ -353,35 +353,33 @@ impl Plaivo {
             (None, Some((label, end, Some(left)))) => Some((Countdown::Skip(label, end), left)),
             _ => None,
         };
-        let skip = skip
-            .filter(|_| countdown.is_none())
-            .map(|(label, ..)| {
-                div()
-                    .id("skip")
-                    .occlude()
-                    .absolute()
-                    .right(px(24.))
-                    .bottom(px(if hide { 32. } else { 116. }))
-                    .h(px(44.))
-                    .px(px(18.))
-                    .rounded(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .bg(theme::white().opacity(0.92))
-                    .hover(|s| s.bg(theme::white()))
-                    .shadow(shadow(12., 0.4))
-                    .cursor_pointer()
-                    .text_size(px(15.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::bg())
-                    .child(label)
-                    .child(icon(Icon::FastForward, 20., theme::bg()))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.skip_marker();
-                        cx.notify();
-                    }))
-            });
+        let skip = skip.filter(|_| countdown.is_none()).map(|(label, ..)| {
+            div()
+                .id("skip")
+                .occlude()
+                .absolute()
+                .right(px(24.))
+                .bottom(px(if hide { 32. } else { 116. }))
+                .h(px(44.))
+                .px(px(18.))
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .bg(theme::white().opacity(0.92))
+                .hover(|s| s.bg(theme::white()))
+                .shadow(shadow(12., 0.4))
+                .cursor_pointer()
+                .text_size(px(15.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::bg())
+                .child(label)
+                .child(icon(Icon::FastForward, 20., theme::bg()))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.skip_marker();
+                    cx.notify();
+                }))
+        });
         let hint = self
             .watch_wait()
             .map(|text| (Icon::Group, text.into()))

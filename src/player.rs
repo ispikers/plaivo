@@ -1731,7 +1731,8 @@ impl Plaivo {
                 let shown = |this: &mut Self| {
                     (
                         this.controls_shown().then_some(this.player.time as u64),
-                        this.active_skip().map(|(_, left)| left.map(|l| l.ceil() as u64)),
+                        this.active_skip()
+                            .map(|(_, left)| left.map(|l| l.ceil() as u64)),
                         this.up_next().map(|(_, left)| left.max(0.).ceil() as u64),
                     )
                 };
