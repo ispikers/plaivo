@@ -1,4 +1,4 @@
-use crate::app::{Card, Choice, Nav, Plaivo, Shape, fmt_resolution};
+use crate::app::{Card, Choice, Nav, Plaivo, Shape, Thumb, fmt_resolution};
 use crate::clock;
 use crate::keymap;
 use crate::player::{Panel, SPEEDS};
@@ -22,7 +22,10 @@ use std::f32::consts::TAU;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 enum Countdown {
-    UpNext(Card),
+    UpNext {
+        thumb: Option<Thumb>,
+        subtitle: SharedString,
+    },
     Skip(&'static str, f64),
 }
 
@@ -349,7 +352,13 @@ impl Plaivo {
         });
         let skip = self.active_skip().map(|(s, left)| (s.label, s.end, left));
         let countdown = match (self.up_next(), skip) {
-            (Some((card, left)), _) => Some((Countdown::UpNext(card), left)),
+            (Some((card, left)), _) => Some((
+                Countdown::UpNext {
+                    thumb: card.thumb,
+                    subtitle: card.subtitle,
+                },
+                left,
+            )),
             (None, Some((label, end, Some(left)))) => Some((Countdown::Skip(label, end), left)),
             _ => None,
         };
@@ -896,12 +905,12 @@ impl Plaivo {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let secs = left.max(0.).ceil();
-        let up_next = matches!(countdown, Countdown::UpNext(_));
+        let up_next = matches!(countdown, Countdown::UpNext { .. });
         let (image, heading, title, action, glyph): (_, _, SharedString, _, _) = match countdown {
-            Countdown::UpNext(card) => (
-                self.picture(&card.thumb, Shape::Wide),
+            Countdown::UpNext { thumb, subtitle } => (
+                self.picture(&thumb, Shape::Wide),
                 format!("Up next in {secs}s"),
-                card.subtitle,
+                subtitle,
                 "Play now",
                 Icon::Play,
             ),
