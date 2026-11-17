@@ -75,11 +75,13 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
         v.push(Action::Trailer);
     }
     if library {
-        v.push(if it.watched() {
-            Action::MarkUnwatched
-        } else {
-            Action::MarkWatched
-        });
+        let started = in_progress || it.viewed_leaf_count.is_some_and(|n| n > 0);
+        if !it.watched() {
+            v.push(Action::MarkWatched);
+        }
+        if it.watched() || started {
+            v.push(Action::MarkUnwatched);
+        }
     }
     if library && c.can_rate {
         v.push(Action::Rate);
@@ -239,8 +241,35 @@ mod tests {
         };
         assert_eq!(
             actions(&started, &ctx()),
-            [&[Action::FromStart], &common[..], &[Action::Details]].concat()
+            [
+                &[
+                    Action::FromStart,
+                    Action::MarkWatched,
+                    Action::MarkUnwatched
+                ],
+                &common[1..],
+                &[Action::Details]
+            ]
+            .concat()
         );
+        let show = |viewed| Item {
+            kind: "show".into(),
+            leaf_count: Some(10),
+            viewed_leaf_count: Some(viewed),
+            ..Default::default()
+        };
+        let marks = |it: &Item| {
+            actions(it, &ctx())
+                .into_iter()
+                .filter(|a| matches!(a, Action::MarkWatched | Action::MarkUnwatched))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(marks(&show(0)), [Action::MarkWatched]);
+        assert_eq!(
+            marks(&show(4)),
+            [Action::MarkWatched, Action::MarkUnwatched]
+        );
+        assert_eq!(marks(&show(10)), [Action::MarkUnwatched]);
         let page = Context {
             details: false,
             season: true,
