@@ -182,10 +182,12 @@ mod imp {
         NSWindowOrderingMode,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use std::cell::Cell;
 
     // mpv's Metal layer lives here (deps/mpv-macos-embed.patch adds --wid to macvk), below GPUI's transparent view.
     pub struct VideoHost {
         view: Retained<NSView>,
+        cursor_hidden: Cell<bool>,
     }
 
     impl VideoHost {
@@ -219,7 +221,10 @@ mod imp {
                 NSWindowOrderingMode::Below,
                 Some(gpui),
             );
-            let host = Self { view };
+            let host = Self {
+                view,
+                cursor_hidden: Cell::new(false),
+            };
             host.set_region(None);
             Ok(host)
         }
@@ -255,9 +260,15 @@ mod imp {
             self.view.setFrame(frame);
         }
 
+        // hide/unhide are counted, so only real transitions may call them; setHiddenUntilMouseMoves is undone by AppKit on fullscreen transitions.
         pub fn set_cursor_hidden(&self, hidden: bool) {
+            if self.cursor_hidden.replace(hidden) == hidden {
+                return;
+            }
             if hidden {
-                NSCursor::setHiddenUntilMouseMoves(true);
+                NSCursor::hide();
+            } else {
+                NSCursor::unhide();
             }
         }
     }

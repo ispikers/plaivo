@@ -156,7 +156,13 @@ impl Render for Root {
                     }
                 })
             }))
-            .on_action(|_: &menu::ToggleFullScreen, window, _| window.toggle_fullscreen())
+            .on_action(cx.listener(Self::on_app(|app, _: &menu::ToggleFullScreen, window, cx| {
+                if app.page == Page::Player {
+                    app.wake_controls(cx);
+                    cx.notify();
+                }
+                window.toggle_fullscreen();
+            })))
             .on_action(|_: &menu::Minimize, window, _| window.minimize_window())
             .on_action(|_: &menu::Zoom, window, _| window.zoom_window())
             .child(
