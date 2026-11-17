@@ -10,7 +10,7 @@ use anyhow::{Context, bail, ensure};
 use sha2::{Digest, Sha256};
 
 const REPO: &str = "ispikers/plaivo";
-const ENTITLEMENTS: &str = "xtask/resources/entitlements.plist";
+const ENTITLEMENTS: &str = "xtask/resources/Plaivo.entitlements";
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
