@@ -1858,6 +1858,7 @@ impl Plaivo {
             }
             mpv::Event::Ended { eof, error } => {
                 log::info!("playback ended eof={eof} error={error:?}");
+                self.player.video_ready = false;
                 if self.playing() && !self.player.advancing && (eof || error.is_some()) {
                     if let Some(e) = error {
                         self.toast(format!("Playback error: {e}"), cx);
