@@ -2,7 +2,7 @@
 members = [".", "crates/core", "crates/ffi", "crates/uniffi-bindgen", "xtask"]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.1.61"
 
 [package]
 name = "plaivo"
