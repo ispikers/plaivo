@@ -178,8 +178,8 @@ mod imp {
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
     use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSCursor, NSTitlePosition, NSView,
-        NSWindowOrderingMode,
+        NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSCursor, NSEvent, NSTitlePosition,
+        NSView, NSWindow, NSWindowOrderingMode,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use std::cell::Cell;
@@ -262,6 +262,7 @@ mod imp {
 
         // hide/unhide are counted, so only real transitions may call them; setHiddenUntilMouseMoves is undone by AppKit on fullscreen transitions.
         pub fn set_cursor_hidden(&self, hidden: bool) {
+            let hidden = hidden && self.under_cursor();
             if self.cursor_hidden.replace(hidden) == hidden {
                 return;
             }
@@ -270,6 +271,17 @@ mod imp {
             } else {
                 NSCursor::unhide();
             }
+        }
+
+        fn under_cursor(&self) -> bool {
+            let (Some(window), Some(mtm)) = (self.view.window(), MainThreadMarker::new()) else {
+                return false;
+            };
+            NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(
+                NSEvent::mouseLocation(),
+                0,
+                mtm,
+            ) == window.windowNumber()
         }
     }
 }

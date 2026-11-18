@@ -41,7 +41,7 @@ windows = { version = "0.62", features = ["Foundation", "Media", "Storage_Stream
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSDate", "NSDateFormatter", "NSFormatter", "NSString"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSResponder", "NSGraphics", "NSCursor", "NSBox", "NSColor"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSResponder", "NSGraphics", "NSCursor", "NSBox", "NSColor", "NSEvent", "NSWindow"] }
 
 [profile.release]
 lto = "fat"
