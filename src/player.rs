@@ -282,7 +282,10 @@ impl Plaivo {
         let last_cache = Arc::new(AtomicU64::new(0));
         let device = self.audio_device();
         let [aspect, panscan] = self.settings.scale.mpv();
-        let opts = [
+        #[cfg(windows)]
+        let roots = os_root_certs();
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut opts = vec![
             aspect,
             panscan,
             ("audio-device", device),
@@ -306,11 +309,6 @@ impl Plaivo {
             ("cache-secs", "60"),
             ("demuxer-max-bytes", "150MiB"),
             ("demuxer-max-back-bytes", "32MiB"),
-            // Reuses the connection for a seek that leaves at most this much of a reply unread, such as reading a file's index and seeking back.
-            (
-                "stream-lavf-o",
-                "multiple_requests=1,short_seek_size=262144",
-            ),
             ("user-agent", "Plaivo"),
             ("audio-client-name", "Plaivo"),
             ("config-dir", conf_dir.as_str()),
@@ -331,6 +329,10 @@ impl Plaivo {
                 },
             ),
         ];
+        #[cfg(windows)]
+        if let Some(roots) = &roots {
+            opts.push(("tls-ca-file", roots));
+        }
         let (tx, mut rx) = futures::channel::mpsc::unbounded();
         let mpv = mpv::Mpv::new(&opts, move |e| {
             let throttle = |last: &AtomicU64, t: f64, step: f64| {
@@ -2324,6 +2326,30 @@ impl Plaivo {
             m.set(k, &v);
         }
     }
+}
+
+// FFmpeg's OpenSSL only reads a CA file, so verify streams against the same Windows roots the API trusts.
+#[cfg(windows)]
+fn os_root_certs() -> Option<String> {
+    use schannel::cert_context::ValidUses;
+    use schannel::cert_store::CertStore;
+    const SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
+    let pem: String = CertStore::open_current_user("ROOT")
+        .map_err(|e| log::error!("cannot open the Windows root store: {e}"))
+        .ok()?
+        .certs()
+        .filter(|c| match c.valid_uses() {
+            Ok(ValidUses::All) => true,
+            Ok(ValidUses::Oids(oids)) => oids.iter().any(|o| o == SERVER_AUTH),
+            Err(_) => false,
+        })
+        .filter_map(|c| c.to_pem().ok())
+        .collect();
+    let path = store::cache_dir().join("roots.pem");
+    store::write_atomic(&path, pem.as_bytes())
+        .map_err(|e| log::error!("cannot write {}: {e}", path.display()))
+        .ok()?;
+    Some(path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
