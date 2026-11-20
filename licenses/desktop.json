@@ -1,6 +1,6 @@
 [
   {"name": "libmpv", "version": "0.42.0", "license": "LGPL-2.1-or-later", "files": ["libmpv.txt", "LGPL-2.1.txt"]},
-  {"name": "FFmpeg", "version": "8.1.3", "license": "LGPL-2.1-or-later", "files": ["libmpv/ffmpeg.txt", "LGPL-2.1.txt"]},
+  {"name": "FFmpeg", "version": "9.1", "license": "LGPL-2.1-or-later", "files": ["libmpv/ffmpeg.txt", "LGPL-2.1.txt"]},
   {"name": "libplacebo", "version": "7.387.0", "license": "LGPL-2.1-or-later", "files": ["libmpv/libplacebo-notice.txt", "LGPL-2.1.txt"]},
   {"name": "Brotli", "version": "", "license": "MIT", "files": ["libmpv/brotli.txt"]},
   {"name": "bzip2 (Windows)", "version": "", "license": "bzip2-1.0.6", "files": ["libmpv/bzip2.txt"]},

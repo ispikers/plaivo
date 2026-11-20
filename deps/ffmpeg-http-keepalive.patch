@@ -1,14 +1,14 @@
-Keep-alive guards on top of ffmpeg-http-backport.patch: reuse a connection only for
-the server it reached, never one idle for 4 s or more, never one with chunk framing
-left to read, and give up draining a reply that stalls.
+Keep-alive guards on top of FFmpeg 9.1's connection reuse: never reuse a connection
+idle for 4 s or more, never one with chunk framing left to read, and give up
+draining a reply that stalls.
 
 diff --git a/libavformat/http.c b/libavformat/http.c
-index 2f4f522363..3a34abbcd6 100644
+index 04ed992..a06b7bd 100644
 --- a/libavformat/http.c
 +++ b/libavformat/http.c
-@@ -62,6 +62,10 @@
+@@ -61,6 +61,10 @@
+ #define HTTP_SINGLE   1
  #define HTTP_MUTLI    2
- #define MAX_DATE_LEN  19
  #define WHITESPACES " \n\t\r"
 +/* Below the shortest keep-alive timeout servers commonly use (5 s). */
 +#define MAX_IDLE_REUSE   (4 * 1000000)
@@ -17,7 +17,7 @@ index 2f4f522363..3a34abbcd6 100644
  typedef enum {
      LOWER_PROTO,
      READ_HEADERS,
-@@ -144,6 +148,7 @@ typedef struct HTTPContext {
+@@ -143,6 +147,7 @@ typedef struct HTTPContext {
       * Per-connection state *
       ************************/
      URLContext *hd;
@@ -25,18 +25,7 @@ index 2f4f522363..3a34abbcd6 100644
      char *uri;
      char *new_location;
      int http_code;
-@@ -343,6 +348,10 @@ static int http_open_cnx_internal(URLContext *h, AVDictionary **options)
- 
-     ff_url_join(buf, sizeof(buf), lower_proto, NULL, hostname, port, NULL);
- 
-+    /* a kept connection only serves requests for the server it reached */
-+    if (s->hd && strcmp(s->hd->filename, buf))
-+        ffurl_closep(&s->hd);
-+
-     if (!s->hd) {
-         s->nb_connections++;
-         err = ffurl_open_whitelist(&s->hd, buf, AVIO_FLAG_READ_WRITE,
-@@ -431,6 +440,13 @@ static int redirect_cache_set(HTTPContext *s, const char *source, const char *de
+@@ -434,6 +439,13 @@ static int redirect_cache_set(HTTPContext *s, const char *source, const char *de
      return 0;
  }
  
@@ -50,7 +39,7 @@ index 2f4f522363..3a34abbcd6 100644
  /* The redirects that http_open_cnx() follows. */
  static int is_redirect(int http_code)
  {
-@@ -627,6 +643,8 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
+@@ -630,6 +642,8 @@ int ff_http_do_new_request2(URLContext *h, const char *uri, AVDictionary **opts)
  
      if (s->willclose)
          return AVERROR_EOF;
@@ -59,7 +48,7 @@ index 2f4f522363..3a34abbcd6 100644
  
      s->end_chunked_post = 0;
      s->chunkend      = 0;
-@@ -908,6 +926,7 @@ static int http_getc(HTTPContext *s)
+@@ -915,6 +929,7 @@ static int http_getc(HTTPContext *s)
          } else if (len == 0) {
              return AVERROR_EOF;
          } else {
@@ -67,7 +56,7 @@ index 2f4f522363..3a34abbcd6 100644
              s->buf_ptr = s->buffer;
              s->buf_end = s->buffer + len;
          }
-@@ -2011,6 +2030,8 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
+@@ -1889,6 +1904,8 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
          if (s->off == target_end && target_end < file_end)
              return AVERROR(EAGAIN); /* reached end of content range */
          len = ffurl_read(s->hd, buf, size);
@@ -76,7 +65,7 @@ index 2f4f522363..3a34abbcd6 100644
          if ((!len || len == AVERROR_EOF) &&
              (!s->willclose || s->chunksize == UINT64_MAX) && s->off < target_end) {
              av_log(h, AV_LOG_ERROR,
-@@ -2118,7 +2139,7 @@ retry:
+@@ -1996,7 +2013,7 @@ retry:
          else if (read_ret == AVERROR(EAGAIN)) {
              /* send new request for more data on existing connection */
              AVDictionary *options = NULL;
@@ -85,7 +74,7 @@ index 2f4f522363..3a34abbcd6 100644
                  ffurl_closep(&s->hd);
              s->initial_requests = 0; /* continue streaming uninterrupted from now on */
              read_ret = http_open_cnx(h, &options, 1);
-@@ -2333,6 +2354,50 @@ static int http_close(URLContext *h)
+@@ -2211,6 +2228,50 @@ static int http_close(URLContext *h)
      return ret;
  }
  
@@ -136,7 +125,7 @@ index 2f4f522363..3a34abbcd6 100644
  static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int force_reconnect)
  {
      HTTPContext *s = h->priv_data;
-@@ -2349,7 +2414,6 @@ static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int fo
+@@ -2227,7 +2288,6 @@ static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int fo
      uint8_t old_buf[BUFFER_SIZE];
      int old_buf_size, ret;
      AVDictionary *options = NULL;
@@ -144,7 +133,7 @@ index 2f4f522363..3a34abbcd6 100644
  
      if (whence == AVSEEK_SIZE)
          return s->filesize == UINT64_MAX ? AVERROR(ENOSYS) : s->filesize;
-@@ -2379,8 +2443,11 @@ static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int fo
+@@ -2257,8 +2317,11 @@ static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int fo
          return s->off;
      }
  
@@ -157,7 +146,7 @@ index 2f4f522363..3a34abbcd6 100644
          char *new_uri;
          new_uri = av_strdup(s->uri);
          if (!new_uri)
-@@ -2396,7 +2463,11 @@ static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int fo
+@@ -2274,7 +2337,11 @@ static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int fo
      /* try to reuse existing connection for small seeks */
      int short_seek = ffurl_get_short_seek(h);
      uint64_t old_read_pos = old_off + old_buf_size;
@@ -170,7 +159,7 @@ index 2f4f522363..3a34abbcd6 100644
          old_read_pos + short_seek >= s->range_end)
      {
          uint64_t remaining = s->range_end - old_read_pos;
-@@ -2405,15 +2476,8 @@ static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int fo
+@@ -2283,15 +2350,8 @@ static int64_t http_seek_internal(URLContext *h, int64_t off, int whence, int fo
          /* drain remaining data left on the wire from previous request */
          av_log(h, AV_LOG_DEBUG, "Soft-seeking to offset %"PRIu64" by draining "
                 "%"PRIu64" remaining byte(s)\n", s->off, remaining);

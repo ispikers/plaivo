@@ -26,7 +26,7 @@ esac
 
 cd "$work"
 git clone -q --depth 1 --branch "$FFMPEG" https://github.com/FFmpeg/FFmpeg ffmpeg
-git -C ffmpeg apply "$deps/ffmpeg-http-backport.patch" "$deps/ffmpeg-http-keepalive.patch"
+git -C ffmpeg apply "$deps/ffmpeg-http-keepalive.patch"
 git clone -q --depth 1 --branch "$MPV" https://github.com/mpv-player/mpv mpv
 git -C mpv apply "$deps/mpv-macos-embed.patch"
 git clone -q --depth 1 --branch "$LIBPLACEBO" --recurse-submodules=3rdparty --shallow-submodules \
