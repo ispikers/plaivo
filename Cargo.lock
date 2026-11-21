@@ -3693,7 +3693,6 @@ dependencies = [
  "plaivo-core",
  "qrcodegen",
  "raw-window-handle",
- "schannel",
  "serde",
  "serde_json",
  "smallvec",
