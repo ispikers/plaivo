@@ -266,11 +266,12 @@ impl Plaivo {
     }
 
     pub fn render_player(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let hide = !self.controls_shown() && window.is_window_active();
-        if hide != self.view.cursor_hidden {
-            self.view.cursor_hidden = hide;
+        let hide = !self.controls_shown();
+        let hide_cursor = hide && window.is_window_active();
+        if hide_cursor != self.view.cursor_hidden {
+            self.view.cursor_hidden = hide_cursor;
             if let Some(host) = &self.player.host {
-                host.set_cursor_hidden(hide);
+                host.set_cursor_hidden(hide_cursor);
             }
         }
         if !hide {
