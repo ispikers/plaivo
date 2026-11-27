@@ -7,12 +7,12 @@ use crate::ui::item_menu::Pick;
 use crate::ui::licenses::LICENSES;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    chip, danger_pill, icon, nav_row, overlay_button, pill, round_button, row, scrollbar, section,
-    stepper, toggle,
+    chip, danger_pill, drag_tracker, icon, nav_row, overlay_button, pill, round_button, row,
+    scrollbar, section, stepper, toggle,
 };
 use crate::{logging, plex, shaders};
 use gpui::{
-    AnyElement, Context, Div, FontWeight, MouseButton, MouseMoveEvent, SharedString, Stateful,
+    AnyElement, Context, Div, FontWeight, MouseButton, MouseUpEvent, SharedString, Stateful,
     Window, div, prelude::*, px,
 };
 
@@ -842,14 +842,18 @@ impl Plaivo {
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| this.set_density(d, cx)),
-                )
-                .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
-                    if ev.dragging() {
+                    cx.listener(move |this, _, _, cx| {
+                        this.view.density_drag = true;
                         this.set_density(d, cx);
-                    }
-                }))
+                        cx.notify();
+                    }),
+                )
         });
+        let end_drag =
+            |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
+                this.view.density_drag = false;
+                cx.notify();
+            };
         div()
             .flex()
             .flex_col()
@@ -891,7 +895,17 @@ impl Plaivo {
                             .rounded(px(2.))
                             .bg(theme::text()),
                     )
-                    .child(div().absolute().size_full().flex().children(zones)),
+                    .child(div().absolute().size_full().flex().children(zones))
+                    .on_mouse_up(MouseButton::Left, cx.listener(end_drag))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(end_drag))
+                    .when(self.view.density_drag, |d| {
+                        d.child(drag_tracker(cx.listener(|this, f: &f32, _, cx| {
+                            this.set_density(
+                                ((*f * DENSITY_MAX as f32) as u32 + 1).min(DENSITY_MAX),
+                                cx,
+                            )
+                        })))
+                    }),
             )
             .child(
                 div()

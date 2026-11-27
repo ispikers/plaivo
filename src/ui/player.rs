@@ -8,8 +8,8 @@ use crate::shaders;
 use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    bounds_probe, fmt_time, icon, list_with_scrollbar, pill, progress_bar, round_button,
-    scroll_handle, scrollbar, shadow, stepper, tip,
+    bounds_probe, drag_tracker, fmt_time, frac_in, icon, list_with_scrollbar, pill, progress_bar,
+    round_button, scroll_handle, scrollbar, shadow, stepper, tip,
 };
 use gpui::{
     Action, AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent,
@@ -175,11 +175,6 @@ fn panel_title(p: Panel) -> &'static str {
 }
 
 impl Plaivo {
-    fn frac_in(&self, x: f32, bounds: gpui::Bounds<gpui::Pixels>) -> f32 {
-        let w = f32::from(bounds.size.width).max(1.);
-        ((x - f32::from(bounds.origin.x)) / w).clamp(0., 1.)
-    }
-
     fn link(
         &self,
         id: impl Into<ElementId>,
@@ -230,7 +225,7 @@ impl Plaivo {
     fn end_seek_drag(&mut self, x: f32, cx: &mut Context<Self>) {
         self.view.seek_preview = None;
         if self.view.seek_drag.take().is_some() {
-            let t = self.frac_in(x, self.view.timeline) as f64 * self.player.duration;
+            let t = frac_in(x, self.view.timeline) as f64 * self.player.duration;
             self.jump_to(t);
             self.player.time = t;
             cx.notify();
@@ -465,23 +460,14 @@ impl Plaivo {
                     e1.update(cx, |this, _| this.view.timeline = b)
                 }))
                 .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                    let f = this.frac_in(f32::from(ev.position.x), this.view.timeline);
-                    this.view.timeline_hover = Some(f);
-                    if this.view.seek_drag.is_some() && ev.dragging() {
-                        this.view.seek_drag = Some(f);
-                        if this
-                            .view
-                            .seek_preview
-                            .is_none_or(|t| t.elapsed() >= SEEK_PREVIEW)
-                        {
-                            this.view.seek_preview = Some(Instant::now());
-                            this.preview_seek(f as f64 * this.player.duration);
-                        }
+                    if this.view.seek_drag.is_none() {
+                        this.view.timeline_hover =
+                            Some(frac_in(f32::from(ev.position.x), this.view.timeline));
+                        cx.notify();
                     }
-                    cx.notify();
                 }))
                 .on_hover(cx.listener(|this, h: &bool, _, cx| {
-                    if !h {
+                    if !h && this.view.seek_drag.is_none() {
                         this.view.timeline_hover = None;
                         cx.notify();
                     }
@@ -490,7 +476,7 @@ impl Plaivo {
                     MouseButton::Left,
                     cx.listener(|this, ev: &MouseDownEvent, _, cx| {
                         this.view.seek_drag =
-                            Some(this.frac_in(f32::from(ev.position.x), this.view.timeline));
+                            Some(frac_in(f32::from(ev.position.x), this.view.timeline));
                         cx.stop_propagation();
                         cx.notify();
                     }),
@@ -504,9 +490,25 @@ impl Plaivo {
                 .on_mouse_up_out(
                     MouseButton::Left,
                     cx.listener(|this, ev: &MouseUpEvent, _, cx| {
+                        this.view.timeline_hover = None;
                         this.end_seek_drag(f32::from(ev.position.x), cx)
                     }),
                 )
+                .when(self.view.seek_drag.is_some(), |d| {
+                    d.child(drag_tracker(cx.listener(|this, f: &f32, _, cx| {
+                        this.view.timeline_hover = Some(*f);
+                        this.view.seek_drag = Some(*f);
+                        if this
+                            .view
+                            .seek_preview
+                            .is_none_or(|t| t.elapsed() >= SEEK_PREVIEW)
+                        {
+                            this.view.seek_preview = Some(Instant::now());
+                            this.preview_seek(*f as f64 * this.player.duration);
+                        }
+                        cx.notify();
+                    })))
+                })
                 .child(
                     div()
                         .absolute()
@@ -592,25 +594,32 @@ impl Plaivo {
                     MouseButton::Left,
                     cx.listener(|this, ev: &MouseDownEvent, _, cx| {
                         this.view.volume_drag = true;
-                        let f = this.frac_in(f32::from(ev.position.x), this.view.volume);
+                        let f = frac_in(f32::from(ev.position.x), this.view.volume);
                         this.set_volume(f as f64 * 100.);
                         cx.stop_propagation();
+                        cx.notify();
                     }),
                 )
                 .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                    let f = this.frac_in(f32::from(ev.position.x), this.view.volume);
-                    this.view.volume_hover = Some(f);
-                    if this.view.volume_drag && ev.dragging() {
-                        this.set_volume(f as f64 * 100.);
+                    if !this.view.volume_drag {
+                        this.view.volume_hover =
+                            Some(frac_in(f32::from(ev.position.x), this.view.volume));
+                        cx.notify();
                     }
-                    cx.notify();
                 }))
                 .on_hover(cx.listener(|this, h: &bool, _, cx| {
-                    if !h {
+                    if !h && !this.view.volume_drag {
                         this.view.volume_hover = None;
                         cx.notify();
                     }
                 }))
+                .when(self.view.volume_drag, |d| {
+                    d.child(drag_tracker(cx.listener(|this, f: &f32, _, cx| {
+                        this.view.volume_hover = Some(*f);
+                        this.set_volume(*f as f64 * 100.);
+                        cx.notify();
+                    })))
+                })
                 .when_some(self.view.volume_hover, |d, h| {
                     d.child(hover_bubble(h, format!("{}%", (h * 100.).round())))
                 })
@@ -620,7 +629,10 @@ impl Plaivo {
                 )
                 .on_mouse_up_out(
                     MouseButton::Left,
-                    cx.listener(|this, _, _, cx| this.end_volume_drag(cx)),
+                    cx.listener(|this, _, _, cx| {
+                        this.view.volume_hover = None;
+                        this.end_volume_drag(cx)
+                    }),
                 )
         };
         let up_next = countdown.map(|(c, left)| self.render_countdown(c, left, hide, cx));

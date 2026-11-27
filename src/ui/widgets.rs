@@ -503,6 +503,26 @@ pub fn bounds_probe(
     .size_full()
 }
 
+pub fn frac_in(x: f32, bounds: Bounds<Pixels>) -> f32 {
+    let w = f32::from(bounds.size.width).max(1.);
+    ((x - f32::from(bounds.origin.x)) / w).clamp(0., 1.)
+}
+
+pub fn drag_tracker(on_move: impl Fn(&f32, &mut Window, &mut App) + 'static) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Capture && e.dragging() {
+                    on_move(&frac_in(f32::from(e.position.x), bounds), window, cx);
+                }
+            })
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 pub fn fmt_time(t: f64) -> String {
     let s = t.max(0.0) as u64;
     let (h, m, sec) = (s / 3600, s % 3600 / 60, s % 60);

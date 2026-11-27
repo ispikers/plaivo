@@ -294,6 +294,7 @@ pub struct ViewState {
     pub volume: Bounds<Pixels>,
     pub volume_drag: bool,
     pub volume_hover: Option<f32>,
+    pub density_drag: bool,
     pub volume_wheel: f32,
     pub shelf_hover: Option<ShelfKey>,
     pub shelf_arrow_hover: Option<ShelfKey>,
