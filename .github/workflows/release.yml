@@ -17,7 +17,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-dotnet@v5
         with:
@@ -27,6 +27,11 @@ jobs:
         run: dotnet tool install --global vpk --version "$(sed -n 's/^velopack = "=\(.*\)"/\1/p' Cargo.toml)"
       - run: cargo run -p xtask -- libmpv
       - run: cargo fetch
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets
+        env:
+          CARGO_BUILD_WARNINGS: deny
+      - run: cargo test --workspace
       - name: Fetch the previous release for delta updates
         shell: bash
         run: vpk download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --channel win --outputDir target/velopack --token "${{ github.token }}" || echo "No published release to diff against"
