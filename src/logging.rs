@@ -113,9 +113,6 @@ pub fn set_debug(debug: bool) {
 
 pub fn init(debug: bool) {
     let level = default_level(debug);
-    for old in ["plaivo.log", "plaivo.old.log"] {
-        let _ = std::fs::remove_file(log_dir().join(old));
-    }
     let logger = Logger {
         console: cfg!(debug_assertions),
     };

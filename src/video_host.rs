@@ -25,7 +25,7 @@ mod imp {
     use windows_sys::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
     static SHOWN: AtomicBool = AtomicBool::new(false);
@@ -84,18 +84,14 @@ mod imp {
 
         pub fn set_visible(&self, on: bool) {
             SHOWN.store(on, Ordering::Relaxed);
-            unsafe {
-                if on {
-                    place(self.app, self.host);
-                    ShowWindow(self.host, SW_SHOWNA);
-                } else {
-                    ShowWindow(self.host, SW_HIDE);
-                }
+            if on {
+                place(self.app, self.host);
             }
+            unsafe { ShowWindow(self.host, if on { SW_SHOWNA } else { SW_HIDE }) };
         }
 
         pub fn sync(&self) {
-            unsafe { place(self.app, self.host) };
+            place(self.app, self.host);
         }
 
         pub fn set_region(&self, region: Option<Region>) {
@@ -115,36 +111,43 @@ mod imp {
         }
     }
 
+    impl Drop for VideoHost {
+        fn drop(&mut self) {
+            unsafe {
+                RemoveWindowSubclass(self.app, Some(follow), 1);
+                DestroyWindow(self.host);
+            }
+        }
+    }
+
     pub fn hide_window(raw: RawWindowHandle) {
         if let RawWindowHandle::Win32(h) = raw {
             unsafe { ShowWindow(h.hwnd.get() as HWND, SW_HIDE) };
         }
     }
 
-    unsafe fn place(app: HWND, host: HWND) {
-        unsafe {
-            let mut rc = RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            };
-            GetClientRect(app, &mut rc);
-            let (x, y, w, h) = match *REGION.lock().unwrap() {
-                None => (0, 0, rc.right, rc.bottom),
-                Some(r) => {
-                    let k = GetDpiForWindow(app) as f32 / 96.0;
-                    let px = |v: f32| (v * k).round() as i32;
-                    (
-                        px(r.x),
-                        rc.bottom - px(r.bottom) - px(r.h),
-                        px(r.w),
-                        px(r.h),
-                    )
-                }
-            };
-            SetWindowPos(host, HWND_BOTTOM, x, y, w.max(1), h.max(1), SWP_NOACTIVATE);
-        }
+    fn place(app: HWND, host: HWND) {
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        unsafe { GetClientRect(app, &mut rc) };
+        let (x, y, w, h) = match *REGION.lock().unwrap() {
+            None => (0, 0, rc.right, rc.bottom),
+            Some(r) => {
+                let k = unsafe { GetDpiForWindow(app) } as f32 / 96.0;
+                let px = |v: f32| (v * k).round() as i32;
+                (
+                    px(r.x),
+                    rc.bottom - px(r.bottom) - px(r.h),
+                    px(r.w),
+                    px(r.h),
+                )
+            }
+        };
+        unsafe { SetWindowPos(host, HWND_BOTTOM, x, y, w.max(1), h.max(1), SWP_NOACTIVATE) };
     }
 
     unsafe extern "system" fn follow(
@@ -187,6 +190,7 @@ mod imp {
     // mpv's Metal layer lives here (deps/mpv-macos-embed.patch adds --wid to macvk), below GPUI's transparent view.
     pub struct VideoHost {
         view: Retained<NSView>,
+        backdrop: Retained<NSBox>,
         cursor_hidden: Cell<bool>,
     }
 
@@ -223,6 +227,7 @@ mod imp {
             );
             let host = Self {
                 view,
+                backdrop,
                 cursor_hidden: Cell::new(false),
             };
             host.set_region(None);
@@ -282,6 +287,13 @@ mod imp {
                 0,
                 mtm,
             ) == window.windowNumber()
+        }
+    }
+
+    impl Drop for VideoHost {
+        fn drop(&mut self) {
+            self.view.removeFromSuperview();
+            self.backdrop.removeFromSuperview();
         }
     }
 }

@@ -112,7 +112,7 @@ impl Plaivo {
         let r = &d.rule;
         let libraries = self.library_card(
             &r.libraries,
-            |this, id, cx| this.edit_playback_rule(|d| toggle(&mut d.rule.libraries, &id), cx),
+            |this, id, cx| this.edit_playback_rule(|d| toggle(&mut d.rule.libraries, id), cx),
             cx,
         );
         let label = |choices: Vec<Choice>| {

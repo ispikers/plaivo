@@ -118,7 +118,9 @@ impl Plaivo {
                             part.stream.push(st.clone());
                         }
                         this.add_external_subtitle(url, st.display_title.clone(), st.language_code.clone());
-                        this.player.panel = None;
+                        if this.player.panel == Some(Panel::SubtitleSearch) {
+                            this.player.panel = None;
+                        }
                         this.toast("Subtitle added", cx);
                     }
                     Ok(None) => this.toast("Plex is still fetching the subtitle. It will be listed next time you play this.", cx),
@@ -137,7 +139,7 @@ impl Plaivo {
         let vh = f32::from(window.viewport_size().height);
         let scroll = scroll_handle("sub-results", window, cx);
         let s = &self.player.sub_search;
-        let current = s.language.clone();
+        let current = s.language.as_str();
         let preferred = two_letter(self.preferred_subtitle_language());
         let mut codes: Vec<&'static str> = preferred
             .into_iter()
@@ -163,7 +165,7 @@ impl Plaivo {
                 )
             }),
         );
-        let downloading = s.downloading.clone();
+        let downloading = &s.downloading;
         let body = match &s.results {
             None => div()
                 .p(px(16.))

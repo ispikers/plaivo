@@ -227,6 +227,7 @@ mod imp {
         subtitle: Retained<NSString>,
         artwork: Option<Retained<AnyObject>>,
         state: State,
+        has_item: bool,
     }
 
     impl Session {
@@ -275,6 +276,7 @@ mod imp {
                     subtitle: NSString::new(),
                     artwork: None,
                     state: State::default(),
+                    has_item: false,
                 })
             }
         }
@@ -283,6 +285,7 @@ mod imp {
             self.title = NSString::from_str(title);
             self.subtitle = NSString::from_str(subtitle);
             self.artwork = None;
+            self.has_item = true;
             self.set_transport_enabled(true);
             self.publish();
         }
@@ -296,6 +299,9 @@ mod imp {
         }
 
         pub fn set_artwork(&mut self, art: Artwork) {
+            if !self.has_item {
+                return;
+            }
             self.artwork = autoreleasepool(|_| unsafe {
                 let data: *mut AnyObject = msg_send![
                     class(c"NSData"),
@@ -317,6 +323,9 @@ mod imp {
 
         pub fn set_state(&mut self, s: &State) {
             self.state = *s;
+            if !self.has_item {
+                return;
+            }
             unsafe {
                 let _: () = msg_send![self.next, setEnabled: s.next];
                 let _: () = msg_send![self.previous, setEnabled: s.previous];
@@ -325,6 +334,7 @@ mod imp {
         }
 
         pub fn clear(&mut self) {
+            self.has_item = false;
             unsafe {
                 let center: *mut AnyObject =
                     msg_send![class(c"MPNowPlayingInfoCenter"), defaultCenter];

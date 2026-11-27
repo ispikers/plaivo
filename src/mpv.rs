@@ -74,16 +74,16 @@ pub fn preload() {
 
 fn api() -> Result<&'static Api, String> {
     static API: OnceLock<Result<Api, String>> = OnceLock::new();
-    API.get_or_init(|| unsafe {
+    API.get_or_init(|| {
         let path = std::env::current_exe()
             .map_err(|e| format!("libmpv: {e}"))?
             .with_file_name(LIB_NAME);
-        let lib =
-            libloading::Library::new(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let lib = unsafe { libloading::Library::new(&path) }
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         let lib: &'static libloading::Library = Box::leak(Box::new(lib));
         macro_rules! sym {
             ($n:literal) => {
-                *lib.get(concat!($n, "\0").as_bytes())
+                *unsafe { lib.get(concat!($n, "\0").as_bytes()) }
                     .map_err(|e| format!("{}: {e}", $n))?
             };
         }
@@ -207,7 +207,7 @@ fn cstr(s: &str) -> CString {
 impl Mpv {
     pub fn new(
         options: &[(&str, &str)],
-        on_event: impl Fn(Event) + Send + 'static,
+        on_event: impl FnMut(Event) + Send + 'static,
     ) -> Result<Self, String> {
         let api = api()?;
         let h = unsafe { (api.create)() };
@@ -220,7 +220,10 @@ impl Mpv {
             cache: Mutex::default(),
         });
         for (k, v) in options {
-            unsafe { (api.set_option_string)(h, cstr(k).as_ptr(), cstr(v).as_ptr()) };
+            let rc = unsafe { (api.set_option_string)(h, cstr(k).as_ptr(), cstr(v).as_ptr()) };
+            if rc < 0 {
+                log::warn!("mpv option {k}={v}: {}", error_string(api, rc));
+            }
         }
         log::info!("mpv: initializing with {} option(s)", options.len());
         let rc = unsafe { (api.initialize)(h) };
@@ -296,7 +299,7 @@ fn error_string(api: &Api, rc: c_int) -> String {
     }
 }
 
-fn event_loop(ctx: Arc<Ctx>, on_event: impl Fn(Event)) {
+fn event_loop(ctx: Arc<Ctx>, mut on_event: impl FnMut(Event)) {
     loop {
         let e = unsafe { &*(ctx.api.wait_event)(ctx.h, -1.0) };
         match e.id {

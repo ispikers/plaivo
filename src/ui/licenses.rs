@@ -33,7 +33,7 @@ impl Plaivo {
                                         .bg(theme::surface())
                                         .text_size(px(13.))
                                         .text_color(theme::text())
-                                        .child(reflow(text))
+                                        .child(text)
                                 })),
                         ),
                 )
@@ -114,27 +114,6 @@ pub fn header(title: &'static str, detail: SharedString, cx: &mut Context<Plaivo
         )
 }
 
-const WRAPPED: usize = 60;
-
-fn reflow(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut previous = 0;
-    for line in text.lines() {
-        let continues = previous >= WRAPPED && !line.trim().is_empty() && !line.starts_with("  ");
-        if continues {
-            out.push(' ');
-            out.push_str(line.trim_start());
-        } else {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(line);
-        }
-        previous = line.trim_end().len();
-    }
-    out
-}
-
 fn subtitle(l: &License) -> SharedString {
     if l.version.is_empty() {
         l.license.into()
@@ -146,15 +125,6 @@ fn subtitle(l: &License) -> SharedString {
 #[cfg(test)]
 mod tests {
     use super::LICENSES;
-
-    #[test]
-    fn hard_wrapped_paragraphs_reflow() {
-        let text = "This license, the Lesser General Public License, applies to some specially designated\nsoftware packages and is short.\n\n  a) An indented list item that is quite long and keeps going past sixty chars\n     continued item.\nShort line\nnext";
-        assert_eq!(
-            super::reflow(text),
-            "This license, the Lesser General Public License, applies to some specially designated software packages and is short.\n\n  a) An indented list item that is quite long and keeps going past sixty chars\n     continued item.\nShort line\nnext"
-        );
-    }
 
     #[test]
     fn license_list_matches_cargo_tree() {
@@ -195,6 +165,7 @@ mod tests {
         let text = |i: usize| LICENSES[i].parts().collect::<String>();
         assert!(LICENSES[0].name == "libmpv" && text(0).contains("Version 2.1, February 1999"));
         assert!(LICENSES[1].name == "FFmpeg" && text(1).contains("Version 2.1, February 1999"));
+        assert!(text(0).contains("applies to some specially designated software packages--typically libraries--of the Free"));
         assert!(
             LICENSES
                 .iter()

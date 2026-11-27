@@ -121,8 +121,9 @@ pub fn write_licenses(manifest: Option<&str>) {
         let parts: Vec<String> = texts
             .iter()
             .map(|t| {
+                let t = reflow(t);
                 let (a, b) = *spans.entry(t.clone()).or_insert_with(|| {
-                    blob.push_str(t);
+                    blob.push_str(&t);
                     (blob.len() - t.len(), blob.len())
                 });
                 format!("({a}, {b})")
@@ -310,6 +311,27 @@ fn read_license(f: &Path) -> Option<String> {
             .map(|t| normalize(&t));
     }
     (!text.is_empty()).then_some(text)
+}
+
+const WRAPPED: usize = 60;
+
+fn reflow(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut previous = 0;
+    for line in text.lines() {
+        let continues = previous >= WRAPPED && !line.trim().is_empty() && !line.starts_with("  ");
+        if continues {
+            out.push(' ');
+            out.push_str(line.trim_start());
+        } else {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(line);
+        }
+        previous = line.trim_end().len();
+    }
+    out
 }
 
 fn normalize(text: &str) -> String {

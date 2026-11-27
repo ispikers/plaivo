@@ -236,12 +236,14 @@ impl Plaivo {
                                cx: &mut Context<Self>| {
                 this.edit_rule(
                     |d| {
-                        (if subtitles {
+                        let list = if subtitles {
                             &mut d.rule.subtitles
                         } else {
                             &mut d.rule.audio
-                        })
-                        .remove(i);
+                        };
+                        if i < list.len() {
+                            list.remove(i);
+                        }
                     },
                     cx,
                 )
@@ -347,12 +349,8 @@ impl Plaivo {
                 )
                 .child(scrollbar(&scroll))
         });
-        let (title, hint) = if subtitles {
-            ("Subtitles", "The first language the video has is used")
-        } else {
-            ("Audio", "The first language the video has is used")
-        };
-        card(title, hint)
+        let title = if subtitles { "Subtitles" } else { "Audio" };
+        card(title, "The first language the video has is used")
             .when(list.is_empty(), |c| {
                 c.child(
                     div()
@@ -399,7 +397,7 @@ impl Plaivo {
         let r = &d.rule;
         let libraries = self.library_card(
             &r.libraries,
-            |this, id, cx| this.edit_rule(|d| toggle(&mut d.rule.libraries, &id), cx),
+            |this, id, cx| this.edit_rule(|d| toggle(&mut d.rule.libraries, id), cx),
             cx,
         );
         let modes = SubtitleMode::ALL.into_iter().map(|m| {
@@ -421,7 +419,7 @@ impl Plaivo {
     pub fn library_card(
         &self,
         selected: &[String],
-        on_toggle: fn(&mut Self, String, &mut Context<Self>),
+        on_toggle: fn(&mut Self, &str, &mut Context<Self>),
         cx: &mut Context<Self>,
     ) -> Div {
         let multi = self.servers.len() > 1;
@@ -451,9 +449,8 @@ impl Plaivo {
                 let id = library_key(&s.server, &s.key);
                 let on = selected.contains(&id);
                 libraries = libraries.child(
-                    check_row(("rule-library", i), s.title.clone(), on).on_click(
-                        cx.listener(move |this, _, _, cx| on_toggle(this, id.clone(), cx)),
-                    ),
+                    check_row(("rule-library", i), s.title.clone(), on)
+                        .on_click(cx.listener(move |this, _, _, cx| on_toggle(this, &id, cx))),
                 );
             }
         }

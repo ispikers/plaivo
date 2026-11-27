@@ -2,7 +2,6 @@ use crate::app::Plaivo;
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui::{Context, SharedString};
-use std::sync::OnceLock;
 use std::time::Duration;
 use velopack::sources::HttpSource;
 use velopack::{UpdateCheck, UpdateInfo, UpdateManager, VelopackApp};
@@ -12,15 +11,13 @@ const REPO: &str = "https://github.com/ispikers/plaivo";
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 
-static RESTARTED_INTO: OnceLock<String> = OnceLock::new();
-
 // Velopack's hooks exit the process; a normal launch returns.
-pub fn run_installer_hooks() {
+pub fn run_installer_hooks() -> Option<String> {
+    let mut restarted_into = None;
     VelopackApp::build()
-        .on_restarted(|v| {
-            let _ = RESTARTED_INTO.set(v.to_string());
-        })
+        .on_restarted(|v| restarted_into = Some(v.to_string()))
         .run();
+    restarted_into
 }
 
 pub enum Status {
@@ -56,14 +53,6 @@ pub fn notes_url(info: &UpdateInfo) -> String {
 
 impl Update {
     pub fn start(cx: &mut Context<Plaivo>) -> Self {
-        if let Some(v) = RESTARTED_INTO.get() {
-            let msg = format!("Updated to Plaivo {v}");
-            cx.spawn(async move |this, cx| {
-                this.update(cx, |this, cx| this.toast(msg, cx)).ok();
-            })
-            .detach();
-        }
-
         let (tx, mut rx) = unbounded();
         cx.spawn(async move |this, cx| {
             while let Some(ev) = rx.next().await {
@@ -161,15 +150,16 @@ impl Plaivo {
         let tx = u.tx.clone();
         std::thread::spawn(move || {
             let (progress, pct) = std::sync::mpsc::channel::<i16>();
-            let forward = tx.clone();
-            std::thread::spawn(move || {
-                for p in pct {
-                    let _ = forward.unbounded_send(Event::Progress(p.clamp(0, 100) as u8));
-                }
+            let done = std::thread::scope(|s| {
+                s.spawn(|| {
+                    for p in pct {
+                        let _ = tx.unbounded_send(Event::Progress(p.clamp(0, 100) as u8));
+                    }
+                });
+                manager
+                    .download_updates(&info, Some(progress))
+                    .map_err(|e| e.to_string())
             });
-            let done = manager
-                .download_updates(&info, Some(progress))
-                .map_err(|e| e.to_string());
             let _ = tx.unbounded_send(Event::Downloaded(info, done));
         });
         cx.notify();

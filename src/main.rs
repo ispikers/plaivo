@@ -21,10 +21,13 @@ use plaivo_core::{downloads, plex, prefs, settings, store};
 use std::sync::Arc;
 
 fn main() {
-    update::run_installer_hooks();
+    let restarted_into = update::run_installer_hooks();
+    logging::init(false);
     store::apply_pending_reset();
     let settings = settings::Settings::load();
-    logging::init(settings.debug_logging);
+    if settings.debug_logging {
+        logging::set_debug(true);
+    }
     let account = plaivo_core::Account::load();
     let client = plex::Client::new(account.client_id.clone());
     let queue = Arc::new(images::Queue::default());
@@ -62,6 +65,15 @@ fn main() {
                     cx.new(|cx| ui::shell::Root::new(app, cx))
                 })
                 .expect("open window");
+            if let Some(v) = restarted_into {
+                window
+                    .update(cx, |root, _, cx| {
+                        root.app.update(cx, |app, cx| {
+                            app.toast(format!("Updated to Plaivo {v}"), cx)
+                        })
+                    })
+                    .ok();
+            }
             if cfg!(debug_assertions)
                 && let Some(url) = std::env::args().nth(1)
             {

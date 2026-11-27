@@ -6,6 +6,7 @@ use gpui::{
     ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
     fill, point, prelude::*, px, relative, size,
 };
+use std::collections::VecDeque;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -62,7 +63,7 @@ struct Snapshot {
 
 #[derive(Default)]
 struct History {
-    undo: Vec<Snapshot>,
+    undo: VecDeque<Snapshot>,
     redo: Vec<Snapshot>,
     last: Option<(EditKind, usize)>,
 }
@@ -86,9 +87,9 @@ impl History {
             _ => false,
         };
         if !continues {
-            self.undo.push(before);
+            self.undo.push_back(before);
             if self.undo.len() > Self::LIMIT {
-                self.undo.remove(0);
+                self.undo.pop_front();
             }
         }
         self.redo.clear();
@@ -166,7 +167,7 @@ impl TextInput {
     }
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(previous) = self.history.undo.pop() {
+        if let Some(previous) = self.history.undo.pop_back() {
             self.history.redo.push(self.snapshot());
             self.restore(previous, cx);
         }
@@ -174,7 +175,7 @@ impl TextInput {
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(next) = self.history.redo.pop() {
-            self.history.undo.push(self.snapshot());
+            self.history.undo.push_back(self.snapshot());
             self.restore(next, cx);
         }
     }
@@ -542,6 +543,9 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
+        if self.masked {
+            return None;
+        }
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
         Some(self.content[range].to_string())
@@ -569,8 +573,10 @@ impl EntityInputHandler for TextInput {
             .map(|range| self.range_to_utf16(range))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.marked_range = None;
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.marked_range.take().is_some() {
+            self.changed(cx);
+        }
     }
 
     fn replace_text_in_range(
@@ -585,6 +591,9 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        if self.marked_range.is_none() && range.is_empty() && new_text.is_empty() {
+            return;
+        }
         // A composition was recorded when it started, so committing it isn't a step of its own.
         if self.marked_range.is_none() {
             let kind =
@@ -620,7 +629,7 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
-        if self.marked_range.is_none() {
+        if self.marked_range.is_none() && !(range.is_empty() && new_text.is_empty()) {
             let before = self.snapshot();
             self.history.record(
                 before,
@@ -834,15 +843,16 @@ impl Element for TextElement {
             if let Some(selection) = prepaint.selection.take() {
                 window.paint_quad(selection)
             }
-            line.paint(
+            if let Err(e) = line.paint(
                 point(bounds.left() - scroll_x, bounds.top()),
                 window.line_height(),
                 gpui::TextAlign::Left,
                 None,
                 window,
                 cx,
-            )
-            .unwrap();
+            ) {
+                log::debug!("text input paint failed: {e}");
+            }
             if focus.is_focused(window)
                 && let Some(cursor) = prepaint.cursor.take()
             {
