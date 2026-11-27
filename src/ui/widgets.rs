@@ -4,11 +4,13 @@ use crate::ui::theme::{self, Icon};
 use gpui::{
     AnyElement, App, Bounds, BoxShadow, ClickEvent, Context, DispatchPhase, Div, ElementId,
     FontWeight, HitboxBehavior, Hsla, Img, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, Pixels, ScrollHandle, SharedString, Stateful, Svg,
-    UniformListScrollHandle, Window, canvas, div, fill, img, point, prelude::*, px, rgb, size, svg,
+    MouseUpEvent, ObjectFit, Pixels, ScrollDelta, ScrollEvent, ScrollHandle, SharedString,
+    Stateful, Svg, UniformListScrollHandle, Window, canvas, div, fill, img, point, prelude::*, px,
+    rgb, size, svg,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 pub trait NoContextMenu: InteractiveElement + Sized {
     fn no_context_menu(self) -> Self {
@@ -217,8 +219,109 @@ struct ScrollDrag {
     max: f32,
 }
 
+struct Glide {
+    handle: ScrollHandle,
+    to: f32,
+    last: f32,
+    tick: Instant,
+}
+
 thread_local! {
     static SCROLL_DRAG: RefCell<Option<ScrollDrag>> = const { RefCell::new(None) };
+    static GLIDE: RefCell<Option<Glide>> = const { RefCell::new(None) };
+}
+
+const GLIDE_TAU: Duration = Duration::from_millis(60);
+
+const PX_PER_LINE: f32 = 100. / 3.;
+
+fn notch_px(delta: &ScrollDelta) -> Option<f32> {
+    match delta {
+        ScrollDelta::Lines(d) if d.y.abs() > d.x.abs() && notch_sized(d.y) => {
+            Some(d.y * PX_PER_LINE)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn notch_sized(lines: f32) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETWHEELSCROLLLINES, SystemParametersInfoW,
+    };
+    let mut per_notch: u32 = 3;
+    unsafe { SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, (&raw mut per_notch).cast(), 0) };
+    lines.abs() >= per_notch.max(1) as f32
+}
+
+#[cfg(not(windows))]
+fn notch_sized(_: f32) -> bool {
+    true
+}
+
+fn set_y(handle: &ScrollHandle, y: f32) {
+    handle.set_offset(point(handle.offset().x, px(y)));
+}
+
+fn gliding(handle: &ScrollHandle) -> bool {
+    GLIDE.with(|g| {
+        g.borrow()
+            .as_ref()
+            .is_some_and(|s| s.handle.bounds() == handle.bounds())
+    })
+}
+
+fn start_glide(handle: &ScrollHandle, before: f32, notch: Option<f32>) {
+    let after = f32::from(handle.offset().y);
+    if after == before {
+        return;
+    }
+    let delta = notch.unwrap_or(after - before);
+    let max = f32::from(handle.max_offset().y);
+    GLIDE.with(|g| {
+        let mut g = g.borrow_mut();
+        match g.as_mut() {
+            Some(s) if s.handle.bounds() == handle.bounds() && s.last == before => {
+                s.to = (s.to + delta).clamp(-max, 0.);
+            }
+            _ => {
+                if let Some(other) = g.take() {
+                    set_y(&other.handle, other.to);
+                }
+                *g = Some(Glide {
+                    handle: handle.clone(),
+                    to: (before + delta).clamp(-max, 0.),
+                    last: before,
+                    tick: Instant::now(),
+                });
+            }
+        }
+    });
+    set_y(handle, before);
+}
+
+fn step_glide(handle: &ScrollHandle) {
+    GLIDE.with(|g| {
+        let mut g = g.borrow_mut();
+        let Some(s) = g.as_mut().filter(|s| s.handle.bounds() == handle.bounds()) else {
+            return;
+        };
+        if f32::from(handle.offset().y) != s.last {
+            *g = None;
+            return;
+        }
+        let now = Instant::now();
+        let dt = now.duration_since(s.tick).as_secs_f32();
+        s.tick = now;
+        s.last += (s.to - s.last) * (1. - (-dt / GLIDE_TAU.as_secs_f32()).exp());
+        if (s.to - s.last).abs() < 0.5 {
+            s.last = s.to;
+        }
+        set_y(handle, s.last);
+        if s.last == s.to {
+            *g = None;
+        }
+    });
 }
 
 const SCROLLBAR_W: f32 = 6.;
@@ -227,6 +330,7 @@ const SCROLLBAR_MIN_THUMB: f32 = 40.;
 const SCROLLBAR_INSET: f32 = 10.;
 
 pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
+    step_glide(handle);
     let handle = handle.clone();
     let area = handle.clone();
     canvas(
@@ -268,6 +372,21 @@ pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
                 fill(thumb, theme::tint(if dragging { 0.5 } else { 0.25 }))
                     .corner_radii(px(SCROLLBAR_W / 2.)),
             );
+            if gliding(&handle) {
+                window.request_animation_frame();
+            }
+            let wheel = handle.clone();
+            window.on_mouse_event(move |e: &ScrollEvent, phase, _, cx| {
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                let notch = notch_px(&e.delta);
+                if notch.is_some() || gliding(&wheel) {
+                    let before = f32::from(wheel.offset().y);
+                    let wheel = wheel.clone();
+                    cx.defer(move |_| start_glide(&wheel, before, notch));
+                }
+            });
             let down = handle.clone();
             window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble
