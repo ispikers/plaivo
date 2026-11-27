@@ -2,8 +2,9 @@ use super::clock::{Clock, Pong};
 use super::follow::{PlayerCommand, PlayerFeed};
 use super::media::Media;
 use super::party::{Connection, Event, Output, Party, PartyError, PartyState, Request};
-use super::protocol::{ClientMsg, Control, Match, ServerMsg, parse};
+use super::protocol::{ClientMsg, Control, ErrorCode, Match, MsgType, ServerMsg, parse};
 use super::relays::{Relay, Relays, fetch_list};
+use std::error::Error;
 use std::hash::{BuildHasher, RandomState};
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -58,18 +59,18 @@ enum Cmd {
 }
 
 impl Cmd {
-    fn wire_type(&self) -> Option<&'static str> {
+    fn wire_type(&self) -> Option<MsgType> {
         Some(match self {
-            Cmd::Play => "play",
-            Cmd::Pause => "pause",
-            Cmd::Seek(_) => "seek",
-            Cmd::Rate(_) => "rate",
-            Cmd::SetMedia(..) => "setMedia",
-            Cmd::Control(_) => "setControl",
-            Cmd::TransferHost(_) => "transferHost",
-            Cmd::Kick(_) => "kick",
-            Cmd::Lock(_) => "lock",
-            Cmd::End => "end",
+            Cmd::Play => MsgType::Play,
+            Cmd::Pause => MsgType::Pause,
+            Cmd::Seek(_) => MsgType::Seek,
+            Cmd::Rate(_) => MsgType::Rate,
+            Cmd::SetMedia(..) => MsgType::SetMedia,
+            Cmd::Control(_) => MsgType::SetControl,
+            Cmd::TransferHost(_) => MsgType::TransferHost,
+            Cmd::Kick(_) => MsgType::Kick,
+            Cmd::Lock(_) => MsgType::Lock,
+            Cmd::End => MsgType::End,
             _ => return None,
         })
     }
@@ -93,7 +94,7 @@ impl WatchTogether {
         let alive = Arc::new(AtomicBool::new(true));
         let gate = alive.clone();
         let notify = move |u| {
-            if gate.load(Ordering::Acquire) {
+            if gate.load(Ordering::Relaxed) {
                 notify(u)
             }
         };
@@ -119,7 +120,7 @@ impl WatchTogether {
                 io.run();
                 drop(done_tx);
             })
-            .map_err(|_| PartyError::local("unreachable"))?;
+            .map_err(|_| PartyError::local(ErrorCode::Unreachable))?;
         Ok(Self {
             tx,
             alive,
@@ -203,7 +204,7 @@ impl WatchTogether {
 
 impl Drop for WatchTogether {
     fn drop(&mut self) {
-        self.alive.store(false, Ordering::Release);
+        self.alive.store(false, Ordering::Relaxed);
         self.send(Cmd::Shutdown);
         if self.done.recv_timeout(SHUTDOWN_WAIT) == Err(RecvTimeoutError::Disconnected)
             && let Some(thread) = self.thread.take()
@@ -229,10 +230,11 @@ struct Io {
     refreshing: bool,
     last_refresh: Option<i64>,
     published: PartyState,
+    shutdown_by: Option<i64>,
 }
 
 impl Io {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         party: Party,
         relays: Relays,
@@ -259,6 +261,7 @@ impl Io {
             refreshing: false,
             last_refresh: None,
             published: PartyState::default(),
+            shutdown_by: None,
         }
     }
 
@@ -279,7 +282,8 @@ impl Io {
                     }
                     Ok(_) => {}
                     Err(e) if would_block(&e) => {}
-                    Err(_) => {
+                    Err(e) => {
+                        log::debug!("watch together: socket dropped: {e}");
                         self.ws = None;
                         self.party.on_drop(now, None);
                     }
@@ -296,20 +300,24 @@ impl Io {
             let mut cmds: Vec<Cmd> = first.into_iter().collect();
             cmds.extend(self.rx.try_iter());
             for cmd in cmds {
-                if !self.handle(cmd) {
-                    self.flush();
-                    return;
-                }
+                self.handle(cmd);
             }
             let now = self.now();
             self.party.tick(now);
             self.flush();
+            if self
+                .shutdown_by
+                .is_some_and(|t| self.ws.is_none() || !self.party.cancelling() || now >= t)
+            {
+                return;
+            }
         }
     }
 
-    fn handle(&mut self, cmd: Cmd) -> bool {
+    fn handle(&mut self, cmd: Cmd) {
         let now = self.now();
         let re = cmd.wire_type();
+        let starting = matches!(cmd, Cmd::Create | Cmd::Join(..));
         let result = match cmd {
             Cmd::Create => self.party.start(Request::Create, now).map(|_| {
                 let urls: Vec<String> = self.relays.list.iter().map(|r| r.url.clone()).collect();
@@ -385,21 +393,21 @@ impl Io {
             }
             Cmd::Shutdown => {
                 self.party.leave();
-                return false;
+                self.shutdown_by = Some(now + SHUTDOWN_WAIT.as_millis() as i64);
+                Ok(())
             }
         };
         if let Err(mut e) = result {
             if e.re.is_none() {
-                e.re = re.map(Into::into);
+                e.re = re;
             }
-            let event = if matches!(e.code.as_str(), "invalid_code" | "already_in_room") {
+            let event = if starting {
                 Event::Failed(e)
             } else {
                 Event::Error(e)
             };
             self.event(event);
         }
-        true
     }
 
     fn flush(&mut self) {
@@ -415,6 +423,7 @@ impl Io {
                         if let Err(e) = ws.send(Message::text(text))
                             && !would_block(&e)
                         {
+                            log::debug!("watch together: send failed: {e}");
                             self.ws = None;
                             let now = self.now();
                             self.party.on_drop(now, None);
@@ -475,19 +484,19 @@ impl Io {
         }
         match self.relays.relay_for(&code).map(|r| r.url.clone()) {
             Some(url) => self.connect(vec![url], false),
-            None => self.party.fail(PartyError::local("room_not_found")),
+            None => self.party.fail(PartyError::local(ErrorCode::RoomNotFound)),
         }
     }
 
     fn refused(&mut self, err: PartyError) {
-        let next = match (self.party.request().cloned(), err.code.as_str()) {
-            (Some(Request::Create), "relay_full") => self
+        let next = match (self.party.request().cloned(), &err.code) {
+            (Some(Request::Create), ErrorCode::RelayFull) => self
                 .relays
                 .list
                 .iter()
-                .map(|r| r.url.clone())
-                .find(|u| !self.party.tried().contains(u)),
-            (Some(Request::Join { code, .. }), "room_not_found") if !self.refreshed => {
+                .find(|r| !self.party.tried().contains(&r.url))
+                .map(|r| r.url.clone()),
+            (Some(Request::Join { code, .. }), ErrorCode::RoomNotFound) if !self.refreshed => {
                 self.refresh_now();
                 self.relays
                     .relay_for(&code)
@@ -536,14 +545,17 @@ impl Io {
 fn spawn_open(url: String, generation: u64, race: bool, base: Instant, tx: Sender<Cmd>) {
     std::thread::spawn(move || {
         let deadline = base.elapsed().as_millis() as i64 + OPEN_TIMEOUT.as_millis() as i64;
-        let opened = open(&url).and_then(|mut ws| {
-            let clock = if race {
-                Some(first_sample(&mut ws, base, deadline)?)
-            } else {
-                None
-            };
-            Some((ws, clock))
-        });
+        let opened = open(&url)
+            .inspect_err(|e| log::debug!("watch together: open {url} failed: {e}"))
+            .ok()
+            .and_then(|mut ws| {
+                let clock = if race {
+                    Some(first_sample(&mut ws, base, deadline)?)
+                } else {
+                    None
+                };
+                Some((ws, clock))
+            });
         let _ = tx.send(match opened {
             Some((ws, clock)) => Cmd::Opened(generation, url, Box::new(ws), clock),
             None => Cmd::OpenFailed(generation),
@@ -563,8 +575,11 @@ fn would_block(e: &tungstenite::Error) -> bool {
     matches!(e, tungstenite::Error::Io(io) if matches!(io.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut))
 }
 
-fn open(url: &str) -> Option<Socket> {
-    let authority = url.split_once("://")?.1.split('/').next()?;
+fn open(url: &str) -> Result<Socket, Box<dyn Error>> {
+    let authority = url
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split('/').next())
+        .ok_or("bad relay url")?;
     let has_port = authority
         .rfind(':')
         .is_some_and(|i| !authority[i..].contains(']'));
@@ -580,24 +595,29 @@ fn open(url: &str) -> Option<Socket> {
             .checked_duration_since(Instant::now())
             .filter(|d| !d.is_zero())
     };
+    let mut failure: Box<dyn Error> = "no reachable address".into();
     let tcp = address
-        .to_socket_addrs()
-        .ok()?
-        .find_map(|a| TcpStream::connect_timeout(&a, remaining()?).ok())?;
-    tcp.set_read_timeout(Some(remaining()?)).ok()?;
-    tcp.set_write_timeout(Some(OPEN_TIMEOUT)).ok()?;
+        .to_socket_addrs()?
+        .find_map(|a| {
+            TcpStream::connect_timeout(&a, remaining()?)
+                .map_err(|e| failure = e.into())
+                .ok()
+        })
+        .ok_or(failure)?;
+    tcp.set_read_timeout(Some(remaining().ok_or("open timed out")?))?;
+    tcp.set_write_timeout(Some(OPEN_TIMEOUT))?;
     let _ = tcp.set_nodelay(true);
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_MESSAGE_BYTES))
         .max_frame_size(Some(MAX_MESSAGE_BYTES));
-    let (mut ws, _) = tungstenite::client_tls_with_config(url, tcp, Some(config), None).ok()?;
+    let (mut ws, _) = tungstenite::client_tls_with_config(url, tcp, Some(config), None)?;
     let tcp = match ws.get_mut() {
         MaybeTlsStream::Plain(s) => s,
         MaybeTlsStream::Rustls(s) => &mut s.sock,
-        _ => return None,
+        _ => return Err("unsupported stream".into()),
     };
-    tcp.set_read_timeout(Some(POLL)).ok()?;
-    Some(ws)
+    tcp.set_read_timeout(Some(POLL))?;
+    Ok(ws)
 }
 
 fn first_sample(ws: &mut Socket, base: Instant, deadline: i64) -> Option<Clock> {
@@ -691,7 +711,7 @@ mod tests {
         }
 
         fn cmd(&mut self, cmd: Cmd) {
-            assert!(self.io.handle(cmd));
+            self.io.handle(cmd);
             self.io.flush();
         }
 
@@ -717,7 +737,7 @@ mod tests {
             self.io.flush();
         }
 
-        fn failure(&self) -> Option<String> {
+        fn failure(&self) -> Option<ErrorCode> {
             self.updates
                 .lock()
                 .unwrap()
@@ -760,7 +780,7 @@ mod tests {
         h.accept("c");
         h.refuse("relay_full", "create");
         assert!(h.opens().is_empty());
-        assert_eq!(h.failure().as_deref(), Some("relay_full"));
+        assert_eq!(h.failure(), Some(ErrorCode::RelayFull));
         assert_eq!(h.io.party.state().connection, Connection::Idle);
 
         h.cmd(Cmd::Join("9ABCDE".into(), false));
@@ -775,7 +795,7 @@ mod tests {
         h.accept("c");
         h.refuse("room_not_found", "join");
         assert!(h.opens().is_empty());
-        assert_eq!(h.failure().as_deref(), Some("room_not_found"));
+        assert_eq!(h.failure(), Some(ErrorCode::RoomNotFound));
     }
 
     #[test]
@@ -787,7 +807,7 @@ mod tests {
         let mut h = Harness::new(offline);
         h.cmd(Cmd::Join("QABCDE".into(), false));
         assert!(h.opens().is_empty());
-        assert_eq!(h.failure().as_deref(), Some("room_not_found"));
+        assert_eq!(h.failure(), Some(ErrorCode::RoomNotFound));
         assert!(!h.gone(), "an unknown relay doesn't prove the room is gone");
 
         let mut h = Harness::new(offline);
@@ -796,7 +816,7 @@ mod tests {
         h.accept("a");
         h.refuse("room_not_found", "join");
         assert!(h.opens().is_empty());
-        assert_eq!(h.failure().as_deref(), Some("room_not_found"));
+        assert_eq!(h.failure(), Some(ErrorCode::RoomNotFound));
         assert!(h.gone());
     }
 
@@ -805,7 +825,7 @@ mod tests {
         let mut h = Harness::new(offline);
         h.cmd(Cmd::Pause);
         h.cmd(Cmd::Kick("p2".into()));
-        let refused: Vec<Option<String>> = h
+        let refused: Vec<Option<MsgType>> = h
             .updates
             .lock()
             .unwrap()
@@ -818,7 +838,29 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(refused, [Some("pause".into()), Some("kick".into())]);
+        assert_eq!(refused, [Some(MsgType::Pause), Some(MsgType::Kick)]);
+    }
+
+    #[test]
+    fn shutdown_mid_join_answers_a_late_joined_with_leave() {
+        let mut h = Harness::new(offline);
+        h.cmd(Cmd::Join("2ABCDE".into(), false));
+        h.accept("a");
+        h.cmd(Cmd::Shutdown);
+        let mut server = WebSocket::from_raw_socket(h.servers.remove(0), Role::Server, None);
+        let token = "a".repeat(43);
+        let room = r#"{"rev":1,"code":"2ABCDE","epoch":0,"phase":"idle","positionMs":0,"atMs":0,"rate":1.0,"control":"host","locked":false,"waitingOn":[],"participants":[{"peerId":"p1","name":"Tester","client":"Plaivo/0.1.0","host":true,"connected":true,"player":"idle","match":null,"offsetMs":0}]}"#;
+        server
+            .send(Message::text(format!(
+                r#"{{"type":"joined","code":"2ABCDE","you":{{"peerId":"p1","token":"{token}"}},"room":{room},"media":null,"serverTime":0}}"#
+            )))
+            .unwrap();
+        h.io.run();
+        let mut leave = false;
+        while let Ok(Message::Text(text)) = server.read() {
+            leave |= text.contains(r#""type":"leave""#);
+        }
+        assert!(leave);
     }
 
     #[test]
@@ -831,7 +873,7 @@ mod tests {
         h.cmd(Cmd::OpenFailed(generation));
         assert_eq!(h.failure(), None);
         h.cmd(Cmd::OpenFailed(generation));
-        assert_eq!(h.failure().as_deref(), Some("unreachable"));
+        assert_eq!(h.failure(), Some(ErrorCode::Unreachable));
         h.cmd(Cmd::Join("2ABCDE".into(), false));
         let generation = h.io.generation;
         h.cmd(Cmd::OpenFailed(generation - 1));

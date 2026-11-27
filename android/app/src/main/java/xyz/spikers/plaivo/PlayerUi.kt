@@ -623,7 +623,7 @@ fun PlayerScreen(player: PlayerActivity) {
             val left = (skip.autoAtMs.toLong() - position) / 1000.0
             Countdown(
                 null,
-                "${skip.label.replaceFirst("Skip", "Skipping")} in ${ceil(left).toInt().coerceAtLeast(0)}s",
+                "${skip.skippingLabel} in ${ceil(left).toInt().coerceAtLeast(0)}s",
                 "Jumps to ${fmtTime(skip.endMs.toLong())}",
                 "Skip now",
                 Glyph.FastForward,

@@ -127,10 +127,10 @@ impl Plaivo {
 
     fn render_room(&mut self, cx: &mut Context<Self>) -> Div {
         let s = &self.watch.state;
-        let Some(room) = s.room.clone() else {
+        let Some(room) = s.room.as_ref() else {
             return div();
         };
-        let me = s.peer_id.clone().unwrap_or_default();
+        let me = s.peer_id.as_deref().unwrap_or_default();
         let host = s.is_host();
         let code = code_of(&room.code);
         let status = match (s.connection, host) {

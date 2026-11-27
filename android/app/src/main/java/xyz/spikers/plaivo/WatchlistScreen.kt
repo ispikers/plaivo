@@ -14,6 +14,7 @@ import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.Listing
 import uniffi.plaivo_ffi.discoverId
 import uniffi.plaivo_ffi.librarySorts
+import uniffi.plaivo_ffi.watchlistSort
 
 private val KINDS = listOf("Movies", "TV Shows")
 
@@ -22,14 +23,14 @@ fun WatchlistScreen(open: (MediaCard) -> Unit) {
     val discover = remember { discoverId() }
     val sorts = remember { librarySorts() }
     val labels = remember(sorts) { sorts.map { it.label } }
-    var sort by rememberSaveable { mutableStateOf("addedAt:desc") }
+    var sort by rememberSaveable { mutableStateOf(watchlistSort()) }
     var shows by rememberSaveable { mutableStateOf(false) }
     val listing = remember(sort, shows) { Listing.Watchlist(sort, shows) }
     Column(Modifier.fillMaxSize()) {
         TabHeader("Watchlist", KINDS, if (shows) 1 else 0) { shows = it == 1 }
         Box(Modifier.weight(1f)) {
             PagedGrid(discover, "", listing, open) { status ->
-                SortRow(status, labels, sorts.indexOfFirst { it.id == sort }) { sort = sorts[it].id }
+                SortRow(status, labels, sorts.indexOfFirst { it.sort == sort }) { sort = sorts[it].sort }
             }
         }
     }

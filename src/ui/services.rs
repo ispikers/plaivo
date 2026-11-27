@@ -1,5 +1,5 @@
 use crate::app::Plaivo;
-use crate::plex::Item;
+use crate::plex::{Item, ItemKind};
 use crate::ui::player::spinner;
 use crate::ui::settings::toggle_row;
 use crate::ui::theme::{self, Icon};
@@ -18,9 +18,14 @@ const QR_SIZE: f32 = 220.;
 
 struct Pending {
     service: Service,
-    url: Option<SharedString>,
+    ready: Option<Ready>,
+}
+
+struct Ready {
+    url: SharedString,
+    link: SharedString,
     code: Option<SharedString>,
-    qr: Option<(usize, Vec<bool>)>,
+    qr: Option<(usize, Arc<[bool]>)>,
 }
 
 pub struct Services {
@@ -41,7 +46,7 @@ impl Services {
     }
 
     pub fn leave(&mut self) {
-        self.attempt.fetch_add(1, Ordering::SeqCst);
+        self.attempt.fetch_add(1, Ordering::Relaxed);
         self.pending = None;
     }
 
@@ -52,7 +57,7 @@ impl Services {
     }
 
     fn current(&self, attempt: u64) -> bool {
-        self.attempt.load(Ordering::SeqCst) == attempt
+        self.attempt.load(Ordering::Relaxed) == attempt
     }
 
     fn active(&self) -> bool {
@@ -83,7 +88,7 @@ fn name(s: Service) -> &'static str {
     }
 }
 
-fn qr(text: &str) -> Option<(usize, Vec<bool>)> {
+fn qr(text: &str) -> Option<(usize, Arc<[bool]>)> {
     let qr = QrCode::encode_text(text, QrCodeEcc::Medium).ok()?;
     let n = qr.size();
     Some((
@@ -95,7 +100,7 @@ fn qr(text: &str) -> Option<(usize, Vec<bool>)> {
     ))
 }
 
-fn qr_code((n, modules): (usize, Vec<bool>)) -> impl IntoElement {
+fn qr_code((n, modules): (usize, Arc<[bool]>)) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -145,7 +150,7 @@ impl Plaivo {
             return;
         };
         let Some(show) = Some(it.grandparent_rating_key.clone())
-            .filter(|k| it.kind == "episode" && !k.is_empty())
+            .filter(|k| it.kind == ItemKind::Episode && !k.is_empty())
         else {
             self.player.tracker = Some(media);
             return;
@@ -184,11 +189,9 @@ impl Plaivo {
         }
         s.pending = Some(Pending {
             service,
-            url: None,
-            code: None,
-            qr: None,
+            ready: None,
         });
-        let (attempt, t) = (s.attempt.load(Ordering::SeqCst), s.trackers.clone());
+        let (attempt, t) = (s.attempt.load(Ordering::Relaxed), s.trackers.clone());
         Self::bg(
             cx,
             move || t.begin_sign_in(service),
@@ -204,9 +207,12 @@ impl Plaivo {
                         );
                         this.services.pending = Some(Pending {
                             service,
-                            qr: qr(&url),
-                            url: Some(url.into()),
-                            code,
+                            ready: Some(Ready {
+                                qr: qr(&url),
+                                link: url.trim_start_matches("https://").to_owned().into(),
+                                url: url.into(),
+                                code,
+                            }),
                         });
                         this.poll_service(attempt, sign_in, cx);
                     }
@@ -230,10 +236,11 @@ impl Plaivo {
         Self::bg(
             cx,
             move || {
-                let deadline = Instant::now() + Duration::from_secs(sign_in.expires_in_secs);
-                while Instant::now() < deadline {
+                let deadline =
+                    Instant::now().checked_add(Duration::from_secs(sign_in.expires_in_secs));
+                while deadline.is_none_or(|d| Instant::now() < d) {
                     std::thread::sleep(Duration::from_secs(sign_in.interval_secs));
-                    if flag.load(Ordering::SeqCst) != attempt {
+                    if flag.load(Ordering::Relaxed) != attempt {
                         break;
                     }
                     match t.poll_sign_in(&mut sign_in) {
@@ -250,7 +257,8 @@ impl Plaivo {
                 this.services.pending = None;
                 match r {
                     Poll::Failed(e) => this.services.error = Some((service, failure(&e).into())),
-                    _ => log::info!("{} signed in", name(service)),
+                    Poll::Done => log::info!("{} signed in", name(service)),
+                    Poll::Pending => {}
                 }
             },
         );
@@ -271,20 +279,19 @@ impl Plaivo {
             .filter(|p| p.service == service && !st.signed_in);
         let (status, button) = match (st.configured, st.signed_in, pending.is_some()) {
             (false, ..) => ("Not configured", None),
-            (_, true, _) => ("Signed in", Some("Disconnect")),
-            (_, _, true) => ("Not signed in", Some("Cancel")),
-            _ => ("Not signed in", Some("Connect")),
+            (_, true, _) => ("Signed in", Some(("Disconnect", false))),
+            (_, _, true) => ("Not signed in", Some(("Cancel", false))),
+            _ => ("Not signed in", Some(("Connect", true))),
         };
-        let account = row((id, 0usize), Some(Icon::Person), "Account", status).when_some(
-            button,
-            |d, label| {
-                d.child(
-                    pill((id, 1usize), label, None, label == "Connect").on_click(
+        let account =
+            row((id, 0usize), Some(Icon::Person), "Account", status).when_some(
+                button,
+                |d, (label, primary)| {
+                    d.child(pill((id, 1usize), label, None, primary).on_click(
                         cx.listener(move |this, _, _, cx| this.service_button(service, cx)),
-                    ),
-                )
-            },
-        );
+                    ))
+                },
+            );
         let error = self
             .services
             .error
@@ -299,7 +306,7 @@ impl Plaivo {
             });
         let scrobble_detail = match service {
             Service::Trakt => "Marks movies and episodes watched on Trakt",
-            _ => "Updates your anime list when an episode is watched",
+            Service::Mal => "Updates your anime list when an episode is watched",
         };
         section(id)
             .child(account)
@@ -346,15 +353,15 @@ impl Plaivo {
                 .child(spinner(16., theme::muted()))
                 .child(label)
         };
-        let body = match &p.url {
+        let body = match &p.ready {
             None => div()
                 .h(px(QR_SIZE))
                 .flex()
                 .items_center()
                 .justify_center()
                 .child(waiting("Connecting…")),
-            Some(url) => {
-                let open = url.clone();
+            Some(ready) => {
+                let open = ready.url.clone();
                 div()
                     .flex()
                     .gap(px(28.))
@@ -364,7 +371,7 @@ impl Plaivo {
                             .p(px(18.))
                             .rounded(px(12.))
                             .bg(gpui::white())
-                            .children(p.qr.clone().map(qr_code)),
+                            .children(ready.qr.clone().map(qr_code)),
                     )
                     .child(
                         div()
@@ -384,11 +391,9 @@ impl Plaivo {
                                 div()
                                     .text_size(px(15.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(SharedString::from(
-                                        url.trim_start_matches("https://").to_owned(),
-                                    )),
+                                    .child(ready.link.clone()),
                             )
-                            .when_some(p.code.clone(), |d, code| {
+                            .when_some(ready.code.clone(), |d, code| {
                                 d.child(
                                     div()
                                         .text_size(px(32.))

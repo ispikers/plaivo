@@ -4,7 +4,7 @@ mod lists;
 mod trakt;
 
 use crate::downloads::Downloads;
-use crate::plex::{Client, Ctx, Item, Server, Source};
+use crate::plex::{Client, Ctx, Item, ItemKind, Server, Source};
 use crate::store;
 use http::{Request, Response, send};
 use serde::{Deserialize, Serialize};
@@ -99,7 +99,9 @@ impl Token {
         Some(Token {
             access,
             refresh,
-            expires_at: v["expires_in"].as_u64().map_or(0, |s| now + s),
+            expires_at: v["expires_in"]
+                .as_u64()
+                .map_or(0, |s| now.saturating_add(s)),
         })
     }
 
@@ -192,13 +194,13 @@ impl PlayState {
 impl Media {
     pub fn for_item(it: &Item) -> Option<Self> {
         let number = |n: Option<i64>| n.and_then(|n| u32::try_from(n).ok());
-        match it.kind.as_str() {
-            "movie" => Some(Media {
+        match it.kind {
+            ItemKind::Movie => Some(Media {
                 movie: true,
                 ids: item_ids(it),
                 ..Media::default()
             }),
-            "episode" => Some(Media {
+            ItemKind::Episode => Some(Media {
                 ids: item_ids(it),
                 season: number(it.parent_index),
                 episode: number(it.index),
@@ -263,7 +265,7 @@ enum Scrobble {
 
 #[derive(Debug, PartialEq)]
 enum Action {
-    Trakt(&'static str, f64),
+    Trakt(trakt::Action, f64),
     Watched(f64),
 }
 
@@ -289,11 +291,13 @@ impl Session {
         if realtime {
             let (next, action) = match (state, self.scrobble) {
                 (PlayState::Playing, s) if s != Scrobble::Started => {
-                    (Scrobble::Started, Some("start"))
+                    (Scrobble::Started, Some(trakt::Action::Start))
                 }
-                (PlayState::Paused, Scrobble::Started) => (Scrobble::Paused, Some("pause")),
+                (PlayState::Paused, Scrobble::Started) => {
+                    (Scrobble::Paused, Some(trakt::Action::Pause))
+                }
                 (PlayState::Stopped, Scrobble::Started | Scrobble::Paused) => {
-                    (Scrobble::Stopped, Some("stop"))
+                    (Scrobble::Stopped, Some(trakt::Action::Stop))
                 }
                 (_, s) => (s, None),
             };
@@ -311,7 +315,7 @@ impl Session {
 
     fn end(&self) -> Option<Action> {
         matches!(self.scrobble, Scrobble::Started | Scrobble::Paused)
-            .then(|| Action::Trakt("stop", self.last.unwrap_or(0.0)))
+            .then(|| Action::Trakt(trakt::Action::Stop, self.last.unwrap_or(0.0)))
     }
 }
 
@@ -324,7 +328,7 @@ struct Write {
 
 #[derive(Debug, PartialEq)]
 enum Job {
-    Scrobble(&'static str, Media, f64),
+    Scrobble(trakt::Action, Media, f64),
     Write(Write),
     Retry,
 }
@@ -338,7 +342,7 @@ fn jobs(
     let mut out = Vec::new();
     for action in actions {
         match action {
-            Action::Trakt("stop", pct) if pct >= trakt::WATCHED_PCT => {
+            Action::Trakt(trakt::Action::Stop, pct) if pct >= trakt::WATCHED_PCT => {
                 out.push(Job::Write(Write {
                     service: Service::Trakt,
                     media: media.clone(),
@@ -402,6 +406,11 @@ impl Queue {
             store::write_json(&self.path, &self.items);
         }
     }
+
+    fn purge(&mut self, s: Service) {
+        self.items.retain(|w| w.service != s);
+        store::write_json(&self.path, &self.items);
+    }
 }
 
 struct Shared {
@@ -423,8 +432,8 @@ pub struct Trackers(Arc<Inner>);
 
 impl Trackers {
     pub fn start() -> Self {
-        let config = store::config_dir();
-        let (trackers, rx) = Self::detached(config.clone(), Service::ALL.map(Service::configured));
+        let (trackers, rx) =
+            Self::detached(store::config_dir(), Service::ALL.map(Service::configured));
         let (weak, cache) = (Arc::downgrade(&trackers.0), store::cache_dir());
         let spawned = std::thread::Builder::new()
             .name("trackers".into())
@@ -482,6 +491,7 @@ impl Trackers {
 
     pub fn sign_out(&self, service: Service) {
         self.0.update(|a| a.get_mut(service).token = None);
+        self.0.queue().purge(service);
     }
 
     pub fn begin_sign_in(&self, service: Service) -> Result<SignIn, String> {
@@ -490,7 +500,7 @@ impl Trackers {
         }
         let req = match service {
             Service::Trakt => trakt::device_code_request(trakt_id().unwrap_or_default()),
-            s => lists::start_request(relay(), s),
+            Service::Mal => lists::start_request(relay(), Service::Mal),
         };
         let resp = send(&req)?;
         let v = resp.json();
@@ -502,7 +512,7 @@ impl Trackers {
         let text = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
         let (secret, url) = match service {
             Service::Trakt => (text("device_code"), text("verification_url")),
-            _ => (text("session"), text("authorize_url")),
+            Service::Mal => (text("session"), text("authorize_url")),
         };
         let (Some(secret), Some(url)) = (secret, url) else {
             return Err("invalid response".into());
@@ -527,7 +537,7 @@ impl Trackers {
             Service::Trakt => {
                 trakt::device_token_request(trakt_id().unwrap_or_default(), &sign_in.secret)
             }
-            _ => lists::result_request(relay(), &sign_in.secret),
+            Service::Mal => lists::result_request(relay(), &sign_in.secret),
         };
         let Ok(resp) = send(&req) else {
             return Poll::Pending;
@@ -668,13 +678,16 @@ impl Inner {
         let req = match (s, &token.refresh) {
             (Service::Trakt, Some(r)) => trakt::refresh_request(trakt_id().unwrap_or_default(), r),
             (Service::Mal, Some(r)) => lists::refresh_request(relay(), s, r),
-            _ => {
+            (Service::Trakt | Service::Mal, None) => {
                 log::warn!("{} sign-in expired", s.key());
                 self.replace_token(s, token, None);
                 return Err(Outcome::Drop);
             }
         };
-        let resp = send(&req).map_err(|_| Outcome::Retry)?;
+        let resp = send(&req).map_err(|e| {
+            log::warn!("{} token refresh failed: {e}", s.key());
+            Outcome::Retry
+        })?;
         match resp.status {
             200 => {
                 let fresh = Token::parse(&resp.json(), now(), token.refresh.clone())
@@ -708,7 +721,7 @@ impl Inner {
         send(&build(&token.access)).map_err(failed)
     }
 
-    fn scrobble(&self, action: &str, media: &Media, pct: f64) -> Outcome {
+    fn scrobble(&self, action: trakt::Action, media: &Media, pct: f64) -> Outcome {
         let (Some(id), Some(body)) = (trakt_id(), trakt::scrobble_body(media, pct)) else {
             return Outcome::Drop;
         };
@@ -718,7 +731,10 @@ impl Inner {
             Ok(r) => r.status,
             Err(o) => return o,
         };
-        log::info!("trakt scrobble {action} at {pct:.0}%: HTTP {status}");
+        log::info!(
+            "trakt scrobble {} at {pct:.0}%: HTTP {status}",
+            action.as_str()
+        );
         if status == 409 {
             Outcome::Done
         } else {
@@ -729,7 +745,7 @@ impl Inner {
     fn write(&self, w: &Write, mappings: &mut anime::Mappings) -> Outcome {
         let s = w.service;
         if s == Service::Trakt {
-            return self.scrobble("stop", &w.media, w.pct.max(trakt::WATCHED_PCT));
+            return self.scrobble(trakt::Action::Stop, &w.media, w.pct.max(trakt::WATCHED_PCT));
         }
         if self.token(s).is_none() {
             return Outcome::Drop;
@@ -827,6 +843,23 @@ mod tests {
     use http::Body;
     use serde_json::json;
 
+    struct Dir(PathBuf);
+
+    impl Dir {
+        fn new(name: &str) -> Self {
+            let p =
+                std::env::temp_dir().join(format!("plaivo-trackers-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            Self(p)
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn ids(pairs: &[(&str, &str)]) -> Ids {
         pairs
             .iter()
@@ -881,7 +914,7 @@ mod tests {
         use crate::plex::Guid;
         let guids = |ids: &[&str]| ids.iter().map(|id| Guid { id: (*id).into() }).collect();
         let movie = Item {
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             guids: guids(&[
                 "imdb://tt1",
                 "tmdb://2",
@@ -896,7 +929,7 @@ mod tests {
         assert!(m.movie && m.season.is_none());
         assert_eq!(m.ids, ids(&[("imdb", "tt1"), ("tmdb", "2"), ("mal", "7")]));
         let episode = Item {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             parent_index: Some(2),
             index: Some(5),
             guids: guids(&["tvdb://9"]),
@@ -914,7 +947,7 @@ mod tests {
         );
         assert_eq!(
             Media::for_item(&Item {
-                kind: "episode".into(),
+                kind: ItemKind::Episode,
                 index: Some(-1),
                 ..Default::default()
             })
@@ -924,7 +957,7 @@ mod tests {
         );
         assert!(
             Media::for_item(&Item {
-                kind: "clip".into(),
+                kind: ItemKind::Clip,
                 ..Default::default()
             })
             .is_none()
@@ -937,9 +970,8 @@ mod tests {
 
     #[test]
     fn show_ids_are_cached_and_a_failed_fetch_is_not() {
-        let dir =
-            std::env::temp_dir().join(format!("plaivo-trackers-shows-{}", std::process::id()));
-        let (t, _rx) = Trackers::detached(dir.clone(), [false; 2]);
+        let dir = Dir::new("shows");
+        let (t, _rx) = Trackers::detached(dir.0.clone(), [false; 2]);
         let srv = Server {
             id: "s".into(),
             uri: "http://127.0.0.1:9".into(),
@@ -955,7 +987,6 @@ mod tests {
             t.show_ids(&client, &srv, None, "1"),
             Some(ids(&[("tvdb", "9")]))
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -982,26 +1013,26 @@ mod tests {
         assert!(step(&mut s, PlayState::Paused, 1.0).is_empty());
         assert_eq!(
             step(&mut s, PlayState::Playing, 1.0),
-            vec![Action::Trakt("start", 1.0)]
+            vec![Action::Trakt(trakt::Action::Start, 1.0)]
         );
         assert!(step(&mut s, PlayState::Playing, 2.0).is_empty());
         assert_eq!(
             step(&mut s, PlayState::Paused, 3.0),
-            vec![Action::Trakt("pause", 3.0)]
+            vec![Action::Trakt(trakt::Action::Pause, 3.0)]
         );
         assert!(step(&mut s, PlayState::Paused, 3.0).is_empty());
         assert_eq!(
             step(&mut s, PlayState::Playing, 3.0),
-            vec![Action::Trakt("start", 3.0)]
+            vec![Action::Trakt(trakt::Action::Start, 3.0)]
         );
-        assert_eq!(s.end(), Some(Action::Trakt("stop", 3.0)));
+        assert_eq!(s.end(), Some(Action::Trakt(trakt::Action::Stop, 3.0)));
         assert_eq!(
             step(&mut s, PlayState::Playing, 91.0),
             vec![Action::Watched(91.0)]
         );
         assert_eq!(
             step(&mut s, PlayState::Stopped, 93.0),
-            vec![Action::Trakt("stop", 93.0)]
+            vec![Action::Trakt(trakt::Action::Stop, 93.0)]
         );
         assert!(step(&mut s, PlayState::Stopped, 93.0).is_empty());
         assert_eq!(s.end(), None);
@@ -1036,20 +1067,29 @@ mod tests {
             vec![w(Service::Mal)]
         );
         assert_eq!(
-            jobs(vec![Action::Trakt("stop", 50.0)], &m, all, true),
-            vec![Job::Scrobble("stop", m.clone(), 50.0)]
+            jobs(
+                vec![Action::Trakt(trakt::Action::Stop, 50.0)],
+                &m,
+                all,
+                true
+            ),
+            vec![Job::Scrobble(trakt::Action::Stop, m.clone(), 50.0)]
         );
         assert_eq!(
-            jobs(vec![Action::Trakt("stop", 91.0)], &m, all, true),
+            jobs(
+                vec![Action::Trakt(trakt::Action::Stop, 91.0)],
+                &m,
+                all,
+                true
+            ),
             vec![w(Service::Trakt)]
         );
     }
 
     #[test]
     fn retry_queue_persists_and_is_bounded() {
-        let dir =
-            std::env::temp_dir().join(format!("plaivo-trackers-queue-{}", std::process::id()));
-        let path = dir.join(QUEUE_FILE);
+        let dir = Dir::new("queue");
+        let path = dir.0.join(QUEUE_FILE);
         let mut q = Queue::load(path.clone());
         for i in 0..QUEUE_MAX + 5 {
             q.push(Write {
@@ -1066,14 +1106,12 @@ mod tests {
         q.remove(&first);
         assert_eq!(Queue::load(path.clone()).items.len(), QUEUE_MAX - 1);
         assert_eq!(Queue::load(path).items[0].pct, 6.0);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn drain_skips_only_the_failing_service() {
-        let dir =
-            std::env::temp_dir().join(format!("plaivo-trackers-drain-{}", std::process::id()));
-        let (t, _rx) = Trackers::detached(dir.clone(), [true; 2]);
+        let dir = Dir::new("drain");
+        let (t, _rx) = Trackers::detached(dir.0.clone(), [true; 2]);
         for (service, pct) in [
             (Service::Mal, 1.0),
             (Service::Trakt, 2.0),
@@ -1100,7 +1138,27 @@ mod tests {
         assert_eq!(left(&t), [1.0, 3.0]);
         assert!(!t.0.drain(|_| Outcome::Done));
         assert!(left(&t).is_empty());
-        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sign_out_forgets_that_services_queued_writes() {
+        let dir = Dir::new("signout");
+        let (t, _rx) = Trackers::detached(dir.0.clone(), [true; 2]);
+        signed_in(&t, &[Service::Trakt, Service::Mal]);
+        for service in [Service::Mal, Service::Trakt, Service::Mal] {
+            t.0.queue().push(Write {
+                service,
+                media: episode(),
+                pct: 95.0,
+            });
+        }
+        t.sign_out(Service::Mal);
+        let services = |q: &Queue| q.items.iter().map(|w| w.service).collect::<Vec<_>>();
+        assert_eq!(services(&t.0.queue()), [Service::Trakt]);
+        assert_eq!(
+            services(&Queue::load(dir.0.join(QUEUE_FILE))),
+            [Service::Trakt]
+        );
     }
 
     #[test]
@@ -1174,7 +1232,7 @@ mod tests {
             .is_none()
         );
 
-        let r = trakt::scrobble_request("cid", "tok", "pause", body.clone());
+        let r = trakt::scrobble_request("cid", "tok", trakt::Action::Pause, body.clone());
         assert_eq!(
             (r.method, r.url.as_str()),
             ("POST", "https://api.trakt.tv/scrobble/pause")
@@ -1318,9 +1376,8 @@ mod tests {
 
     #[test]
     fn on_progress_dispatch() {
-        let dir =
-            std::env::temp_dir().join(format!("plaivo-trackers-dispatch-{}", std::process::id()));
-        let (t, rx) = Trackers::detached(dir.clone(), [true; 2]);
+        let dir = Dir::new("dispatch");
+        let (t, rx) = Trackers::detached(dir.0.clone(), [true; 2]);
         let drain = || rx.try_iter().collect::<Vec<_>>();
         let a = episode();
         let b = Media {
@@ -1335,7 +1392,7 @@ mod tests {
             })
         };
         let persisted = || {
-            Queue::load(dir.join(QUEUE_FILE))
+            Queue::load(dir.0.join(QUEUE_FILE))
                 .items
                 .into_iter()
                 .map(|w| (w.service, w.pct))
@@ -1347,15 +1404,18 @@ mod tests {
 
         signed_in(&t, &[Service::Trakt, Service::Mal]);
         t.on_progress(&a, PlayState::Playing, 20, 100);
-        assert_eq!(drain(), vec![Job::Scrobble("start", a.clone(), 20.0)]);
+        assert_eq!(
+            drain(),
+            vec![Job::Scrobble(trakt::Action::Start, a.clone(), 20.0)]
+        );
         t.on_progress(&a, PlayState::Playing, 50, 100);
         assert!(drain().is_empty());
         t.on_progress(&b, PlayState::Playing, 1, 100);
         assert_eq!(
             drain(),
             vec![
-                Job::Scrobble("stop", a.clone(), 50.0),
-                Job::Scrobble("start", b.clone(), 1.0)
+                Job::Scrobble(trakt::Action::Stop, a.clone(), 50.0),
+                Job::Scrobble(trakt::Action::Start, b.clone(), 1.0)
             ]
         );
         t.on_progress(&b, PlayState::Playing, 95, 100);
@@ -1372,12 +1432,11 @@ mod tests {
         t.on_progress(&a, PlayState::Playing, 92, 100);
         assert_eq!(drain(), vec![w(Service::Trakt, &a, 92.0)]);
 
-        let (u, rx) = Trackers::detached(dir.clone(), [false; 2]);
+        let (u, rx) = Trackers::detached(dir.0.clone(), [false; 2]);
         assert!(!u.status(Service::Trakt).configured && !u.status(Service::Trakt).signed_in);
         u.on_progress(&b, PlayState::Playing, 1, 100);
         u.on_progress(&b, PlayState::Playing, 95, 100);
         assert!(rx.try_iter().next().is_none());
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -32,12 +32,16 @@ impl Account {
     }
 
     pub fn load() -> Self {
-        let mut a: Account = store::read_json(&Self::path()).unwrap_or_default();
+        let read = store::try_read_json::<Account>(&Self::path());
+        let unread = read.is_err();
+        let mut a = read.ok().flatten().unwrap_or_default();
         if a.client_id.is_empty() {
             use std::hash::{BuildHasher, RandomState};
             let rs = RandomState::new();
             a.client_id = format!("{:016x}{:016x}", rs.hash_one(1u8), rs.hash_one(2u8));
-            a.save();
+            if !unread {
+                a.save();
+            }
         }
         a
     }
@@ -166,7 +170,7 @@ pub fn join(parts: &[String]) -> String {
     parts
         .iter()
         .filter(|p| !p.is_empty())
-        .cloned()
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join(" · ")
 }

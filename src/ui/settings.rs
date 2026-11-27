@@ -7,7 +7,7 @@ use crate::ui::item_menu::Pick;
 use crate::ui::licenses::LICENSES;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    chip, danger_pill, drag_tracker, icon, nav_row, overlay_button, pill, round_button, row,
+    Step, chip, danger_pill, drag_tracker, icon, nav_row, overlay_button, pill, round_button, row,
     scrollbar, section, stepper, toggle,
 };
 use crate::{logging, plex, shaders};
@@ -37,12 +37,14 @@ const CATEGORIES: [Category; 8] = [
     Category::About,
 ];
 
-pub fn nudge(value: u32, step: i8, by: u32, lo: u32, hi: u32, default: u32) -> u32 {
-    if step == 0 {
-        default
-    } else {
-        (value as i64 + step as i64 * by as i64).clamp(lo as i64, hi as i64) as u32
-    }
+pub fn nudge(value: u32, step: Step, by: u32, lo: u32, hi: u32, default: u32) -> u32 {
+    let by = by as i64;
+    let delta = match step {
+        Step::Reset => return default,
+        Step::Down => -by,
+        Step::Up => by,
+    };
+    (value as i64 + delta).clamp(lo as i64, hi as i64) as u32
 }
 
 impl Plaivo {
@@ -134,6 +136,7 @@ impl Plaivo {
     fn render_playback_settings(&mut self, cx: &mut Context<Self>) -> Div {
         let rules = self.render_playback_rules(cx);
         let s = &self.settings;
+        let d = Settings::default();
         let skip_row = |id: &'static str,
                         title: &'static str,
                         detail: &'static str,
@@ -162,15 +165,18 @@ impl Plaivo {
                         value: u32,
                         large: bool,
                         cx: &mut Context<Self>| {
-            let nudged = move |v: u32, step: i8| match large {
-                true => nudge(v, step, 10, 10, 600, 30),
-                false => nudge(v, step, 5, 5, 60, 10),
+            let nudged = move |v: u32, step: Step| match large {
+                true => nudge(v, step, 10, 10, 600, d.seek_large),
+                false => nudge(v, step, 5, 5, 60, d.seek_small),
             };
             row(id, None, title, detail).child(stepper(
                 id,
                 format!("{value} s"),
-                (nudged(value, -1) != value, nudged(value, 1) != value),
-                cx.listener(move |this, step: &i8, _, cx| {
+                (
+                    nudged(value, Step::Down) != value,
+                    nudged(value, Step::Up) != value,
+                ),
+                cx.listener(move |this, step: &Step, _, cx| {
                     let s = &mut this.settings;
                     if large {
                         s.seek_large = nudged(s.seek_large, *step)
@@ -191,11 +197,12 @@ impl Plaivo {
                 id,
                 format!("{value:+} s"),
                 (value > -SKIP_DELAY_MAX, value < SKIP_DELAY_MAX),
-                cx.listener(move |this, step: &i8, _, cx| {
+                cx.listener(move |this, step: &Step, _, cx| {
                     let v = field(&mut this.settings);
                     *v = match step {
-                        0 => 0,
-                        _ => (*v + *step as i32).clamp(-SKIP_DELAY_MAX, SKIP_DELAY_MAX),
+                        Step::Reset => 0,
+                        Step::Down => (*v - 1).max(-SKIP_DELAY_MAX),
+                        Step::Up => (*v + 1).min(SKIP_DELAY_MAX),
                     };
                     this.save_settings_soon(cx);
                     cx.notify();
@@ -231,14 +238,14 @@ impl Plaivo {
                             s.autoplay_countdown > 0,
                             s.autoplay_countdown < COUNTDOWN_MAX,
                         ),
-                        cx.listener(|this, step: &i8, _, cx| {
+                        cx.listener(|this, step: &Step, _, cx| {
                             this.settings.autoplay_countdown = nudge(
                                 this.settings.autoplay_countdown,
                                 *step,
                                 1,
                                 0,
                                 COUNTDOWN_MAX,
-                                5,
+                                Settings::default().autoplay_countdown,
                             );
                             this.save_settings_soon(cx);
                             cx.notify();
@@ -380,7 +387,7 @@ impl Plaivo {
                     let down = mover(1, Icon::ExpandMore, 1, i < last);
                     row(
                         SharedString::from(format!("lib-{id}")),
-                        Some(if x.kind == "movie" {
+                        Some(if x.kind == plex::ItemKind::Movie {
                             Icon::Movie
                         } else {
                             Icon::Tv
@@ -1090,10 +1097,10 @@ mod tests {
 
     #[test]
     fn steppers_clamp_and_reset() {
-        assert_eq!(nudge(10, 1, 5, 5, 60, 10), 15);
-        assert_eq!(nudge(60, 1, 5, 5, 60, 10), 60);
-        assert_eq!(nudge(5, -1, 5, 5, 60, 10), 5);
-        assert_eq!(nudge(0, -1, 1, 0, 30, 5), 0);
-        assert_eq!(nudge(25, 0, 5, 5, 60, 10), 10);
+        assert_eq!(nudge(10, Step::Up, 5, 5, 60, 10), 15);
+        assert_eq!(nudge(60, Step::Up, 5, 5, 60, 10), 60);
+        assert_eq!(nudge(5, Step::Down, 5, 5, 60, 10), 5);
+        assert_eq!(nudge(0, Step::Down, 1, 0, 30, 5), 0);
+        assert_eq!(nudge(25, Step::Reset, 5, 5, 60, 10), 10);
     }
 }

@@ -71,7 +71,7 @@ impl AddServer {
     }
 
     pub fn cancel(&mut self) {
-        self.attempt.fetch_add(1, Ordering::SeqCst);
+        self.attempt.fetch_add(1, Ordering::Relaxed);
         self.busy = false;
     }
 
@@ -94,11 +94,11 @@ impl AddServer {
         self.busy = true;
         self.error = None;
         self.code = None;
-        self.attempt.fetch_add(1, Ordering::SeqCst) + 1
+        self.attempt.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     fn current(&self, attempt: u64) -> bool {
-        self.attempt.load(Ordering::SeqCst) == attempt
+        self.attempt.load(Ordering::Relaxed) == attempt
     }
 }
 
@@ -461,7 +461,7 @@ impl Plaivo {
         )
         .on_click(cx.listener(|this, _, _, cx| this.navigate(Nav::AddServer, true, cx)));
         std::iter::once(plex.into_any_element())
-            .chain(jellyfin.collect::<Vec<_>>())
+            .chain(jellyfin)
             .chain([add.into_any_element()])
             .collect()
     }

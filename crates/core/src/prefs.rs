@@ -374,16 +374,25 @@ enum Cached {
 static CACHE: Mutex<BTreeMap<String, Cached>> = Mutex::new(BTreeMap::new());
 static WRITES: Mutex<u64> = Mutex::new(0);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+static CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 fn remember(key: &str, p: &LanguagePrefs) {
-    CACHE
-        .lock()
-        .unwrap()
-        .insert(key.to_owned(), Cached::Prefs(p.clone()));
+    let mut cache = CACHE.lock().unwrap();
+    CACHE_EPOCH.fetch_add(1, Ordering::Relaxed);
+    cache.insert(key.to_owned(), Cached::Prefs(p.clone()));
 }
 
 pub fn forget() {
-    CACHE.lock().unwrap().clear();
+    let mut cache = CACHE.lock().unwrap();
+    CACHE_EPOCH.fetch_add(1, Ordering::Relaxed);
+    cache.clear();
+}
+
+fn store_fetched(key: &str, cached: Cached, epoch: u64) {
+    let mut cache = CACHE.lock().unwrap();
+    if CACHE_EPOCH.load(Ordering::Relaxed) == epoch {
+        cache.insert(key.to_owned(), cached);
+    }
 }
 
 pub fn next_generation() -> u64 {
@@ -401,12 +410,16 @@ pub fn for_server(
     } else {
         PLEX_KEY
     };
-    match CACHE.lock().unwrap().get(key) {
-        Some(Cached::Prefs(p)) => return p.clone(),
-        Some(Cached::Jellyfin(j)) => return jellyfin_or(j, local),
-        Some(Cached::RetryAt(until)) if Instant::now() < *until => return local.clone(),
-        _ => {}
-    }
+    let epoch = {
+        let cache = CACHE.lock().unwrap();
+        match cache.get(key) {
+            Some(Cached::Prefs(p)) => return p.clone(),
+            Some(Cached::Jellyfin(j)) => return jellyfin_or(j, local),
+            Some(Cached::RetryAt(until)) if Instant::now() < *until => return local.clone(),
+            _ => {}
+        }
+        CACHE_EPOCH.load(Ordering::Relaxed)
+    };
     let fetched = match (srv.is_jellyfin(), plex_token) {
         (true, _) => jellyfin::language_prefs(srv, c).map(Cached::Jellyfin),
         (false, Some(token)) => plex_account(c, token).map(Cached::Prefs),
@@ -421,7 +434,7 @@ pub fn for_server(
         Cached::Jellyfin(j) => jellyfin_or(j, local),
         Cached::RetryAt(_) => local.clone(),
     };
-    CACHE.lock().unwrap().insert(key.to_owned(), cached);
+    store_fetched(key, cached, epoch);
     p
 }
 
@@ -445,12 +458,12 @@ pub fn share_with_new_server(
     added: &Server,
 ) -> R<()> {
     let generation = next_generation();
-    let others: Vec<Server> = jellyfin
-        .iter()
-        .filter(|s| s.id != added.id)
-        .cloned()
-        .collect();
-    match account(c, plex_token, &others)? {
+    let other = jellyfin.iter().find(|s| s.id != added.id);
+    match account(
+        c,
+        plex_token,
+        other.map(std::slice::from_ref).unwrap_or(&[]),
+    )? {
         Some(p) => save(c, None, std::slice::from_ref(added), &p, generation),
         None => Ok(()),
     }
@@ -491,6 +504,7 @@ pub fn save(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plex::{ItemKind, StreamKind};
 
     #[test]
     fn unset_jellyfin_prefs_inherit_the_app_ones() {
@@ -529,10 +543,10 @@ mod tests {
         let media = Media {
             part: vec![crate::plex::Part {
                 stream: vec![
-                    stream(2, "ita", true, false),
-                    stream(2, "eng", false, false),
-                    stream(3, "ita", false, true),
-                    stream(3, "eng", false, false),
+                    stream(StreamKind::Audio, "ita", true, false),
+                    stream(StreamKind::Audio, "eng", false, false),
+                    stream(StreamKind::Subtitle, "ita", false, true),
+                    stream(StreamKind::Subtitle, "eng", false, false),
                 ],
                 ..Default::default()
             }],
@@ -567,7 +581,7 @@ mod tests {
         assert_eq!(rule_for(&rules, "s/3"), Some(&rule));
         assert_eq!(rule_for(&rules, "s/1"), None);
         let ep = Item {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             library_section_id: "2".into(),
             ..Default::default()
         };
@@ -853,6 +867,14 @@ mod tests {
         assert_eq!(for_server(&c, &down, None, &local), local);
         assert_eq!(for_server(&c, &down, None, &other), other);
         forget();
+        assert!(CACHE.lock().unwrap().get("j-down").is_none());
+        let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
+        forget();
+        store_fetched(
+            "j-down",
+            Cached::RetryAt(Instant::now() + RETRY_AFTER),
+            epoch,
+        );
         assert!(CACHE.lock().unwrap().get("j-down").is_none());
     }
 

@@ -81,6 +81,7 @@ import uniffi.plaivo_ffi.HubList
 import uniffi.plaivo_ffi.Listing
 import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.Section
+import uniffi.plaivo_ffi.Sort
 import uniffi.plaivo_ffi.gridColumns
 import uniffi.plaivo_ffi.librarySorts
 
@@ -182,7 +183,7 @@ fun LibraryScreen(
     openRow: (MediaRow) -> Unit,
 ) {
     val sorts = remember { librarySorts() }
-    var sort by remember { mutableStateOf(sorts.first().id) }
+    var sort by remember { mutableStateOf(sorts.first().sort) }
     Column(Modifier.fillMaxSize()) {
         TabHeader(library.title, LibTab.entries.map { it.label }, tab.ordinal) { onTab(LibTab.entries[it]) }
         Box(Modifier.weight(1f)) {
@@ -190,8 +191,8 @@ fun LibraryScreen(
                 LibTab.Recommended -> Recommended(library, open, openRow)
                 LibTab.Browse ->
                     PagedGrid(library.server, library.key, Listing.Items(sort), open) { status ->
-                        SortRow(status, sorts.map { it.label }, sorts.indexOfFirst { it.id == sort }) {
-                            sort = sorts[it].id
+                        SortRow(status, sorts.map { it.label }, sorts.indexOfFirst { it.sort == sort }) {
+                            sort = sorts[it].sort
                         }
                     }
                 LibTab.Collections -> PagedGrid(library.server, library.key, Listing.Collections, open) { Status(it) }
@@ -342,7 +343,7 @@ private fun TouchRow(row: MediaRow, open: (MediaCard) -> Unit, openRow: (MediaRo
 fun HubListScreen(server: String, key: String, title: String, open: (MediaCard) -> Unit) {
     var list by remember { mutableStateOf<HubList?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var sort by remember { mutableStateOf("") }
+    var sort by remember { mutableStateOf<Sort?>(null) }
     var loads by remember { mutableIntStateOf(0) }
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(loads) {
@@ -358,7 +359,7 @@ fun HubListScreen(server: String, key: String, title: String, open: (MediaCard) 
     val l = list
     val cards =
         remember(l, sort) {
-            val order = l?.sorts?.firstOrNull { it.id == sort }?.order
+            val order = l?.sorts?.firstOrNull { it.sort == sort }?.order
             (order?.map { l.cards[it.toInt()] } ?: l?.cards.orEmpty()).distinctBy { "${it.server}/${it.key}" }
         }
     val status =
@@ -381,8 +382,8 @@ fun HubListScreen(server: String, key: String, title: String, open: (MediaCard) 
         header = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Heading(title)
-                SortRow(status, labels, l?.sorts?.indexOfFirst { it.id == sort } ?: -1) { i ->
-                    l?.let { sort = it.sorts[i].id }
+                SortRow(status, labels, l?.sorts?.indexOfFirst { it.sort == sort } ?: -1) { i ->
+                    l?.let { sort = it.sorts[i].sort }
                 }
             }
         },

@@ -1,8 +1,8 @@
 use plaivo_core::downloads::{Downloads, State};
-use plaivo_core::menu::{self, Action};
+use plaivo_core::menu::{self, Action, FileInfoLine};
 use plaivo_core::plex::{
-    self, Client, Ctx, DISCOVER_ID, Hub, Item, LibraryHub, Picks, PlexUser, QUALITIES, SORTS,
-    Server, Source, fmt_bitrate, resolve_playable,
+    self, Client, Ctx, DISCOVER_ID, Hub, Item, ItemKind, LibraryHub, MarkerKind, Picks, PlexUser,
+    QUALITIES, SORTS, Server, Sort, Source, WATCHLIST_SORT, fmt_bitrate, resolve_playable,
 };
 use plaivo_core::prefs::{self, LANGUAGES, LanguagePrefs, LanguageRule, SubtitleMode, TrackInfo};
 use plaivo_core::settings::{
@@ -51,6 +51,27 @@ impl From<&str> for PlaivoError {
 type R<T> = Result<T, PlaivoError>;
 
 type ItemKey = (String, String);
+
+#[uniffi::remote(Enum)]
+pub enum ItemKind {
+    Movie,
+    Show,
+    Season,
+    Episode,
+    Clip,
+    Mixed,
+    Person,
+    Collection,
+    Other,
+}
+
+#[uniffi::remote(Enum)]
+pub enum MarkerKind {
+    Intro,
+    Credits,
+    Commercial,
+    Other,
+}
 
 #[uniffi::remote(Enum)]
 pub enum Scale {
@@ -186,6 +207,13 @@ pub struct InfoLine {
     pub value: String,
 }
 
+#[uniffi::remote(Record)]
+pub struct FileInfoLine {
+    pub label: String,
+    pub value: String,
+    pub header: bool,
+}
+
 #[derive(uniffi::Enum)]
 pub enum RatingSource {
     Imdb,
@@ -238,7 +266,7 @@ pub struct Season {
 pub struct Detail {
     pub server: String,
     pub key: String,
-    pub kind: String,
+    pub kind: ItemKind,
     pub title: String,
     pub eyebrow: String,
     pub logo: Option<String>,
@@ -247,7 +275,7 @@ pub struct Detail {
     pub ratings: Vec<Rating>,
     pub genres: Vec<String>,
     pub summary: String,
-    pub play_key: String,
+    pub play_key: Option<String>,
     pub play_label: String,
     pub progress: f32,
     pub media_line: String,
@@ -260,7 +288,7 @@ pub struct Detail {
     pub trailer_key: Option<String>,
     pub photo: Option<String>,
     pub rows: Vec<Row>,
-    pub show_key: String,
+    pub show_key: Option<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -275,8 +303,8 @@ pub struct ItemMenu {
     pub actions: Vec<Action>,
     pub trailer_key: Option<String>,
     pub stars: u8,
-    pub versions: Vec<String>,
-    pub file_info: Vec<InfoLine>,
+    pub versions: Vec<InfoLine>,
+    pub file_info: Vec<FileInfoLine>,
 }
 
 #[uniffi::export]
@@ -445,7 +473,7 @@ impl From<JellyfinProbe> for jellyfin::ServerInfo {
 pub struct Card {
     pub server: String,
     pub key: String,
-    pub kind: String,
+    pub kind: ItemKind,
     pub title: String,
     pub subtitle: String,
     pub image: Option<String>,
@@ -494,21 +522,29 @@ pub struct Home {
 
 #[derive(uniffi::Enum)]
 pub enum Listing {
-    Items { sort: String },
+    Items { sort: Sort },
     Collections,
     CollectionItems,
-    Watchlist { sort: String, shows: bool },
+    Watchlist { sort: Sort, shows: bool },
+}
+
+#[uniffi::remote(Enum)]
+pub enum Sort {
+    Title,
+    Added,
+    Released,
+    Rating,
 }
 
 #[derive(uniffi::Record)]
 pub struct SortOption {
-    pub id: String,
+    pub sort: Sort,
     pub label: String,
 }
 
 #[derive(uniffi::Record)]
 pub struct HubSort {
-    pub id: String,
+    pub sort: Option<Sort>,
     pub label: String,
     pub order: Vec<u32>,
 }
@@ -517,7 +553,7 @@ pub struct HubSort {
 pub struct HubList {
     pub cards: Vec<Card>,
     pub sorts: Vec<HubSort>,
-    pub initial: String,
+    pub initial: Option<Sort>,
 }
 
 #[derive(uniffi::Record)]
@@ -564,11 +600,13 @@ pub struct UpNext {
 
 #[derive(uniffi::Record)]
 pub struct SkipMarker {
-    pub kind: String,
+    pub kind: MarkerKind,
     pub mode: SkipMode,
     pub auto_at_ms: u64,
     pub notice_at_ms: u64,
     pub label: String,
+    pub skipping_label: String,
+    pub skipped_label: String,
     pub start_ms: u64,
     pub end_ms: u64,
 }
@@ -627,7 +665,7 @@ pub enum DownloadScope {
 pub struct Download {
     pub server: String,
     pub key: String,
-    pub kind: String,
+    pub kind: ItemKind,
     pub title: String,
     pub subtitle: String,
     pub state: DownloadState,
@@ -655,8 +693,8 @@ pub struct Plaivo {
 
 impl Plaivo {
     fn active_servers(&self) -> Vec<Server> {
-        let settings = self.settings.lock().unwrap();
         let mut servers = self.account.lock().unwrap().all_servers();
+        let settings = self.settings.lock().unwrap();
         servers.retain(|s| !settings.server_hidden(&s.id));
         servers
     }
@@ -691,7 +729,7 @@ fn cast_members(srv: &Server, people: &[plex::Person]) -> Vec<CastMember> {
 }
 
 fn card(srv: &Server, it: &Item, wide: bool, prefs: &CardPrefs) -> Card {
-    let blur = srv.id != DISCOVER_ID && prefs.blur(it, prefs.art(it, wide));
+    let blur = srv.id != DISCOVER_ID && prefs.should_blur(it, prefs.art(it, wide));
     card_with(&srv.id, it, wide, prefs, |path, w, h| {
         Some(srv.image_url(path, w, h) + if blur && w < 1920 { BLUR_PARAM } else { "" })
     })
@@ -717,7 +755,7 @@ fn card_with(
     Card {
         server: server.to_owned(),
         key: it.rating_key.clone(),
-        kind: it.kind.clone(),
+        kind: it.kind,
         title,
         subtitle,
         image: (!art.is_empty()).then(|| image(art, w, h)).flatten(),
@@ -725,14 +763,14 @@ fn card_with(
             .then(|| image(backdrop, 1920, 1080))
             .flatten(),
         meta: it.meta_line(),
-        summary: if prefs.spoiler(it) {
+        summary: if prefs.is_spoiler(it) {
             String::new()
         } else {
             it.summary.clone()
         },
         progress: it.progress(),
-        watched: it.watched(),
-        unwatched: it.unwatched(),
+        watched: it.is_watched(),
+        unwatched: it.unwatched_count(),
         left: it.time_left(),
     }
 }
@@ -1064,10 +1102,10 @@ impl Plaivo {
                 .collect(),
             rows: arranged
                 .iter()
-                .filter(|h| titles.insert((h.hub.title.clone(), h.source.clone())))
-                .filter_map(|h| {
+                .filter(|(h, source)| titles.insert((h.hub.title.as_str(), *source)))
+                .filter_map(|(h, source)| {
                     let mut row = rows(find(&h.server)?, std::slice::from_ref(&h.hub), &prefs);
-                    row.iter_mut().for_each(|r| r.source = h.source.clone());
+                    row.iter_mut().for_each(|r| r.source = source.to_string());
                     Some(row)
                 })
                 .flatten()
@@ -1140,7 +1178,15 @@ impl Plaivo {
         let ctx = self.ctx(cached);
         Ok(rows(
             &srv,
-            &srv.section_hubs(&ctx, &key, if movies { "movie" } else { "show" })?,
+            &srv.section_hubs(
+                &ctx,
+                &key,
+                if movies {
+                    ItemKind::Movie
+                } else {
+                    ItemKind::Show
+                },
+            )?,
             &self.card_prefs(),
         ))
     }
@@ -1192,7 +1238,7 @@ impl Plaivo {
                         id: library_key(&srv.id, &d.key),
                         server: srv.id.clone(),
                         server_name: srv.name.clone(),
-                        movies: d.kind == "movie",
+                        movies: d.kind == ItemKind::Movie,
                         key: d.key,
                         title: d.title,
                     })
@@ -1235,12 +1281,10 @@ impl Plaivo {
         let ctx = Ctx::new(self.client.clone(), Source::Live);
         let (start, size) = (start as usize, size as usize);
         let (items, total) = match listing {
-            Listing::Items { sort } => srv.section_items(&ctx, &key, start, size, &sort, list)?,
+            Listing::Items { sort } => srv.section_items(&ctx, &key, start, size, sort, list)?,
             Listing::Collections => srv.collections(&ctx, &key, start, size)?,
             Listing::CollectionItems => srv.collection_items(&ctx, &key, start, size, list)?,
-            Listing::Watchlist { sort, shows } => {
-                srv.watchlist(&ctx, if shows { "2" } else { "1" }, start, size, &sort)?
-            }
+            Listing::Watchlist { sort, shows } => srv.watchlist(&ctx, shows, start, size, sort)?,
         };
         Ok(LibraryPage {
             cards: items
@@ -1256,11 +1300,11 @@ impl Plaivo {
         let ctx = self.ctx(cached);
         let mut it = srv.detail(&ctx, &key)?;
         let mut wanted = None;
-        if it.kind == "season" && !it.parent_rating_key.is_empty() {
+        if it.kind == ItemKind::Season && !it.parent_rating_key.is_empty() {
             let show = srv.detail(&ctx, &it.parent_rating_key)?;
             wanted = Some(std::mem::replace(&mut it, show).rating_key);
         }
-        let seasons = if it.kind == "show" {
+        let seasons = if it.kind == ItemKind::Show {
             srv.seasons(&ctx, &mut it, self.server(DISCOVER_ID).ok().as_ref())?
         } else {
             Vec::new()
@@ -1272,7 +1316,7 @@ impl Plaivo {
         Ok(Detail {
             server: server_id,
             key: it.rating_key.clone(),
-            kind: it.kind.clone(),
+            kind: it.kind,
             title: it.title.clone(),
             eyebrow: summary.eyebrow,
             logo: image(it.logo(), 880, 300),
@@ -1288,10 +1332,10 @@ impl Plaivo {
                 .collect(),
             genres: it.top_genres().map(str::to_owned).collect(),
             summary: it.summary.clone(),
-            play_key: summary.play_key,
+            play_key: Some(summary.play_key).filter(|k| !k.is_empty()),
             play_label: summary.play_label,
             progress: summary.progress,
-            media_line: if it.kind == "show" {
+            media_line: if it.kind == ItemKind::Show {
                 String::new()
             } else {
                 it.media_line(0)
@@ -1322,11 +1366,11 @@ impl Plaivo {
                     image: image(&x.thumb, 300, 450),
                 })
                 .collect(),
-            watched: it.watched(),
+            watched: it.is_watched(),
             trailer_key: it.trailer().map(|t| t.rating_key.clone()),
             photo: None,
             rows: Vec::new(),
-            show_key: it.grandparent_rating_key.clone(),
+            show_key: Some(it.grandparent_rating_key.clone()).filter(|k| !k.is_empty()),
         })
     }
 
@@ -1345,7 +1389,7 @@ impl Plaivo {
         let mut keys = HashSet::new();
         let library: Vec<Card> = items
             .iter()
-            .filter(|(s, it)| keys.insert((s.clone(), it.rating_key.clone())))
+            .filter(|(s, it)| keys.insert((s.as_str(), it.rating_key.as_str())))
             .filter_map(|(s, it)| {
                 let owner = servers.iter().chain([&srv]).find(|x| x.id == *s)?;
                 Some(card(owner, it, false, &prefs))
@@ -1356,7 +1400,7 @@ impl Plaivo {
             Some(d) => info
                 .known_for
                 .iter()
-                .filter(|it| keys.insert(it.rating_key.clone()))
+                .filter(|it| keys.insert(it.rating_key.as_str()))
                 .map(|it| card(d, it, false, &prefs))
                 .collect(),
             None => Vec::new(),
@@ -1378,7 +1422,7 @@ impl Plaivo {
         Ok(Detail {
             server: server_id,
             key: id,
-            kind: "person".into(),
+            kind: ItemKind::Person,
             title: name,
             eyebrow: String::new(),
             logo: None,
@@ -1387,7 +1431,7 @@ impl Plaivo {
             ratings: Vec::new(),
             genres: Vec::new(),
             summary: info.summary.clone(),
-            play_key: String::new(),
+            play_key: None,
             play_label: String::new(),
             progress: 0.,
             media_line: String::new(),
@@ -1413,7 +1457,7 @@ impl Plaivo {
             .into_iter()
             .filter(|r| !r.cards.is_empty())
             .collect(),
-            show_key: String::new(),
+            show_key: None,
         })
     }
 
@@ -1471,14 +1515,14 @@ impl Plaivo {
         let it = srv.metadata(&Ctx::new(self.client.clone(), Source::Network), &key)?;
         let token = self.account.lock().unwrap().token.clone();
         let watchlisted = match (&token, it.plex_guid()) {
-            (Some(t), Some(guid)) if matches!(it.kind.as_str(), "movie" | "show") => {
+            (Some(t), Some(guid)) if matches!(it.kind, ItemKind::Movie | ItemKind::Show) => {
                 self.client.watchlisted(t, guid).ok()
             }
             _ => None,
         };
         let ctx = menu::Context {
             local: server_id != DISCOVER_ID,
-            details: it.kind == "episode",
+            details: it.kind == ItemKind::Episode,
             season: false,
             can_rate: srv.can_rate(),
             can_download: self.downloads.get().is_some(),
@@ -1496,11 +1540,16 @@ impl Plaivo {
             actions: menu::actions(&it, &ctx),
             trailer_key: it.trailer().map(|t| t.rating_key.clone()),
             stars: menu::stars(&it),
-            versions: it.media.iter().map(menu::version_label).collect(),
-            file_info: menu::file_info(&it)
-                .into_iter()
-                .map(|(label, value)| InfoLine { label, value })
+            versions: it
+                .media
+                .iter()
+                .enumerate()
+                .map(|(i, m)| InfoLine {
+                    label: menu::version_title(i),
+                    value: menu::version_label(m),
+                })
                 .collect(),
+            file_info: menu::file_info(&it),
         })
     }
 
@@ -1527,7 +1576,14 @@ impl Plaivo {
                     on,
                 )?
             }
-            _ => {
+            Action::FromStart
+            | Action::Trailer
+            | Action::Rate
+            | Action::Versions
+            | Action::FileInfo
+            | Action::Download
+            | Action::Details
+            | Action::Season => {
                 return Err(PlaivoError::Failed(
                     "This action opens on the device".into(),
                 ));
@@ -1545,10 +1601,9 @@ impl Plaivo {
     }
 
     pub fn search(&self, query: String) -> Vec<Card> {
-        if plaivo_core::search::too_short(&query) {
+        let Some(query) = plaivo_core::search::query(&query) else {
             return Vec::new();
-        }
-        let query = query.trim();
+        };
         let mut servers = self.active_servers();
         servers.retain(|s| !plaivo_core::plex::is_down(&s.id));
         let ctx = Ctx::new(self.client.clone(), Source::Live);
@@ -1779,7 +1834,6 @@ impl Plaivo {
         transcode_session: Option<String>,
     ) {
         self.scrobble(&server_id, &key, state, time_ms, duration_ms);
-        let state = state.as_str();
         let synced = self.server(&server_id).is_ok_and(|srv| {
             srv.timeline(
                 &self.client,
@@ -1958,12 +2012,17 @@ impl Plaivo {
 #[uniffi::export]
 pub fn library_sorts() -> Vec<SortOption> {
     SORTS
-        .iter()
-        .map(|(id, label)| SortOption {
-            id: (*id).into(),
-            label: (*label).into(),
+        .into_iter()
+        .map(|sort| SortOption {
+            sort,
+            label: sort.label().into(),
         })
         .collect()
+}
+
+#[uniffi::export]
+pub fn watchlist_sort() -> Sort {
+    WATCHLIST_SORT
 }
 
 #[uniffi::export]
@@ -2144,9 +2203,11 @@ pub fn list_summary_lines(density: u32) -> u32 {
 fn hub_sorts(items: &[Item], key: &str) -> Vec<HubSort> {
     plex::hub_sorts(items, key)
         .into_iter()
-        .map(|(id, label)| {
+        .map(|(sort, label)| {
             let mut sorted: Vec<&Item> = items.iter().collect();
-            plex::sort_items(&mut sorted, id);
+            if let Some(sort) = sort {
+                plex::sort_items(&mut sorted, sort);
+            }
             let order = sorted
                 .iter()
                 .map(|it| {
@@ -2157,7 +2218,7 @@ fn hub_sorts(items: &[Item], key: &str) -> Vec<HubSort> {
                 })
                 .collect();
             HubSort {
-                id: id.into(),
+                sort,
                 label: label.into(),
                 order,
             }
@@ -2192,17 +2253,19 @@ fn rows(srv: &Server, hubs: &[Hub], prefs: &CardPrefs) -> Vec<Row> {
 }
 
 fn download_parent<'a>(scope: &DownloadScope, it: &'a Item) -> Option<&'a String> {
-    match (scope, it.kind.as_str()) {
+    match (scope, it.kind) {
         (DownloadScope::Item, _)
-        | (DownloadScope::Season, "season")
-        | (DownloadScope::Show, "show") => None,
-        (DownloadScope::Season, _) | (DownloadScope::Show, "season") => Some(&it.parent_rating_key),
+        | (DownloadScope::Season, ItemKind::Season)
+        | (DownloadScope::Show, ItemKind::Show) => None,
+        (DownloadScope::Season, _) | (DownloadScope::Show, ItemKind::Season) => {
+            Some(&it.parent_rating_key)
+        }
         (DownloadScope::Show, _) => Some(&it.grandparent_rating_key),
     }
 }
 
 fn qr(text: &str) -> R<(u32, Vec<bool>)> {
-    let qr = QrCode::encode_text(text, QrCodeEcc::Medium).map_err(|e| format!("QR code: {e:?}"))?;
+    let qr = QrCode::encode_text(text, QrCodeEcc::Medium).map_err(|e| format!("QR code: {e}"))?;
     let size = qr.size();
     Ok((
         size as u32,
@@ -2335,7 +2398,7 @@ impl Plaivo {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn playback_for(
         &self,
         server: &str,
@@ -2356,13 +2419,16 @@ impl Plaivo {
             .marker
             .iter()
             .filter_map(|m| {
-                let at = settings.auto_skip_at(&m.kind, m.start_time_offset as f64 / 1000.0);
+                let labels = m.kind.labels()?;
+                let at = settings.auto_skip_at(m.kind, m.start_time_offset as f64 / 1000.0);
                 Some(SkipMarker {
-                    kind: m.kind.clone(),
-                    mode: settings.skip_mode(&m.kind),
+                    kind: m.kind,
+                    mode: settings.skip_mode(m.kind),
                     auto_at_ms: (at * 1000.0) as u64,
                     notice_at_ms: ((at - AUTO_SKIP_NOTICE).max(0.0) * 1000.0) as u64,
-                    label: m.skip_label()?.into(),
+                    label: labels.skip.into(),
+                    skipping_label: labels.skipping.into(),
+                    skipped_label: labels.skipped.into(),
                     start_ms: m.start_time_offset,
                     end_ms: m.end_time_offset,
                 })
@@ -2388,7 +2454,7 @@ impl Plaivo {
             duration_ms: it.duration.unwrap_or(0),
             subtitles,
             markers,
-            show_key: (it.kind == "episode" && !it.grandparent_rating_key.is_empty())
+            show_key: (it.kind == ItemKind::Episode && !it.grandparent_rating_key.is_empty())
                 .then(|| it.grandparent_rating_key.clone()),
             file,
             container: media.map(|m| m.container.clone()).unwrap_or_default(),
@@ -2554,15 +2620,15 @@ mod tests {
 
     #[test]
     fn download_scope_picks_the_season_or_show() {
-        use super::{DownloadScope as S, Item, download_parent};
+        use super::{DownloadScope as S, Item, ItemKind, download_parent};
         let episode = Item {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             parent_rating_key: "s".into(),
             grandparent_rating_key: "g".into(),
             ..Default::default()
         };
         let season = Item {
-            kind: "season".into(),
+            kind: ItemKind::Season,
             parent_rating_key: "g".into(),
             ..Default::default()
         };
@@ -2686,7 +2752,7 @@ mod tests {
 
     #[test]
     fn hub_sorts_give_card_orders() {
-        use super::{Item, hub_sorts};
+        use super::{Item, Sort, hub_sorts};
         let items = [
             Item {
                 title: "b".into(),
@@ -2699,14 +2765,19 @@ mod tests {
             },
         ];
         let sorts = hub_sorts(&items, "/hubs/x");
-        let order = |id: &str| sorts.iter().find(|s| s.id == id).map(|s| s.order.clone());
-        assert_eq!(order(""), Some(vec![0, 1]));
-        assert_eq!(order("titleSort"), Some(vec![1, 0]));
-        assert_eq!(order("addedAt:desc"), Some(vec![1, 0]));
+        let order = |sort: Option<Sort>| {
+            sorts
+                .iter()
+                .find(|s| s.sort == sort)
+                .map(|s| s.order.clone())
+        };
+        assert_eq!(order(None), Some(vec![0, 1]));
+        assert_eq!(order(Some(Sort::Title)), Some(vec![1, 0]));
+        assert_eq!(order(Some(Sort::Added)), Some(vec![1, 0]));
         assert!(
             hub_sorts(&items[..1], "/hubs/x")
                 .iter()
-                .all(|s| s.id != "addedAt:desc")
+                .all(|s| s.sort != Some(Sort::Added))
         );
     }
 

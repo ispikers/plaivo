@@ -136,7 +136,7 @@ impl Media {
     }
 
     pub fn plaivo(&self) -> Option<PlaivoExt> {
-        serde_json::from_value::<PlaivoExt>(self.ext.get(PLAIVO_EXT)?.clone())
+        PlaivoExt::deserialize(self.ext.get(PLAIVO_EXT)?)
             .ok()
             .filter(|h| safe_key(&h.item))
     }

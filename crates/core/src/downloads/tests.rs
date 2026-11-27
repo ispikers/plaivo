@@ -241,7 +241,7 @@ fn fake_plex(data: Arc<Vec<u8>>, cut_first: bool, paced: bool) -> (Server, Log) 
 fn show() -> Item {
     Item {
         rating_key: "100".into(),
-        kind: "show".into(),
+        kind: ItemKind::Show,
         title: "Show".into(),
         ..Default::default()
     }
@@ -250,7 +250,7 @@ fn show() -> Item {
 fn ep(key: &str) -> Item {
     Item {
         rating_key: key.into(),
-        kind: "episode".into(),
+        kind: ItemKind::Episode,
         ..Default::default()
     }
 }
@@ -452,7 +452,7 @@ fn bulk_show_downloads_for_offline_use_then_removes() {
         (Some("sub-1.srt"), "eng")
     );
     assert_eq!(d.item("srv1", "100").unwrap().title, "Show");
-    assert_eq!(d.item("srv1", "110").unwrap().kind, "season");
+    assert_eq!(d.item("srv1", "110").unwrap().kind, ItemKind::Season);
     assert_eq!(
         d.library()
             .iter()
@@ -604,7 +604,7 @@ fn jellyfin_downloads_the_static_original() {
         &srv,
         &Item {
             rating_key: "j1".into(),
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             ..Default::default()
         },
     );
@@ -671,7 +671,7 @@ fn queue_and_offline_progress_persist() {
     };
     let movie = Item {
         rating_key: "5".into(),
-        kind: "movie".into(),
+        kind: ItemKind::Movie,
         title: "M".into(),
         year: Some(2001),
         ..Default::default()
@@ -681,9 +681,9 @@ fn queue_and_offline_progress_persist() {
         d.enqueue(&unreachable, &movie);
         d.pause("srv1", "5");
         wait(&d, |s| s[0].state == State::Paused);
-        d.record_progress("srv1", "5", "playing", 10, 100, false);
-        d.record_progress("srv1", "5", "paused", 20, 100, false);
-        d.record_progress("srv1", "6", "stopped", 30, 100, false);
+        d.record_progress("srv1", "5", PlayState::Playing, 10, 100, false);
+        d.record_progress("srv1", "5", PlayState::Paused, 20, 100, false);
+        d.record_progress("srv1", "6", PlayState::Stopped, 30, 100, false);
     }
     let d = engine(&root, plenty);
     let s = d.snapshot();
@@ -691,12 +691,12 @@ fn queue_and_offline_progress_persist() {
     assert_eq!(
         (
             s[0].key.as_str(),
-            s[0].kind.as_str(),
+            s[0].kind,
             s[0].title.as_str(),
             s[0].subtitle.as_str(),
             s[0].state
         ),
-        ("5", "movie", "M", "2001", State::Paused)
+        ("5", ItemKind::Movie, "M", "2001", State::Paused)
     );
     let pending = d.inner.lock().pending.clone();
     assert_eq!(
@@ -972,7 +972,7 @@ fn auto_remove_watched_and_replay_when_reachable() {
         s.len() == 2 && s.iter().all(|e| e.state == State::Done)
     });
     d.set_auto_remove_watched(true);
-    d.record_progress("srv1", "102", "stopped", 400, 1000, false);
+    d.record_progress("srv1", "102", PlayState::Stopped, 400, 1000, false);
     assert_eq!(d.item("srv1", "102").unwrap().view_offset, Some(400));
     assert_eq!(
         store::read_json::<Item>(&root.join("srv1").join("102").join(ITEM))
@@ -980,14 +980,14 @@ fn auto_remove_watched_and_replay_when_reachable() {
             .view_offset,
         Some(400)
     );
-    d.record_progress("srv1", "101", "playing", 900, 1000, false);
+    d.record_progress("srv1", "101", PlayState::Playing, 900, 1000, false);
     std::thread::sleep(PRUNE_DELAY + Duration::from_millis(300));
     assert_eq!(
         d.snapshot().len(),
         2,
         "playing past the threshold is not a stop"
     );
-    d.record_progress("srv1", "101", "stopped", 950, 1000, false);
+    d.record_progress("srv1", "101", PlayState::Stopped, 950, 1000, false);
     assert_eq!(d.item("srv1", "101").unwrap().view_count, Some(1));
     let s = wait(&d, |s| s.len() == 1);
     assert_eq!(s[0].key, "102");
@@ -1021,10 +1021,8 @@ fn auto_remove_watched_and_replay_when_reachable() {
 #[test]
 #[ignore = "reads the owner's Plex config and a real server (GET only)"]
 fn live_plex_range_read() {
-    let config = PathBuf::from(std::env::var_os("APPDATA").expect("APPDATA"))
-        .join("Plaivo")
-        .join("config.json");
-    let account: crate::Account = store::read_json(&config).expect("Plaivo config.json");
+    let account: crate::Account =
+        store::read_json(&store::config_dir().join("config.json")).expect("Plaivo config.json");
     let client = Client::new(account.client_id.clone());
     let cx = Ctx::new(client.clone(), Source::Live);
     let (srv, item) = account
@@ -1035,10 +1033,10 @@ fn live_plex_range_read() {
             let sections = srv.sections(&cx).ok()?;
             sections.iter().find_map(|sec| {
                 let (items, _) = srv
-                    .section_items(&cx, &sec.key, 0, 1, "addedAt:desc", false)
+                    .section_items(&cx, &sec.key, 0, 1, crate::plex::Sort::Added, false)
                     .ok()?;
                 let key = &items.first()?.rating_key;
-                let leaf = if sec.kind == "show" {
+                let leaf = if sec.kind == ItemKind::Show {
                     srv.all_episodes(&cx, key).ok()?.into_iter().next()?
                 } else {
                     items.into_iter().next()?
@@ -1076,7 +1074,7 @@ fn live_plex_range_read() {
         .unwrap();
     std::fs::write(&file, &head).unwrap();
     println!(
-        "{} {} first request: status {status}, start {start}, total {total:?}, wrote {} bytes",
+        "{:?} {} first request: status {status}, start {start}, total {total:?}, wrote {} bytes",
         item.kind,
         item.rating_key,
         std::fs::metadata(&file).unwrap().len()
@@ -1112,12 +1110,12 @@ fn synced_progress_updates_the_snapshot_without_a_replay() {
     let d = engine(&root, plenty);
     d.enqueue(&srv, &ep("101"));
     wait(&d, |s| s.len() == 1 && s[0].state == State::Done);
-    d.record_progress("srv1", "101", "playing", 300, 1000, true);
+    d.record_progress("srv1", "101", PlayState::Playing, 300, 1000, true);
     assert!(d.inner.lock().pending.is_empty());
-    d.record_progress("srv1", "101", "stopped", 400, 1000, true);
+    d.record_progress("srv1", "101", PlayState::Stopped, 400, 1000, true);
     assert_eq!(d.item("srv1", "101").unwrap().view_offset, Some(400));
     assert!(d.inner.lock().pending.is_empty());
-    d.record_progress("srv1", "101", "playing", 500, 1000, false);
+    d.record_progress("srv1", "101", PlayState::Playing, 500, 1000, false);
     assert_eq!(
         d.inner
             .lock()
@@ -1128,6 +1126,36 @@ fn synced_progress_updates_the_snapshot_without_a_replay() {
         [500],
         "an unsynced report keeps the resume point even before the stop"
     );
+    d.record_progress("srv1", "101", PlayState::Playing, 600, 1000, true);
+    assert!(
+        d.inner.lock().pending.is_empty(),
+        "an accepted report makes the queued one stale"
+    );
+    d.record_progress("srv1", "101", PlayState::Playing, 950, 1000, false);
+    d.record_progress("srv1", "101", PlayState::Playing, 100, 1000, true);
+    assert_eq!(
+        d.inner
+            .lock()
+            .pending
+            .iter()
+            .map(|p| p.watched)
+            .collect::<Vec<_>>(),
+        [true],
+        "a queued scrobble outlives a later report below the threshold"
+    );
+    drop(d);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn files_that_cannot_be_read_are_never_overwritten() {
+    let root = temp("unreadable");
+    std::fs::create_dir_all(root.join(QUEUE)).unwrap();
+    std::fs::create_dir_all(root.join(PROGRESS)).unwrap();
+    let d = engine(&root, plenty);
+    assert!(d.inner.queue_unread && d.inner.progress_unread);
+    drop(d);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -1211,6 +1239,10 @@ fn pausing_during_a_metadata_request_sticks() {
         s.iter().all(|e| e.state == State::Paused),
         "episodes of a paused show stay paused: {:?}",
         s.iter().map(|e| e.state).collect::<Vec<_>>()
+    );
+    assert!(
+        s.iter().all(|e| e.parents == ["110", "100"]),
+        "episodes that never started still belong to their show"
     );
 
     d.resume("srv1", "101");

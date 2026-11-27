@@ -1,8 +1,9 @@
-use crate::plex::{DISCOVER_ID, Item};
+use crate::plex::{DISCOVER_ID, Item, ItemKind};
 use std::collections::HashSet;
 
-pub fn too_short(q: &str) -> bool {
-    q.trim().chars().count() < 2
+pub fn query(q: &str) -> Option<&str> {
+    let q = q.trim();
+    (q.chars().count() >= 2).then_some(q)
 }
 
 fn title_rank(title: &str, q: &str) -> u8 {
@@ -33,8 +34,8 @@ pub fn rank(
     let mut lib: Vec<(u8, bool, f64, String, Item)> = Vec::new();
     for (server, hits) in local {
         for (it, score) in hits {
-            let it = it.as_show();
-            if !matches!(it.kind.as_str(), "movie" | "show")
+            let it = it.into_show();
+            if !matches!(it.kind, ItemKind::Movie | ItemKind::Show)
                 || !seen.insert((server.clone(), it.rating_key.clone()))
             {
                 continue;
@@ -59,7 +60,7 @@ pub fn rank(
     out.extend(
         discover
             .into_iter()
-            .filter(|it| matches!(it.kind.as_str(), "movie" | "show"))
+            .filter(|it| matches!(it.kind, ItemKind::Movie | ItemKind::Show))
             .filter(|it| {
                 !owned_guids.contains(&it.guid)
                     && !owned_titles.contains(&(it.title.to_lowercase(), it.year))
@@ -73,10 +74,10 @@ pub fn rank(
 mod tests {
     use super::*;
 
-    fn item(key: &str, kind: &str, title: &str, guid: &str) -> Item {
+    fn item(key: &str, kind: ItemKind, title: &str, guid: &str) -> Item {
         Item {
             rating_key: key.into(),
-            kind: kind.into(),
+            kind,
             title: title.into(),
             guid: guid.into(),
             ..Default::default()
@@ -88,9 +89,9 @@ mod tests {
         let local = vec![(
             "home".to_owned(),
             vec![
-                (item("1", "movie", "Sherlock Gnomes", "g1"), 0.99),
-                (item("2", "show", "Dexter's Laboratory", "g2"), 0.5),
-                (item("3", "show", "Dexter", "g3"), 0.4),
+                (item("1", ItemKind::Movie, "Sherlock Gnomes", "g1"), 0.99),
+                (item("2", ItemKind::Show, "Dexter's Laboratory", "g2"), 0.5),
+                (item("3", ItemKind::Show, "Dexter", "g3"), 0.4),
             ],
         )];
         let keys: Vec<_> = rank("dexter", "home", local, vec![])
@@ -102,20 +103,20 @@ mod tests {
 
     #[test]
     fn episodes_fold_into_one_show_and_owned_discover_hits_drop() {
-        let mut ep = item("10", "episode", "Pilot", "");
+        let mut ep = item("10", ItemKind::Episode, "Pilot", "");
         ep.grandparent_rating_key = "2".into();
         ep.grandparent_title = "Dexter's Laboratory".into();
         let local = vec![(
             "home".to_owned(),
             vec![
-                (item("2", "show", "Dexter's Laboratory", "g2"), 0.5),
+                (item("2", ItemKind::Show, "Dexter's Laboratory", "g2"), 0.5),
                 (ep.clone(), 0.4),
                 (ep, 0.3),
             ],
         )];
         let discover = vec![
-            item("x", "show", "Dexter's Laboratory", "g2"),
-            item("y", "show", "Dexter: New Blood", "g9"),
+            item("x", ItemKind::Show, "Dexter's Laboratory", "g2"),
+            item("y", ItemKind::Show, "Dexter: New Blood", "g9"),
         ];
         let out = rank("dexter", "home", local, discover);
         let keys: Vec<_> = out
@@ -126,19 +127,43 @@ mod tests {
     }
 
     #[test]
+    fn folded_episodes_keep_the_show_guid_across_servers() {
+        let ep = |key: &str| {
+            let mut ep = item(key, ItemKind::Episode, "Pilot", "e1");
+            ep.grandparent_rating_key = format!("show{key}");
+            ep.grandparent_guid = "g2".into();
+            ep.grandparent_title = "Dexter's Laboratory".into();
+            ep
+        };
+        let local = vec![
+            ("home".to_owned(), vec![(ep("1"), 0.5)]),
+            ("other".to_owned(), vec![(ep("2"), 0.5)]),
+        ];
+        let discover = vec![Item {
+            year: Some(1996),
+            ..item("x", ItemKind::Show, "Dexter's Laboratory", "g2")
+        }];
+        let keys: Vec<_> = rank("pilot", "home", local, discover)
+            .into_iter()
+            .map(|(s, i)| format!("{s}/{}", i.rating_key))
+            .collect();
+        assert_eq!(keys, ["home/show1"]);
+    }
+
+    #[test]
     fn home_server_breaks_title_ties_and_guids_dedupe_across_servers() {
         let local = vec![
             (
                 "other".to_owned(),
-                vec![(item("1", "movie", "Dexter", "g1"), 0.9)],
+                vec![(item("1", ItemKind::Movie, "Dexter", "g1"), 0.9)],
             ),
             (
                 "third".to_owned(),
-                vec![(item("3", "movie", "Dexter", "g2"), 0.9)],
+                vec![(item("3", ItemKind::Movie, "Dexter", "g2"), 0.9)],
             ),
             (
                 "home".to_owned(),
-                vec![(item("2", "movie", "Dexter", "g2"), 0.1)],
+                vec![(item("2", ItemKind::Movie, "Dexter", "g2"), 0.1)],
             ),
         ];
         let keys: Vec<_> = rank("dexter", "home", local, vec![])
@@ -155,8 +180,8 @@ mod tests {
     }
 
     #[test]
-    fn single_characters_are_too_short() {
-        assert!(too_short(" a "));
-        assert!(!too_short("ab"));
+    fn queries_are_trimmed_and_single_characters_rejected() {
+        assert_eq!(query(" a "), None);
+        assert_eq!(query(" ab "), Some("ab"));
     }
 }

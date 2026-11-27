@@ -45,13 +45,19 @@ pub fn cache_dir() -> PathBuf {
 }
 
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
-    let parsed = match std::fs::read(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        r => r
-            .map_err(|e| e.to_string())
-            .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string())),
+    try_read_json(path).ok().flatten()
+}
+
+pub fn try_read_json<T: DeserializeOwned>(path: &Path) -> std::io::Result<Option<T>> {
+    let bytes = match std::fs::read(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            log::warn!("could not read {}: {e}", path.display());
+            return Err(e);
+        }
+        Ok(b) => b,
     };
-    parsed
+    Ok(serde_json::from_slice(&bytes)
         .inspect_err(|e| {
             let mut bad = path.as_os_str().to_owned();
             bad.push(".bad");
@@ -65,7 +71,7 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
                 log::error!("could not back up {}: {e}", path.display());
             }
         })
-        .ok()
+        .ok())
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -101,14 +107,14 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> bool {
 
 pub(crate) struct Writes {
     issued: AtomicU64,
-    written: Mutex<u64>,
+    written: Mutex<(u64, bool)>,
 }
 
 impl Writes {
     pub const fn new() -> Self {
         Writes {
             issued: AtomicU64::new(0),
-            written: Mutex::new(0),
+            written: Mutex::new((0, true)),
         }
     }
 
@@ -128,22 +134,24 @@ impl Writes {
     }
 
     pub fn flush<T: Serialize>(&self, path: &Path, value: &T) {
-        if self.issued.load(Ordering::SeqCst) > *self.lock() {
+        let (written, ok) = *self.lock();
+        if self.issued.load(Ordering::SeqCst) > written || !ok {
             self.now(path, value);
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, u64> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, (u64, bool)> {
         self.written.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn write<T: Serialize>(&self, ticket: u64, path: &Path, value: &T) -> bool {
         let mut written = self.lock();
-        if *written > ticket {
+        if written.0 > ticket {
             return true;
         }
-        *written = ticket;
-        write_json(path, value)
+        let ok = write_json(path, value);
+        *written = (ticket, ok);
+        ok
     }
 }
 
@@ -153,8 +161,18 @@ pub(crate) fn fnv1a(key: &str) -> u64 {
     })
 }
 
-pub fn cache_path(kind: &str, key: &str) -> PathBuf {
-    cache_dir().join(kind).join(format!("{:016x}", fnv1a(key)))
+#[derive(Clone, Copy)]
+pub enum CacheKind {
+    Img,
+    Meta,
+}
+
+pub fn cache_path(kind: CacheKind, key: &str) -> PathBuf {
+    let dir = match kind {
+        CacheKind::Img => "img",
+        CacheKind::Meta => "meta",
+    };
+    cache_dir().join(dir).join(format!("{:016x}", fnv1a(key)))
 }
 
 // Pruning goes by modified time, so a cache hit refreshes it (at most daily) to keep used files.
@@ -210,8 +228,16 @@ pub fn apply_pending_reset() {
 }
 
 pub fn clear_cache() {
-    for kind in ["img", "meta"] {
-        let _ = std::fs::remove_dir_all(cache_dir().join(kind));
+    for d in std::fs::read_dir(cache_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        if d.file_type().is_ok_and(|t| t.is_dir())
+            && let Err(e) = std::fs::remove_dir_all(d.path())
+        {
+            log::warn!("could not clear {}: {e}", d.path().display());
+        }
     }
 }
 
@@ -238,9 +264,24 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_write_is_retried_by_flush() {
+        static WRITES: Writes = Writes::new();
+        let p = std::env::temp_dir().join(format!("plaivo-writes-retry-{}", std::process::id()));
+        std::fs::create_dir_all(p.join("blocker")).unwrap();
+        WRITES.later(p.clone(), 1)();
+        std::fs::remove_dir_all(&p).unwrap();
+        WRITES.flush(&p, &2);
+        assert_eq!(read_json::<i32>(&p), Some(2));
+        std::fs::remove_file(&p).unwrap();
+    }
+
+    #[test]
     fn cache_keys_are_stable_and_distinct() {
         assert_eq!(fnv1a("abc"), 0xe71fa2190541574b);
-        assert_ne!(cache_path("meta", "a"), cache_path("meta", "b"));
+        assert_ne!(
+            cache_path(CacheKind::Meta, "a"),
+            cache_path(CacheKind::Meta, "b")
+        );
     }
 
     #[test]
@@ -255,6 +296,8 @@ mod tests {
         let after = std::fs::metadata(&p).unwrap().modified().unwrap();
         assert!(after > old + TOUCH_AFTER);
         assert_eq!(std::fs::read(&p).unwrap(), b"x");
+        touch(&p);
+        assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), after);
         let _ = std::fs::remove_file(&p);
     }
 

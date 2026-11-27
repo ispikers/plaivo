@@ -95,7 +95,7 @@ pub(crate) fn fetch(
         return Err(restart(part, "The file changed on the server"));
     }
     if let (Some(total), Some(free)) = (total, free_space(part.parent().unwrap_or(Path::new("."))))
-        && free < total.saturating_sub(start) + RESERVE
+        && free < total.saturating_sub(start).saturating_add(RESERVE)
     {
         return Err(Fail::Fatal(
             "Not enough free space for this download".into(),

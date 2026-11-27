@@ -1,5 +1,5 @@
 use crate::{Plaivo, R};
-use plaivo_core::plex::{Ctx, DISCOVER_ID, Source, resolve_playable};
+use plaivo_core::plex::{Ctx, DISCOVER_ID, ItemKind, Source, resolve_playable};
 use plaivo_core::settings::Settings;
 use plaivo_core::watch_together::{
     Connection, Control, Event, Match, MatchState, Media, Participant, PartyState, PlayerCommand,
@@ -188,7 +188,7 @@ impl Plaivo {
         let srv = self.server(&server_id)?;
         let cx = Ctx::new(self.client.clone(), Source::Live);
         let it = resolve_playable(&srv, &cx, &key)?;
-        let show = (it.kind == "episode" && !it.grandparent_rating_key.is_empty())
+        let show = (it.kind == ItemKind::Episode && !it.grandparent_rating_key.is_empty())
             .then(|| srv.metadata(&cx, &it.grandparent_rating_key).ok())
             .flatten();
         let media = describe(&srv.id, &it, show.as_ref())
@@ -285,7 +285,7 @@ impl Plaivo {
             let wt = WatchTogether::new(&name, plaivo_core::CLIENT, relays, move |u| {
                 deliver(&*listener, &shared, u)
             })
-            .map_err(|e| format!("Watch Together: {}", e.code))?;
+            .map_err(|e| e.text().unwrap_or("Couldn't start Watch Together."))?;
             slot = self.watch.lock().unwrap();
             replaced = slot.replace(Session {
                 wt,
@@ -345,7 +345,9 @@ fn view(s: &PartyState) -> WatchState {
     let me = s.peer_id.as_deref();
     let status = match s.match_.map(|m| m.state) {
         Some(MatchState::Searching | MatchState::Unavailable) => s.sync_text().into(),
-        _ => s.waiting_text().unwrap_or_default(),
+        None | Some(MatchState::Matched | MatchState::Mismatched) => {
+            s.waiting_text().unwrap_or_default()
+        }
     };
     WatchState {
         connection: match s.connection {

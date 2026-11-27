@@ -59,6 +59,7 @@ import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.DownloadState
 import uniffi.plaivo_ffi.Home
+import uniffi.plaivo_ffi.ItemKind
 import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.ServerInfo
 
@@ -304,7 +305,7 @@ private fun Info(card: MediaCard?, modifier: Modifier) {
                     ),
             )
             val meta =
-                listOf(c.subtitle.takeIf { c.kind == "episode" }, c.meta)
+                listOf(c.subtitle.takeIf { c.kind == ItemKind.EPISODE }, c.meta)
                     .filterNot { it.isNullOrEmpty() }
                     .joinToString(" · ")
             if (meta.isNotEmpty())

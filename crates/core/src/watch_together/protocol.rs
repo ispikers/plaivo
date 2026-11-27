@@ -162,11 +162,58 @@ pub struct Joined {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    Cancelled,
+    RateLimited,
+    ClientBlocked,
+    Unsupported,
+    InvalidCode,
+    InvalidMessage,
+    RoomNotFound,
+    RoomFull,
+    RoomLocked,
+    Locked,
+    RelayFull,
+    Unreachable,
+    Forbidden,
+    NotHost,
+    NotInRoom,
+    AlreadyInRoom,
+    ResumeFailed,
+    #[serde(untagged)]
+    Other(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MsgType {
+    Create,
+    Join,
+    Resume,
+    Ping,
+    Status,
+    Play,
+    Pause,
+    Seek,
+    Rate,
+    SetMedia,
+    SetControl,
+    TransferHost,
+    Kick,
+    Lock,
+    Leave,
+    End,
+    #[serde(untagged)]
+    Other(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct WireError {
-    pub code: String,
+    pub code: ErrorCode,
     pub message: String,
     #[serde(deserialize_with = "present")]
-    pub re: Option<String>,
+    pub re: Option<MsgType>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -213,9 +260,9 @@ pub fn parse(text: &str) -> ServerMsg {
             .map(|j| ServerMsg::Joined(Box::new(j))),
         "room" => {
             let media = v.as_object_mut().and_then(|o| o.remove("media"));
-            let action = match v.get("action") {
+            let action = match v.as_object_mut().and_then(|o| o.remove("action")) {
                 None => Some(None),
-                Some(a) => serde_json::from_value::<Action>(a.clone())
+                Some(a) => serde_json::from_value::<Action>(a)
                     .ok()
                     .filter(|a| !a.kind.is_empty() && a.by.as_deref().is_none_or(valid_peer_id))
                     .map(Some),
@@ -238,7 +285,7 @@ pub fn parse(text: &str) -> ServerMsg {
         },
         "error" => serde_json::from_value::<WireError>(v)
             .ok()
-            .filter(|e| !e.code.is_empty())
+            .filter(|e| e.code != ErrorCode::Other(String::new()))
             .map(ServerMsg::Error),
         "closed" => v
             .get("reason")
@@ -511,6 +558,31 @@ pub(crate) mod tests {
             "end.basic" => ClientMsg::End,
             _ => return None,
         })
+    }
+
+    #[test]
+    fn error_codes_and_message_types_parse_once_and_keep_unknown_ones() {
+        let code = |c: &str| match parse(&format!(
+            r#"{{"type":"error","code":"{c}","message":"","re":null}}"#
+        )) {
+            ServerMsg::Error(e) => Some(e.code),
+            _ => None,
+        };
+        assert_eq!(code("room_not_found"), Some(ErrorCode::RoomNotFound));
+        assert_eq!(code("resume_failed"), Some(ErrorCode::ResumeFailed));
+        assert_eq!(
+            code("maintenance"),
+            Some(ErrorCode::Other("maintenance".into()))
+        );
+        assert_eq!(code(""), None);
+        let re = |r: &str| match parse(&format!(
+            r#"{{"type":"error","code":"forbidden","message":"","re":"{r}"}}"#
+        )) {
+            ServerMsg::Error(e) => e.re,
+            _ => None,
+        };
+        assert_eq!(re("setMedia"), Some(MsgType::SetMedia));
+        assert_eq!(re("warp"), Some(MsgType::Other("warp".into())));
     }
 
     #[test]

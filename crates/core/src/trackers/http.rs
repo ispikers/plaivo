@@ -2,14 +2,13 @@ use serde_json::Value;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-#[derive(Debug, PartialEq)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(crate) enum Body {
     Empty,
     Json(Value),
     Form(String),
 }
 
-#[derive(Debug, PartialEq)]
 pub(crate) struct Request {
     pub method: &'static str,
     pub url: String,

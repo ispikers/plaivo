@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::plex::{Client, Ctx, Item, Media, Part, Server, Source, Stream};
+use crate::plex::{Client, Ctx, Item, ItemKind, Media, Part, Server, Source, Stream};
 use crate::store;
+use crate::trackers::PlayState;
 use fetch::{Fail, disk};
 use progress::Pending;
 
@@ -44,7 +46,7 @@ pub enum State {
 pub struct Entry {
     pub server: String,
     pub key: String,
-    pub kind: String,
+    pub kind: ItemKind,
     pub title: String,
     pub subtitle: String,
     pub state: State,
@@ -72,7 +74,7 @@ impl Entry {
         Entry {
             server: server.into(),
             key: it.rating_key.clone(),
-            kind: it.kind.clone(),
+            kind: it.kind,
             title,
             subtitle,
             state: State::Queued,
@@ -80,7 +82,7 @@ impl Entry {
             total: 0,
             error: String::new(),
             file: String::new(),
-            parents: Vec::new(),
+            parents: parent_keys(it),
             watched: false,
             source: String::new(),
             removing: false,
@@ -94,6 +96,12 @@ impl Entry {
     fn id(&self) -> (String, String) {
         (self.server.clone(), self.key.clone())
     }
+
+    fn ids(&self) -> impl Iterator<Item = (String, String)> + '_ {
+        std::iter::once(&self.key)
+            .chain(&self.parents)
+            .map(|k| (self.server.clone(), k.clone()))
+    }
 }
 
 pub struct Local {
@@ -104,6 +112,7 @@ pub struct Local {
 pub struct Downloads {
     inner: Arc<Inner>,
     worker: Option<JoinHandle<()>>,
+    done: Mutex<Receiver<()>>,
 }
 
 struct Inner {
@@ -115,6 +124,8 @@ struct Inner {
     disk: Mutex<()>,
     wake: Condvar,
     abort: AtomicBool,
+    queue_unread: bool,
+    progress_unread: bool,
 }
 
 #[derive(Default)]
@@ -243,13 +254,25 @@ fn write_item(dir: &Path, it: &Item) -> Result<(), Fail> {
     store::write_atomic(&dir.join(ITEM), &bytes).map_err(disk)
 }
 
-fn load_entries(root: &Path) -> Vec<Entry> {
+fn part_file(dir: &Path, file: &str) -> PathBuf {
+    dir.join(format!("{file}.part"))
+}
+
+fn load_entries(root: &Path) -> std::io::Result<Vec<Entry>> {
     let path = root.join(QUEUE);
-    let Ok(bytes) = std::fs::read(&path) else {
-        return Vec::new();
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            log::error!(
+                "could not read {}: {e}; leaving it untouched until the next start",
+                path.display()
+            );
+            return Err(e);
+        }
     };
     if let Ok(entries) = serde_json::from_slice(&bytes) {
-        return entries;
+        return Ok(entries);
     }
     log::error!(
         "{} is unreadable, rebuilding the queue from the downloaded items",
@@ -265,7 +288,7 @@ fn load_entries(root: &Path) -> Vec<Entry> {
             .into_owned();
         for kdir in subdirs(&sdir) {
             let Some(it) = store::read_json::<Item>(&kdir.join(ITEM))
-                .filter(|it| matches!(it.kind.as_str(), "movie" | "episode"))
+                .filter(|it| matches!(it.kind, ItemKind::Movie | ItemKind::Episode))
             else {
                 continue;
             };
@@ -275,7 +298,6 @@ fn load_entries(root: &Path) -> Vec<Entry> {
             let mut e = Entry::new(&server, &it);
             e.file = media_name(media, part);
             e.source = part.key.clone();
-            e.parents = parent_keys(&it);
             match std::fs::metadata(kdir.join(&e.file)) {
                 Ok(m) => (e.state, e.bytes, e.total) = (State::Done, m.len(), m.len()),
                 Err(_) => e.state = State::Paused,
@@ -283,7 +305,7 @@ fn load_entries(root: &Path) -> Vec<Entry> {
             entries.push(e);
         }
     }
-    entries
+    Ok(entries)
 }
 
 impl Downloads {
@@ -301,22 +323,25 @@ impl Downloads {
         free_space: fn(&Path) -> Option<u64>,
         on_change: Box<dyn Fn() + Send + Sync>,
     ) -> Self {
-        let mut entries = load_entries(&root);
+        let loaded = load_entries(&root);
+        let queue_unread = loaded.is_err();
+        let mut entries = loaded.unwrap_or_default();
         for e in &mut entries {
             if e.state == State::Downloading {
                 e.state = State::Queued;
             }
             if e.state != State::Done && !e.file.is_empty() {
-                e.bytes = std::fs::metadata(
-                    root.join(safe(&e.server))
-                        .join(safe(&e.key))
-                        .join(format!("{}.part", e.file)),
-                )
+                e.bytes = std::fs::metadata(part_file(
+                    &root.join(safe(&e.server)).join(safe(&e.key)),
+                    &e.file,
+                ))
                 .map(|m| m.len())
                 .unwrap_or(0);
             }
         }
-        let pending: Vec<Pending> = store::read_json(&root.join(PROGRESS)).unwrap_or_default();
+        let progress = store::try_read_json::<Vec<Pending>>(&root.join(PROGRESS));
+        let progress_unread = progress.is_err();
+        let pending = progress.ok().flatten().unwrap_or_default();
         let shared = Shared {
             replay_at: (!pending.is_empty()).then(Instant::now),
             prune_at: entries.iter().any(|e| e.removing).then(Instant::now),
@@ -334,15 +359,22 @@ impl Downloads {
             disk: Mutex::new(()),
             wake: Condvar::new(),
             abort: AtomicBool::new(false),
+            queue_unread,
+            progress_unread,
         });
         let worker = inner.clone();
+        let (done_tx, done) = mpsc::channel::<()>();
         let worker = std::thread::Builder::new()
             .name("downloads".into())
-            .spawn(move || worker.run())
+            .spawn(move || {
+                worker.run();
+                drop(done_tx);
+            })
             .expect("spawn downloads worker");
         Self {
             inner,
             worker: Some(worker),
+            done: Mutex::new(done),
         }
     }
 
@@ -528,19 +560,25 @@ impl Downloads {
         &self,
         server: &str,
         key: &str,
-        state: &str,
+        state: PlayState,
         time_ms: u64,
         duration_ms: u64,
         synced: bool,
     ) {
-        let stopped = state == "stopped";
-        if synced && !stopped {
-            return;
-        }
+        let stopped = state == PlayState::Stopped;
         let watched = progress::watched(time_ms, duration_ms);
         let snapshot = {
             let mut s = self.inner.lock();
-            if !synced {
+            if synced {
+                let queued = s.pending.len();
+                s.pending
+                    .retain(|p| p.server != server || p.key != key || (p.watched && !watched));
+                let dropped = s.pending.len() != queued;
+                s.save_progress |= dropped;
+                if !stopped && !dropped {
+                    return;
+                }
+            } else {
                 progress::coalesce(
                     &mut s.pending,
                     Pending {
@@ -569,8 +607,10 @@ impl Downloads {
         };
         self.inner.flush();
         self.inner.wake.notify_all();
-        if let Some(it) = snapshot {
-            let _ = write_item(&self.inner.dir(server, key), &it);
+        if let Some(it) = snapshot
+            && let Err(err) = write_item(&self.inner.dir(server, key), &it)
+        {
+            log::warn!("could not save offline progress for {key}: {err:?}");
         }
         if stopped && watched {
             self.inner.update(|s| {
@@ -594,11 +634,8 @@ impl Drop for Downloads {
         let Some(worker) = self.worker.take() else {
             return;
         };
-        let until = Instant::now() + SHUTDOWN_WAIT;
-        while !worker.is_finished() && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        if worker.is_finished() {
+        let done = self.done.get_mut().unwrap_or_else(|e| e.into_inner());
+        if done.recv_timeout(SHUTDOWN_WAIT) == Err(mpsc::RecvTimeoutError::Disconnected) {
             let _ = worker.join();
         }
     }
@@ -613,11 +650,21 @@ impl Inner {
         self.root.join(safe(server)).join(safe(key))
     }
 
+    fn images_dir(&self, server: &str) -> PathBuf {
+        self.root.join(safe(server)).join(IMAGES)
+    }
+
     fn image_path(&self, server: &str, path: &str) -> PathBuf {
-        self.root
-            .join(safe(server))
-            .join(IMAGES)
+        self.images_dir(server)
             .join(format!("{:016x}.jpg", store::fnv1a(path)))
+    }
+
+    fn image_files(&self, server: &str) -> impl Iterator<Item = PathBuf> {
+        std::fs::read_dir(self.images_dir(server))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|f| f.path())
     }
 
     // Snapshots under `shared` but writes outside it, so a slow disk never blocks render; `disk` keeps writes in order.
@@ -634,10 +681,10 @@ impl Inner {
                 std::mem::take(&mut s.save_progress).then(|| s.pending.clone()),
             )
         };
-        if let Some(entries) = entries {
+        if let Some(entries) = entries.filter(|_| !self.queue_unread) {
             store::write_json(&self.root.join(QUEUE), &entries);
         }
-        if let Some(pending) = pending {
+        if let Some(pending) = pending.filter(|_| !self.progress_unread) {
             store::write_json(&self.root.join(PROGRESS), &pending);
         }
     }
@@ -690,34 +737,18 @@ impl Inner {
     }
 
     fn load_cache(&self) {
-        let keys: HashSet<(String, String)> = self
-            .lock()
-            .entries
-            .iter()
-            .flat_map(|e| {
-                std::iter::once(e.key.clone())
-                    .chain(e.parents.iter().cloned())
-                    .map(|k| (e.server.clone(), k))
-            })
-            .collect();
+        let keys: HashSet<(String, String)> =
+            self.lock().entries.iter().flat_map(Entry::ids).collect();
         let servers: HashSet<&String> = keys.iter().map(|(srv, _)| srv).collect();
         let images: Vec<PathBuf> = servers
             .into_iter()
-            .flat_map(|srv| {
-                std::fs::read_dir(self.root.join(safe(srv)).join(IMAGES))
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|f| f.path())
-            })
+            .flat_map(|srv| self.image_files(srv))
             .collect();
         let items: Vec<((String, String), Item)> = keys
             .into_iter()
             .filter_map(|(srv, k)| {
-                Some((
-                    (srv.clone(), k.clone()),
-                    store::read_json(&self.dir(&srv, &k).join(ITEM))?,
-                ))
+                let it = store::read_json(&self.dir(&srv, &k).join(ITEM))?;
+                Some(((srv, k), it))
             })
             .collect();
         {
@@ -840,7 +871,7 @@ impl Inner {
                     let fresh: Vec<Entry> = items
                         .iter()
                         .filter(|it| {
-                            matches!(it.kind.as_str(), "episode" | "movie")
+                            matches!(it.kind, ItemKind::Episode | ItemKind::Movie)
                                 && !it.rating_key.is_empty()
                                 && !s.entries.iter().any(|x| x.is(&e.server, &it.rating_key))
                         })
@@ -859,7 +890,7 @@ impl Inner {
                         total,
                         error: String::new(),
                         watched,
-                        ..e.clone()
+                        ..e
                     };
                 }
                 Err(Fail::Net(m) | Fail::Fatal(m)) => {
@@ -877,14 +908,14 @@ impl Inner {
     fn attempt(&self, e: &mut Entry, srv: &Server) -> Result<Outcome, Fail> {
         self.live()?;
         let cx = Ctx::new(self.client.clone(), Source::Live);
-        match e.kind.as_str() {
-            "show" => {
+        match e.kind {
+            ItemKind::Show => {
                 return srv
                     .all_episodes(&cx, &e.key)
                     .map(Outcome::Expanded)
                     .map_err(Fail::Net);
             }
-            "season" => {
+            ItemKind::Season => {
                 return srv
                     .episodes(&cx, &e.key)
                     .map(Outcome::Expanded)
@@ -914,8 +945,14 @@ impl Inner {
             .ok_or_else(|| Fail::Fatal("This item has no file to download".into()))?;
         let name = media_name(media, part);
         if !e.source.is_empty() && (e.source != part.key || e.file != name) {
-            let _ = std::fs::remove_file(dir.join(format!("{}.part", e.file)));
-            let _ = std::fs::remove_file(dir.join(&e.file));
+            for f in [part_file(&dir, &e.file), dir.join(&e.file)] {
+                match std::fs::remove_file(&f) {
+                    Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(disk(err));
+                    }
+                    _ => {}
+                }
+            }
             (e.bytes, e.total) = (0, 0);
         }
         e.source.clone_from(&part.key);
@@ -979,8 +1016,7 @@ impl Inner {
             return Ok(Outcome::Done(m.len()));
         }
         self.live()?;
-        let part_file = dir.join(format!("{}.part", e.file));
-        let (server, key) = e.id();
+        let part_file = part_file(&dir, &e.file);
         let mut seen = (e.bytes, e.total);
         let fetched = fetch::fetch(
             &self.client.agent,
@@ -990,7 +1026,7 @@ impl Inner {
             self.free_space,
             |done, total| {
                 seen = (done, total);
-                self.progress(&server, &key, done, total)
+                self.progress(&e.server, &e.key, done, total)
             },
         );
         (e.bytes, e.total) = seen;
@@ -1072,11 +1108,7 @@ impl Inner {
             .entries
             .iter()
             .filter(|e| !e.removing)
-            .flat_map(|e| {
-                std::iter::once(e.key.clone())
-                    .chain(e.parents.iter().cloned())
-                    .map(|k| (e.server.clone(), k))
-            })
+            .flat_map(Entry::ids)
             .collect();
         let mut deleted = Vec::new();
         let mut removed = Vec::new();
@@ -1097,7 +1129,7 @@ impl Inner {
                 removed.push(e.id());
             }
         }
-        let (keep, servers): (HashSet<PathBuf>, HashSet<String>) = {
+        let keep: HashSet<PathBuf> = {
             let mut s = self.lock();
             s.entries
                 .retain(|e| !(e.removing && removed.contains(&e.id())));
@@ -1108,27 +1140,16 @@ impl Inner {
                 s.prune_at = Some(Instant::now() + PURGE_RETRY);
             }
             s.save_queue = true;
-            let keep = s
-                .items
+            s.items
                 .iter()
-                .flat_map(|((srv, _), it)| {
-                    image_paths(it)
-                        .map(|p| self.image_path(srv, p))
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-            (keep, gone.iter().map(|e| e.server.clone()).collect())
+                .flat_map(|((srv, _), it)| image_paths(it).map(move |p| self.image_path(srv, p)))
+                .collect()
         };
+        let servers: HashSet<&str> = gone.iter().map(|e| e.server.as_str()).collect();
         self.flush();
         let stale: Vec<PathBuf> = servers
             .iter()
-            .flat_map(|srv| {
-                std::fs::read_dir(self.root.join(safe(srv)).join(IMAGES))
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|f| f.path())
-            })
+            .flat_map(|srv| self.image_files(srv))
             .filter(|f| !keep.contains(f) && std::fs::remove_file(f).is_ok())
             .collect();
         {

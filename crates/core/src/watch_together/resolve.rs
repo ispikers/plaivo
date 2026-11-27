@@ -1,6 +1,6 @@
 use super::media::{Media, MediaFile, MediaKind, NAMESPACES, PlaivoExt, Series, ids_from_guids};
 use super::protocol::{Match, MatchState, forbidden};
-use crate::plex::{Client, Ctx, Item, Server, Source};
+use crate::plex::{Client, Ctx, Item, ItemKind, Server, Source};
 use std::collections::{BTreeMap, HashSet};
 
 pub const SAME_LENGTH_MS: i64 = 1500;
@@ -8,13 +8,18 @@ const CANDIDATES: usize = 5;
 const PARALLEL: usize = 4;
 
 pub fn clean(s: &str, max: usize) -> String {
-    s.split_whitespace()
-        .collect::<Vec<_>>()
+    let words: Vec<String> = s
+        .split_whitespace()
+        .map(|w| w.chars().filter(|c| !forbidden(*c)).collect())
+        .filter(|w: &String| !w.is_empty())
+        .collect();
+    words
         .join(" ")
         .chars()
-        .filter(|c| !forbidden(*c))
         .take(max)
-        .collect()
+        .collect::<String>()
+        .trim_end()
+        .into()
 }
 
 pub fn display_name<'a>(accounts: impl IntoIterator<Item = &'a str>) -> String {
@@ -61,9 +66,9 @@ pub fn same_name(a: &str, b: &str) -> bool {
 }
 
 pub fn describe(server: &str, it: &Item, show: Option<&Item>) -> Result<Media, &'static str> {
-    let kind = match it.kind.as_str() {
-        "movie" => MediaKind::Movie,
-        "episode" => MediaKind::Episode,
+    let kind = match it.kind {
+        ItemKind::Movie => MediaKind::Movie,
+        ItemKind::Episode => MediaKind::Episode,
         _ => MediaKind::Video,
     };
     let episode = kind == MediaKind::Episode;
@@ -138,7 +143,7 @@ pub fn match_for(ours_ms: Option<i64>, theirs_ms: i64) -> Match {
 }
 
 struct Target<'a> {
-    kind: &'static str,
+    kind: ItemKind,
     title: &'a str,
     year: Option<i64>,
     ids: &'a BTreeMap<String, String>,
@@ -148,13 +153,13 @@ impl<'a> Target<'a> {
     fn of(m: &'a Media) -> Option<Self> {
         match (m.kind, &m.series) {
             (MediaKind::Movie, _) => Some(Self {
-                kind: "movie",
+                kind: ItemKind::Movie,
                 title: &m.title,
                 year: m.year,
                 ids: &m.ids,
             }),
             (MediaKind::Episode, Some(s)) => Some(Self {
-                kind: "show",
+                kind: ItemKind::Show,
                 title: &s.title,
                 year: s.year,
                 ids: &s.ids,
@@ -196,7 +201,7 @@ fn find_title(srv: &Server, cx: &Ctx, target: &Target) -> Option<Item> {
     let mut seen = HashSet::new();
     let candidates: Vec<Item> = hits
         .into_iter()
-        .map(|(it, _)| it.as_show())
+        .map(|(it, _)| it.into_show())
         .filter(|it| it.kind == target.kind && seen.insert(it.rating_key.clone()))
         .take(CANDIDATES)
         .collect();
@@ -205,8 +210,13 @@ fn find_title(srv: &Server, cx: &Ctx, target: &Target) -> Option<Item> {
             .iter()
             .map(|it| s.spawn(|| srv.metadata(cx, &it.rating_key)))
             .collect();
-        full.into_iter()
-            .find_map(|h| h.join().ok()?.ok().filter(|full| target.matches(full)))
+        full.into_iter().find_map(|h| {
+            h.join()
+                .ok()?
+                .inspect_err(|e| log::warn!("metadata on {}: {e}", srv.name))
+                .ok()
+                .filter(|full| target.matches(full))
+        })
     })
 }
 
@@ -214,7 +224,11 @@ fn find_on(srv: &Server, cx: &Ctx, target: &Target, media: &Media) -> Option<Ite
     let found = find_title(srv, cx, target)?;
     match media.kind {
         MediaKind::Episode => {
-            pick_episode(&srv.all_episodes(cx, &found.rating_key).ok()?, media).cloned()
+            let episodes = srv
+                .all_episodes(cx, &found.rating_key)
+                .inspect_err(|e| log::warn!("episodes on {}: {e}", srv.name))
+                .ok()?;
+            pick_episode(&episodes, media).cloned()
         }
         _ => Some(found),
     }
@@ -224,7 +238,9 @@ pub fn find_copy(media: &Media, servers: &[Server], client: &Client) -> Option<(
     let cx = Ctx::new(client.clone(), Source::Live);
     if let Some(hint) = media.plaivo()
         && let Some(srv) = servers.iter().find(|s| s.id == hint.server)
-        && let Ok(it) = srv.metadata(&cx, &hint.item)
+        && let Ok(it) = srv
+            .metadata(&cx, &hint.item)
+            .inspect_err(|e| log::warn!("metadata on {}: {e}", srv.name))
         && shares_id(&media.ids, &it) != Some(false)
     {
         return Some((srv.id.clone(), it));
@@ -234,9 +250,8 @@ pub fn find_copy(media: &Media, servers: &[Server], client: &Client) -> Option<(
 }
 
 pub fn find_owned(it: &Item, servers: &[Server], client: &Client) -> Option<(String, Item)> {
-    let kind = match it.kind.as_str() {
-        "movie" => "movie",
-        "show" => "show",
+    let kind = match it.kind {
+        ItemKind::Movie | ItemKind::Show => it.kind,
         _ => return None,
     };
     let ids = item_ids(it);
@@ -291,7 +306,7 @@ mod tests {
     fn movie() -> Item {
         Item {
             rating_key: "42".into(),
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             title: "Arrival".into(),
             guid: "plex://movie/5d776".into(),
             year: Some(2016),
@@ -311,7 +326,7 @@ mod tests {
     fn episode(season: i64, index: i64, key: &str) -> Item {
         Item {
             rating_key: key.into(),
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             title: format!("Episode {index}"),
             grandparent_title: "Severance".into(),
             parent_index: Some(season),
@@ -429,7 +444,7 @@ mod tests {
             ..movie()
         }));
         assert!(!t.matches(&Item {
-            kind: "show".into(),
+            kind: ItemKind::Show,
             ..movie()
         }));
         assert_eq!(shares_id(&ids(&[]), &movie()), None);
@@ -540,6 +555,9 @@ mod tests {
     fn text_is_cleaned_to_protocol_text() {
         assert_eq!(clean("a\tb\n\u{202E}c", 99), "a b c");
         assert_eq!(clean("abcdef", 3), "abc");
+        assert_eq!(clean("\u{200E} \u{200F}", 99), "");
+        assert_eq!(clean("\u{200E} Alex", 99), "Alex");
+        assert_eq!(clean("ab cd", 3), "ab");
         assert!(same_name(
             "Spider-Man: No Way Home",
             "spider man no way home"

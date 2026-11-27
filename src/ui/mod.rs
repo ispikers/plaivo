@@ -18,4 +18,4 @@ mod subtitle_search;
 pub mod theme;
 mod updates;
 mod watch;
-mod widgets;
+pub mod widgets;

@@ -1,15 +1,16 @@
 use crate::app::{Card, Choice, Nav, Plaivo, Shape, Thumb, fmt_resolution};
 use crate::clock;
 use crate::keymap;
-use crate::player::{Panel, SPEEDS};
+use crate::player::{Panel, SPEEDS, TrackKind};
 use crate::plex::{self, QUALITIES};
 use crate::settings::Scale;
 use crate::shaders;
 use crate::ui::settings::quality_label;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
-    bounds_probe, drag_tracker, fmt_time, frac_in, icon, list_with_scrollbar, pill, progress_bar,
-    round_button, scroll_handle, scrollbar, shadow, stepper, tip,
+    Step, bounds_probe, drag_tracker, fmt_time, frac_in, icon, list_with_scrollbar, pill,
+    progress_bar, round_button, scroll_handle, scrollbar, shadow, stepper, tip,
+    wheel_lines_per_notch,
 };
 use gpui::{
     Action, AnyElement, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent,
@@ -17,6 +18,7 @@ use gpui::{
     SharedString, Window, canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px,
     rgb, uniform_list,
 };
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -32,8 +34,6 @@ enum Countdown {
 const QUEUE_ROW: f32 = 75.;
 const SEEK_PREVIEW: Duration = Duration::from_millis(500);
 const BOOST_HOLD: Duration = Duration::from_millis(300);
-// Windows reports a wheel notch as the system "lines per notch" (default 3); macOS reports about 1.
-const WHEEL_LINES_PER_NOTCH: f32 = if cfg!(target_os = "macos") { 1. } else { 3. };
 const WHEEL_PX_PER_NOTCH: f32 = 50.;
 const SPIN_PERIOD_MS: u128 = 900;
 
@@ -110,7 +110,6 @@ const SPIN_FRAME: Duration = Duration::from_micros(16_667);
 
 thread_local! {
     static SPIN_SCHEDULED: Cell<bool> = const { Cell::new(false) };
-    static CLICK_PAUSED: Cell<bool> = const { Cell::new(false) };
 }
 
 pub fn spinner(size: f32, color: Hsla) -> impl IntoElement {
@@ -239,12 +238,7 @@ impl Plaivo {
     }
 
     fn toggle_panel(&mut self, panel: Panel, cx: &mut Context<Self>) {
-        let group = |p: Panel| match p {
-            Panel::Tracks | Panel::SubtitleSearch => Panel::Tracks,
-            Panel::Queue => p,
-            _ => Panel::Settings,
-        };
-        let open = self.player.panel.is_some_and(|p| group(p) == group(panel));
+        let open = self.player.panel.is_some_and(|p| p.root() == panel.root());
         if open {
             self.player.panel = None;
             cx.notify();
@@ -255,7 +249,7 @@ impl Plaivo {
 
     fn volume_wheel(&mut self, ev: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let notches = match ev.delta {
-            ScrollDelta::Lines(d) if d.y.abs() > d.x.abs() => d.y / WHEEL_LINES_PER_NOTCH,
+            ScrollDelta::Lines(d) if d.y.abs() > d.x.abs() => d.y / wheel_lines_per_notch(),
             ScrollDelta::Pixels(d) if d.y.abs() > d.x.abs() => f32::from(d.y) / WHEEL_PX_PER_NOTCH,
             _ => return,
         };
@@ -340,7 +334,7 @@ impl Plaivo {
                 cx.listener(|this, ev: &ScrollEvent, window, cx| this.volume_wheel(ev, window, cx)),
             )
             .on_click(cx.listener(|this, ev: &gpui::ClickEvent, window, cx| {
-                let first_click_paused = CLICK_PAUSED.replace(false);
+                let first_click_paused = std::mem::take(&mut this.player.click_paused);
                 if this.end_mouse_hold() {
                 } else if ev.click_count() >= 2 {
                     if first_click_paused {
@@ -351,7 +345,7 @@ impl Plaivo {
                     this.player.panel = None;
                 } else {
                     this.toggle_pause();
-                    CLICK_PAUSED.set(true);
+                    this.player.click_paused = true;
                 }
                 cx.notify();
             }));
@@ -364,7 +358,7 @@ impl Plaivo {
                 .justify_center()
                 .child(spinner(44., theme::white()))
         });
-        let skip = self.active_skip().map(|(s, left)| (s.label, s.end, left));
+        let skip = self.active_skip().map(|(s, left)| (s.labels, s.end, left));
         let countdown = match (self.up_next(), skip) {
             (Some((card, left)), _) => Some((
                 Countdown::UpNext {
@@ -373,10 +367,12 @@ impl Plaivo {
                 },
                 left,
             )),
-            (None, Some((label, end, Some(left)))) => Some((Countdown::Skip(label, end), left)),
+            (None, Some((labels, end, Some(left)))) => {
+                Some((Countdown::Skip(labels.skipping, end), left))
+            }
             _ => None,
         };
-        let skip = skip.filter(|_| countdown.is_none()).map(|(label, ..)| {
+        let skip = skip.filter(|_| countdown.is_none()).map(|(labels, ..)| {
             div()
                 .id("skip")
                 .occlude()
@@ -396,7 +392,7 @@ impl Plaivo {
                 .text_size(px(15.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::bg())
-                .child(label)
+                .child(labels.skip)
                 .child(icon(Icon::FastForward, 20., theme::bg()))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.skip_marker();
@@ -912,7 +908,14 @@ impl Plaivo {
                 Some(self.render_subtitle_search(window, cx).into_any_element())
             }
             Some(Panel::Queue) => Some(self.render_queue(window, cx).into_any_element()),
-            Some(p) => Some(self.render_settings(p, window, cx).into_any_element()),
+            Some(
+                p @ (Panel::Settings
+                | Panel::Quality
+                | Panel::Speed
+                | Panel::Output
+                | Panel::Shader
+                | Panel::Info),
+            ) => Some(self.render_settings(p, window, cx).into_any_element()),
             None => None,
         };
         base.child(controls)
@@ -942,7 +945,7 @@ impl Plaivo {
             ),
             Countdown::Skip(label, end) => (
                 None,
-                format!("{} in {secs}s", label.replacen("Skip", "Skipping", 1)),
+                format!("{label} in {secs}s"),
                 format!("Jumps to {}", fmt_time(end)).into(),
                 "Skip now",
                 Icon::FastForward,
@@ -1039,7 +1042,7 @@ impl Plaivo {
         panel: Panel,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let back = !matches!(panel, Panel::Settings | Panel::Tracks | Panel::Queue);
+        let back = panel != panel.root();
         let remaining = (panel == Panel::Queue).then(|| {
             self.queue_index()
                 .map_or(self.player.queue.len(), |i| self.player.queue.len() - i - 1)
@@ -1065,21 +1068,12 @@ impl Plaivo {
                         theme::tint(0.08),
                         theme::text(),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_panel(
-                            if panel == Panel::SubtitleSearch {
-                                Panel::Tracks
-                            } else {
-                                Panel::Settings
-                            },
-                            cx,
-                        )
-                    })),
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_panel(panel.root(), cx))),
                 )
             })
             .when(!back, |d| {
                 d.child(icon(
-                    match panel {
+                    match panel.root() {
                         Panel::Tracks => Icon::Subtitles,
                         Panel::Queue => Icon::Queue,
                         _ => Icon::Tune,
@@ -1179,7 +1173,7 @@ impl Plaivo {
         c: &Choice,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let id = c.id.to_string();
+        let id = c.id.clone();
         div()
             .id(SharedString::from(format!("{panel:?}-{i}")))
             .min_h(px(44.))
@@ -1288,15 +1282,15 @@ impl Plaivo {
                     (None, Some(b)) => format!("Original · {}", plex::fmt_bitrate(b)),
                     _ => quality_label(self.player.quality),
                 };
-                let device = self.settings.audio_device.clone();
+                let device = &self.settings.audio_device;
                 let output = if device.is_empty() {
                     "Auto".into()
                 } else {
                     self.player
                         .devices
                         .iter()
-                        .find(|d| d.id.as_ref() == device)
-                        .map_or(device, |d| d.label.to_string())
+                        .find(|d| d.id == *device)
+                        .map_or_else(|| device.clone(), |d| d.label.to_string())
                 };
                 body.child(self.setting_row(
                     Icon::HighQuality,
@@ -1348,7 +1342,7 @@ impl Plaivo {
                     }))
             }
             _ => {
-                let choices = match panel {
+                let choices: Cow<[Choice]> = match panel {
                     Panel::Quality => {
                         let m = &self.player.media;
                         self.quality_choices(
@@ -1359,6 +1353,7 @@ impl Plaivo {
                             ])
                             .into(),
                         )
+                        .into()
                     }
                     Panel::Speed => SPEEDS
                         .iter()
@@ -1368,9 +1363,10 @@ impl Plaivo {
                             sub: "".into(),
                             selected: s == self.speed(),
                         })
-                        .collect(),
-                    Panel::Shader => self.shader_choices(&self.player.shader),
-                    _ => self.player.devices.clone(),
+                        .collect::<Vec<_>>()
+                        .into(),
+                    Panel::Shader => self.shader_choices(&self.player.shader).into(),
+                    _ => self.player.devices.as_slice().into(),
                 };
                 body.children(
                     choices
@@ -1542,8 +1538,8 @@ impl Plaivo {
                 id,
                 format!("{:+} ms", v as i64),
                 (v > -10_000., v < 10_000.),
-                cx.listener(move |this, step: &i8, _, cx| {
-                    this.nudge_delay(audio, *step as f64 * 50.);
+                cx.listener(move |this, step: &Step, _, cx| {
+                    this.nudge_delay(audio, *step);
                     cx.notify();
                 }),
             ))
@@ -1552,7 +1548,7 @@ impl Plaivo {
     fn track_column(
         &self,
         title: &'static str,
-        kind: &'static str,
+        kind: TrackKind,
         tracks: &[Choice],
         scroll: ScrollHandle,
         cx: &mut Context<Self>,
@@ -1579,9 +1575,9 @@ impl Plaivo {
                     .child(title),
             )
             .children(tracks.iter().enumerate().map(|(i, t)| {
-                let id = t.id.to_string();
+                let id = t.id.clone();
                 div()
-                    .id(SharedString::from(format!("{kind}-{i}")))
+                    .id(SharedString::from(format!("{}-{i}", kind.prop())))
                     .min_h(px(36.))
                     .px(px(12.))
                     .py(px(6.))
@@ -1626,24 +1622,27 @@ impl Plaivo {
                         cx.notify();
                     }))
             }))
-            .when(kind == "sid" && self.can_search_subtitles(), |d| {
-                d.child(
-                    div()
-                        .id("sub-search-open")
-                        .min_h(px(36.))
-                        .px(px(12.))
-                        .py(px(6.))
-                        .rounded(px(8.))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme::tint(0.06)))
-                        .child(icon(Icon::Search, 18., theme::muted()))
-                        .child(div().text_size(px(14.)).child("Search subtitles…"))
-                        .on_click(cx.listener(|this, _, _, cx| this.open_subtitle_search(cx))),
-                )
-            })
+            .when(
+                kind == TrackKind::Subtitle && self.can_search_subtitles(),
+                |d| {
+                    d.child(
+                        div()
+                            .id("sub-search-open")
+                            .min_h(px(36.))
+                            .px(px(12.))
+                            .py(px(6.))
+                            .rounded(px(8.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::tint(0.06)))
+                            .child(icon(Icon::Search, 18., theme::muted()))
+                            .child(div().text_size(px(14.)).child("Search subtitles…"))
+                            .on_click(cx.listener(|this, _, _, cx| this.open_subtitle_search(cx))),
+                    )
+                },
+            )
             .child(scrollbar(&scroll));
         div()
             .flex_1()
@@ -1651,15 +1650,11 @@ impl Plaivo {
             .flex()
             .flex_col()
             .child(list)
-            .child(self.delay_stepper(kind == "aid", cx))
+            .child(self.delay_stepper(kind == TrackKind::Audio, cx))
     }
 
     fn render_tracks(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let max_h = f32::from(window.viewport_size().height) - 120.;
-        let (audio, subs) = (
-            self.player.audio_tracks.clone(),
-            self.player.sub_tracks.clone(),
-        );
         let audio_scroll = scroll_handle("Audio", window, cx);
         let sub_scroll = scroll_handle("Subtitles", window, cx);
         self.panel_shell("tracks", Panel::Tracks, cx)
@@ -1669,9 +1664,21 @@ impl Plaivo {
                 div()
                     .min_h_0()
                     .flex()
-                    .child(self.track_column("Audio", "aid", &audio, audio_scroll, cx))
+                    .child(self.track_column(
+                        "Audio",
+                        TrackKind::Audio,
+                        &self.player.audio_tracks,
+                        audio_scroll,
+                        cx,
+                    ))
                     .child(div().w(px(1.)).bg(theme::outline()))
-                    .child(self.track_column("Subtitles", "sid", &subs, sub_scroll, cx)),
+                    .child(self.track_column(
+                        "Subtitles",
+                        TrackKind::Subtitle,
+                        &self.player.sub_tracks,
+                        sub_scroll,
+                        cx,
+                    )),
             )
     }
 

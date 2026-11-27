@@ -280,7 +280,7 @@ fn two_clients_sync_on_the_public_relay() {
     b.wt.leave();
     wait(&mut [&mut a, &mut b], "leave", 10, |p| {
         p.iter()
-            .all(|p| p.state.end_reason == Some(EndReason::Left))
+            .all(|p| p.log.iter().any(|l| l.starts_with("Ended { reason: Left")))
     });
     println!("total {} ms", started.elapsed().as_millis());
 }

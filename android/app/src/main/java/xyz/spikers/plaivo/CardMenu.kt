@@ -49,6 +49,7 @@ import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Action
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.DownloadScope
+import uniffi.plaivo_ffi.ItemKind
 import uniffi.plaivo_ffi.ItemMenu
 import uniffi.plaivo_ffi.actionLabel
 import uniffi.plaivo_ffi.discoverId
@@ -80,17 +81,17 @@ private val Action.glyph
             Action.SEASON -> Glyph.Tv
         }
 
-private fun downloadScopes(kind: String) =
+private fun downloadScopes(kind: ItemKind) =
     when (kind) {
-        "movie" -> listOf("Download movie" to DownloadScope.ITEM)
-        "episode" ->
+        ItemKind.MOVIE -> listOf("Download movie" to DownloadScope.ITEM)
+        ItemKind.EPISODE ->
             listOf(
                 "Download episode" to DownloadScope.ITEM,
                 "Download season" to DownloadScope.SEASON,
                 "Download show" to DownloadScope.SHOW,
             )
-        "season" -> listOf("Download season" to DownloadScope.ITEM, "Download show" to DownloadScope.SHOW)
-        "show" -> listOf("Download show" to DownloadScope.ITEM)
+        ItemKind.SEASON -> listOf("Download season" to DownloadScope.ITEM, "Download show" to DownloadScope.SHOW)
+        ItemKind.SHOW -> listOf("Download show" to DownloadScope.ITEM)
         else -> emptyList()
     }
 
@@ -263,23 +264,26 @@ fun CardMenu(card: MediaCard, onDismiss: () -> Unit, onChanged: () -> Unit, onDe
                     }
                 }
                 MenuPage.Versions ->
-                    m?.versions?.forEachIndexed { i, label ->
+                    m?.versions?.forEachIndexed { i, version ->
                         SettingsRow(
                             Glyph.Layers,
-                            "Version ${i + 1}",
-                            label,
+                            version.label,
+                            version.value,
                             if (i == 0) Modifier.focusRequester(first) else Modifier,
                             onClick = { player { putExtra("version", i) } },
                         )
                     }
                 MenuPage.Info -> {
                     m?.fileInfo?.forEach { line ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = if (line.header) Modifier.padding(top = 8.dp) else Modifier,
+                        ) {
                             Text(
                                 line.label,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = Palette.muted,
+                                color = if (line.header) Palette.text else Palette.muted,
                                 modifier = Modifier.width(96.dp),
                             )
                             Text(line.value, fontSize = 13.sp, color = Palette.text)

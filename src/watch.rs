@@ -1,5 +1,5 @@
 use crate::app::{Page, Plaivo};
-use crate::plex::{Ctx, Item, Source};
+use crate::plex::{Ctx, Item, ItemKind, Source};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::theme::Icon;
 use futures::StreamExt;
@@ -7,9 +7,8 @@ use futures::channel::mpsc::UnboundedSender;
 use gpui::{AppContext, Context, Entity, SharedString};
 use plaivo_core::CLIENT;
 use plaivo_core::watch_together::{
-    Connection, Event, Match, MatchState, Media, PartyState, Phase, PlaivoExt, PlayerCommand,
-    PlayerFeed, Relays, Update, WatchTogether, describe, display_name, find_copy, match_for,
-    normalize_code,
+    Connection, Event, Match, MatchState, Media, PartyState, Phase, PlayerCommand, PlayerFeed,
+    Relays, Update, WatchTogether, describe, display_name, find_copy, match_for, normalize_code,
 };
 use std::time::{Duration, Instant};
 
@@ -337,11 +336,12 @@ impl Plaivo {
         if !w.can_share() {
             return;
         }
-        let hint = PlaivoExt {
-            server: server.clone(),
-            item: key.clone(),
-        };
-        if w.state.media.as_ref().and_then(Media::plaivo).as_ref() == Some(&hint) {
+        if w.state
+            .media
+            .as_ref()
+            .and_then(Media::plaivo)
+            .is_some_and(|h| h.server == server && h.item == key)
+        {
             return;
         }
         let (srv, downloads, c) = (
@@ -362,7 +362,7 @@ impl Plaivo {
                         .or_else(|| srv.as_ref()?.metadata(&ctx, k).ok())
                 };
                 let it = item.or_else(|| fetch(&key))?;
-                let show = (it.kind == "episode" && !it.grandparent_rating_key.is_empty())
+                let show = (it.kind == ItemKind::Episode && !it.grandparent_rating_key.is_empty())
                     .then(|| fetch(&it.grandparent_rating_key))
                     .flatten();
                 describe(&server, &it, show.as_ref()).ok()
@@ -644,7 +644,9 @@ impl Plaivo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plaivo_core::watch_together::{Control, MediaKind, Participant, PlayerState, Room};
+    use plaivo_core::watch_together::{
+        Control, MediaKind, Participant, PlaivoExt, PlayerState, Room,
+    };
 
     fn state(
         connection: Connection,

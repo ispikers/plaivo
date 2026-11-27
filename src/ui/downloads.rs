@@ -1,6 +1,6 @@
 use crate::app::{Card, Nav, Plaivo, card_for, download_root, episode_card, join};
 use crate::downloads::{Entry, State};
-use crate::plex::{DISCOVER_ID, Item};
+use crate::plex::{DISCOVER_ID, Item, ItemKind};
 use crate::settings::CardPrefs;
 use crate::ui::home::content_width;
 use crate::ui::library::Grid;
@@ -11,8 +11,8 @@ use crate::ui::widgets::{
     scroll_handle, scrollbar, section, tip,
 };
 use gpui::{
-    AnyElement, Context, Div, FontWeight, PathPromptOptions, PromptLevel, SharedString, Stateful,
-    Window, div, prelude::*, px,
+    AnyElement, Context, Div, FontWeight, Hsla, PathPromptOptions, PromptLevel, SharedString,
+    Stateful, Window, div, prelude::*, px,
 };
 use std::collections::HashMap;
 
@@ -43,7 +43,7 @@ impl Dl {
             Dl::Paused => Icon::Pause,
             Dl::Failed => Icon::Refresh,
             Dl::Done => Icon::DownloadDone,
-            _ => Icon::Download,
+            Dl::None | Dl::Queued | Dl::Active(_) => Icon::Download,
         }
     }
 }
@@ -79,6 +79,20 @@ pub fn download_state<'a>(entries: impl IntoIterator<Item = &'a Entry>, expected
     }
 }
 
+fn dl_glyph(st: Dl, size: f32, idle: Hsla) -> AnyElement {
+    match st {
+        Dl::Active(p) => div()
+            .text_size(px(12.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(format!("{p}%"))
+            .into_any_element(),
+        Dl::Done => icon(st.icon(), size, theme::accent()).into_any_element(),
+        Dl::None | Dl::Queued | Dl::Paused | Dl::Failed => {
+            icon(st.icon(), size, idle).into_any_element()
+        }
+    }
+}
+
 pub fn fmt_size(bytes: u64) -> String {
     const GB: f64 = (1u64 << 30) as f64;
     if bytes as f64 >= GB {
@@ -92,7 +106,7 @@ pub fn offline_cards(items: &[(String, Item)], prefs: &CardPrefs) -> Vec<Card> {
     let mut cards = Vec::new();
     let mut episodes: HashMap<(&str, &str), usize> = HashMap::new();
     for (server, it) in items {
-        if it.kind != "episode" || it.grandparent_rating_key.is_empty() {
+        if it.kind != ItemKind::Episode || it.grandparent_rating_key.is_empty() {
             cards.push(card_for(it, false, server, prefs));
             continue;
         }
@@ -101,7 +115,7 @@ pub fn offline_cards(items: &[(String, Item)], prefs: &CardPrefs) -> Vec<Card> {
             .or_default();
         *n += 1;
         if *n == 1 {
-            cards.push(card_for(&it.clone().as_show(), false, server, prefs));
+            cards.push(card_for(&it.clone().into_show(), false, server, prefs));
         }
     }
     for c in &mut cards {
@@ -109,7 +123,7 @@ pub fn offline_cards(items: &[(String, Item)], prefs: &CardPrefs) -> Vec<Card> {
             c.subtitle = format!("{n} episode{}", if *n == 1 { "" } else { "s" }).into();
         }
     }
-    cards.sort_by_key(|c| c.title.to_lowercase());
+    cards.sort_by_cached_key(|c| c.title.to_lowercase());
     cards
 }
 
@@ -137,11 +151,12 @@ pub enum Target {
 impl Plaivo {
     fn target_item(&self, t: Target) -> Option<&Item> {
         match t {
-            Target::Detail => self
-                .detail
-                .as_ref()
-                .map(|d| &d.item)
-                .filter(|it| matches!(it.kind.as_str(), "movie" | "episode" | "show")),
+            Target::Detail => self.detail.as_ref().map(|d| &d.item).filter(|it| {
+                matches!(
+                    it.kind,
+                    ItemKind::Movie | ItemKind::Episode | ItemKind::Show
+                )
+            }),
             Target::Season => self
                 .season
                 .as_ref()
@@ -206,29 +221,12 @@ impl Plaivo {
                     .collect();
                 self.with_downloads(cx, move |d| keys.iter().for_each(|k| d.resume(&server, k)));
             }
-            _ => self.navigate(Nav::Downloads(None), true, cx),
+            Dl::Queued | Dl::Active(_) | Dl::Done => self.navigate(Nav::Downloads(None), true, cx),
         }
     }
 
     pub fn detail_download_button(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         let st = self.target_state(Target::Detail)?;
-        let inner = match st {
-            Dl::Active(p) => div()
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(format!("{p}%"))
-                .into_any_element(),
-            _ => icon(
-                st.icon(),
-                24.,
-                if st == Dl::Done {
-                    theme::accent()
-                } else {
-                    theme::text()
-                },
-            )
-            .into_any_element(),
-        };
         Some(
             div()
                 .id("download")
@@ -243,7 +241,7 @@ impl Plaivo {
                 .bg(theme::tint(0.08))
                 .hover(|s| s.bg(theme::tint(0.16)))
                 .tooltip(tip(st.label("Download")))
-                .child(inner)
+                .child(dl_glyph(st, 24., theme::text().into()))
                 .on_click(cx.listener(|this, _, _, cx| this.download(Target::Detail, cx))),
         )
     }
@@ -260,23 +258,6 @@ impl Plaivo {
 
     pub fn episode_download_button(&self, i: usize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let st = self.target_state(Target::Episode(i))?;
-        let inner = match st {
-            Dl::Active(p) => div()
-                .text_size(px(12.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(format!("{p}%"))
-                .into_any_element(),
-            _ => icon(
-                st.icon(),
-                22.,
-                if st == Dl::Done {
-                    theme::accent().into()
-                } else {
-                    theme::muted()
-                },
-            )
-            .into_any_element(),
-        };
         Some(
             div()
                 .id(("episode-download", i))
@@ -292,7 +273,7 @@ impl Plaivo {
                 .hover(|s| s.bg(theme::tint(0.08)))
                 .occlude()
                 .tooltip(tip(st.label("Download")))
-                .child(inner)
+                .child(dl_glyph(st, 22., theme::muted()))
                 .on_click(cx.listener(move |this, _, _, cx| this.download(Target::Episode(i), cx)))
                 .into_any_element(),
         )
@@ -476,7 +457,7 @@ impl Plaivo {
             .items_center()
             .gap(px(16.))
             .child(icon(
-                if e.kind == "movie" {
+                if e.kind == ItemKind::Movie {
                     Icon::Movie
                 } else {
                     Icon::Tv
@@ -516,8 +497,11 @@ impl Plaivo {
         if let Some((server, key)) = self.offline_view.clone() {
             return self.render_offline_item(server, key, window, cx);
         }
-        let entries = std::mem::take(&mut self.download_entries);
-        let queue: Vec<&Entry> = entries.iter().filter(|e| e.state != State::Done).collect();
+        let queue: Vec<&Entry> = self
+            .download_entries
+            .iter()
+            .filter(|e| e.state != State::Done)
+            .collect();
         let active = queue
             .iter()
             .any(|e| matches!(e.state, State::Queued | State::Downloading));
@@ -526,7 +510,6 @@ impl Plaivo {
             .any(|e| matches!(e.state, State::Paused | State::Failed));
         let rows: Vec<AnyElement> = queue.iter().map(|e| self.queue_row(e, cx)).collect();
         let queue_empty = queue.is_empty();
-        self.download_entries = entries;
         let empty = self.offline_cards.is_empty();
         let queue_scroll = scroll_handle("download-queue", window, cx);
         let scroll = self.offline_scroll.clone();
@@ -607,7 +590,7 @@ impl Plaivo {
         let prefs = self.settings.card_prefs();
         let items = offline_episodes(&offline, &server, &key);
         let title = items.first().map_or(String::new(), |it| {
-            if it.kind == "episode" {
+            if it.kind == ItemKind::Episode {
                 it.grandparent_title.clone()
             } else {
                 it.title.clone()
@@ -617,7 +600,7 @@ impl Plaivo {
         let mut list = div().flex().flex_col().gap(px(8.));
         let mut season = None;
         for (i, it) in items.iter().enumerate() {
-            if it.kind == "episode" && season != Some(it.parent_index) {
+            if it.kind == ItemKind::Episode && season != Some(it.parent_index) {
                 season = Some(it.parent_index);
                 let label = if it.parent_title.is_empty() {
                     it.parent_index
@@ -756,14 +739,14 @@ mod tests {
     fn episodes_fold_into_one_show_card() {
         let ep = |key: &str, show: &str, title: &str| Item {
             rating_key: key.into(),
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             grandparent_rating_key: show.into(),
             grandparent_title: title.into(),
             ..Default::default()
         };
         let movie = Item {
             rating_key: "m".into(),
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             title: "alien".into(),
             ..Default::default()
         };
@@ -780,7 +763,7 @@ mod tests {
                 (
                     c.server.to_string(),
                     c.key.to_string(),
-                    c.kind.to_string(),
+                    c.kind,
                     c.subtitle.to_string(),
                 )
             })
@@ -788,9 +771,9 @@ mod tests {
         assert_eq!(
             cards,
             [
-                ("a".into(), "m".into(), "movie".into(), String::new()),
-                ("a".into(), "s1".into(), "show".into(), "2 episodes".into()),
-                ("b".into(), "s1".into(), "show".into(), "1 episode".into()),
+                ("a".into(), "m".into(), ItemKind::Movie, String::new()),
+                ("a".into(), "s1".into(), ItemKind::Show, "2 episodes".into()),
+                ("b".into(), "s1".into(), ItemKind::Show, "1 episode".into()),
             ]
         );
     }

@@ -1,5 +1,5 @@
-use super::Media;
 use super::http::{Request, send};
+use super::{Ids, Media};
 use crate::store;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -113,7 +113,7 @@ impl Table<'_> {
                 3 => Val::Str(String::from_utf8_lossy(r.take(t)?).into_owned()),
                 4 => Val::Str(
                     words
-                        .get(t as usize)
+                        .get(usize::try_from(t).unwrap_or(usize::MAX))
                         .cloned()
                         .ok_or("anime mappings dictionary index out of range")?,
                 ),
@@ -129,6 +129,10 @@ impl Table<'_> {
             return Err("anime mappings column has trailing bytes".into());
         }
         Ok(out)
+    }
+
+    fn check(&self) -> Result<(), String> {
+        self.cols.keys().try_for_each(|c| self.column(c).map(drop))
     }
 
     fn ints(&self, name: &str) -> Result<Vec<Option<i64>>, String> {
@@ -207,18 +211,22 @@ fn fribb(data: &[u8]) -> Result<Table<'_>, String> {
         .ok_or_else(|| "anime mappings have no usable fribb table".into())
 }
 
-fn num(media: &Media, key: &str) -> Option<u64> {
-    let ids = if media.movie {
+fn id_map(media: &Media) -> &Ids {
+    if media.movie {
         &media.ids
     } else {
         &media.show_ids
-    };
-    ids.get(key)
+    }
+}
+
+fn num(media: &Media, key: &str) -> Option<u64> {
+    id_map(media)
+        .get(key)
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&n| n > 0)
 }
 
-fn series_level(media: &Media) -> bool {
+fn is_series_level(media: &Media) -> bool {
     media.movie || matches!(media.season, None | Some(1))
 }
 
@@ -232,21 +240,16 @@ fn unit(media: &Media) -> Option<u32> {
 
 pub(super) fn direct(media: &Media) -> Option<AnimeMatch> {
     let mal = num(media, "mal");
-    (series_level(media) && mal.is_some()).then_some(AnimeMatch {
+    (is_series_level(media) && mal.is_some()).then_some(AnimeMatch {
         mal,
         progress: unit(media)?,
     })
 }
 
 pub(super) fn mappable(media: &Media) -> bool {
-    let ids = if media.movie {
-        &media.ids
-    } else {
-        &media.show_ids
-    };
     ["anidb", "tvdb", "tmdb", "imdb"]
         .iter()
-        .any(|k| ids.contains_key(*k))
+        .any(|k| id_map(media).contains_key(*k))
 }
 
 pub(super) fn resolve(raw: &[u8], media: &Media) -> Result<Option<AnimeMatch>, String> {
@@ -285,12 +288,7 @@ fn single(rows: Vec<usize>) -> Option<usize> {
 }
 
 fn imdb_rows(t: &Table, media: &Media) -> Result<Vec<usize>, String> {
-    let ids = if media.movie {
-        &media.ids
-    } else {
-        &media.show_ids
-    };
-    let Some(imdb) = ids.get("imdb") else {
+    let Some(imdb) = id_map(media).get("imdb") else {
         return Ok(Vec::new());
     };
     Ok(t.column("imdb_id")?
@@ -302,7 +300,7 @@ fn imdb_rows(t: &Table, media: &Media) -> Result<Vec<usize>, String> {
 }
 
 fn find(t: &Table, media: &Media, progress: u32) -> Result<Option<(usize, u32)>, String> {
-    let series = series_level(media);
+    let series = is_series_level(media);
     if series && let Some(row) = single(t.rows_with("anidb_id", num(media, "anidb"))?) {
         return Ok(Some((row, progress)));
     }
@@ -359,7 +357,10 @@ fn find(t: &Table, media: &Media, progress: u32) -> Result<Option<(usize, u32)>,
     ) else {
         return Ok(None);
     };
-    Ok(u32::try_from(episode - best).ok().map(|p| (row, p)))
+    Ok(episode
+        .checked_sub(best)
+        .and_then(|d| u32::try_from(d).ok())
+        .map(|p| (row, p)))
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -418,7 +419,7 @@ impl Mappings {
 
     fn refresh(&mut self, meta: Meta, now: u64, have_copy: bool) -> Option<Vec<u8>> {
         let mut req = Request::get(URL);
-        if let (Some(etag), true) = (&meta.etag, have_copy) {
+        if have_copy && let Some(etag) = &meta.etag {
             req = req.header("If-None-Match", etag.clone());
         }
         let resp = send(&req)
@@ -429,14 +430,17 @@ impl Mappings {
                 checked: now,
                 ..meta
             }),
-            200 => match inflate(&resp.body).and_then(|d| fribb(&d).map(|t| t.rows)) {
+            200 => match inflate(&resp.body).and_then(|d| {
+                let t = fribb(&d)?;
+                t.check().map(|()| t.rows)
+            }) {
                 Ok(rows) => {
-                    if let Err(e) = store::write_atomic(&self.file(), &resp.body) {
-                        log::warn!("could not cache anime mappings: {e}");
-                    }
+                    let cached = store::write_atomic(&self.file(), &resp.body)
+                        .inspect_err(|e| log::warn!("could not cache anime mappings: {e}"))
+                        .is_ok();
                     log::info!("anime mappings updated: {rows} entries");
                     self.save(Meta {
-                        etag: resp.etag,
+                        etag: resp.etag.filter(|_| cached),
                         checked: now,
                     });
                     return Some(resp.body);
@@ -455,7 +459,6 @@ impl Mappings {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Ids;
     use super::*;
     use std::io::Write;
 
@@ -714,12 +717,23 @@ mod tests {
         let mut bad = b"AMAP\x01".to_vec();
         bad.push(1);
         assert!(resolve(&bad, &ep(&[("tvdb", "1")], 1, 1)).is_err());
+        let data = inflate(&fixture()).unwrap();
+        assert!(fribb(&data).unwrap().check().is_ok());
+        let trailing = Table {
+            data: &[1, 1, 0],
+            rows: 2,
+            cols: HashMap::from([("season.tvdb".into(), (1, 0, 3))]),
+        };
+        assert!(trailing.check().is_err());
     }
 
     #[test]
     #[ignore]
     fn live_anime_mappings() {
         let dir = std::env::temp_dir().join(format!("plaivo-mappings-{}", std::process::id()));
+        let _cleanup = std::mem::DropGuard::new(dir.clone(), |d| {
+            let _ = std::fs::remove_dir_all(d);
+        });
         let mut mappings = Mappings::new(dir.clone());
         let now = super::super::now();
         let mut r = |label: &str, media: Media| {
@@ -755,6 +769,5 @@ mod tests {
         );
         let after: Meta = store::read_json(&again.meta_path()).unwrap();
         println!("conditional refresh kept etag: {}", after.etag == meta.etag);
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

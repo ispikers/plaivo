@@ -58,6 +58,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.plaivo_ffi.Card as MediaCard
+import uniffi.plaivo_ffi.ItemKind
 import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.Row as MediaRow
 import uniffi.plaivo_ffi.Section
@@ -277,10 +278,10 @@ private fun Shell(refresh: Int, play: (MediaCard) -> Unit, onAccountChanged: () 
     val tabs = remember { PhoneTab.entries.filter { it != PhoneTab.Watchlist || plex } }
     val open = { card: MediaCard ->
         when (card.kind) {
-            "collection" -> pages = pages + SubPage.Collection(card.server, card.key, card.title)
-            "movie",
-            "show",
-            "season" -> {
+            ItemKind.COLLECTION -> pages = pages + SubPage.Collection(card.server, card.key, card.title)
+            ItemKind.MOVIE,
+            ItemKind.SHOW,
+            ItemKind.SEASON -> {
                 val page = SubPage.Detail(card.server, card.key)
                 pages = pages + page
                 if (card.server == discover)

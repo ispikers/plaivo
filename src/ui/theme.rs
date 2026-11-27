@@ -32,27 +32,20 @@ const PALETTES: [&Palette; 3] = [&DARK, &OLED, &LIGHT];
 
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
-pub fn palette_for(theme: Theme, appearance: WindowAppearance) -> &'static Palette {
+fn palette_index(theme: Theme, appearance: WindowAppearance) -> usize {
     match theme {
-        Theme::Light => &LIGHT,
-        Theme::Dark => &DARK,
-        Theme::Oled => &OLED,
+        Theme::Dark => 0,
+        Theme::Oled => 1,
+        Theme::Light => 2,
         Theme::System => match appearance {
-            WindowAppearance::Light | WindowAppearance::VibrantLight => &LIGHT,
-            WindowAppearance::Dark | WindowAppearance::VibrantDark => &DARK,
+            WindowAppearance::Light | WindowAppearance::VibrantLight => 2,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => 0,
         },
     }
 }
 
 pub fn apply(theme: Theme, appearance: WindowAppearance) {
-    let p = palette_for(theme, appearance);
-    ACTIVE.store(
-        PALETTES
-            .iter()
-            .position(|q| std::ptr::eq(*q, p))
-            .unwrap_or(0),
-        Ordering::Relaxed,
-    );
+    ACTIVE.store(palette_index(theme, appearance), Ordering::Relaxed);
 }
 
 fn p() -> &'static Palette {
@@ -93,6 +86,7 @@ pub fn error() -> Rgba {
     rgb(0xFF8A80)
 }
 
+pub const FONT: &str = ".SystemUIFont";
 pub const SIDEBAR: f32 = 220.;
 pub const SIDEBAR_COMPACT: f32 = 72.;
 pub const MINI_BAR: f32 = 88.;
@@ -221,7 +215,7 @@ mod tests {
 
     #[test]
     fn themes_pick_their_palette() {
-        let pick = |t, a| palette_for(t, a).bg;
+        let pick = |t, a| PALETTES[palette_index(t, a)].bg;
         assert_eq!(pick(Theme::System, WindowAppearance::Light), LIGHT.bg);
         assert_eq!(pick(Theme::System, WindowAppearance::VibrantDark), DARK.bg);
         assert_eq!(pick(Theme::Oled, WindowAppearance::Light), OLED.bg);

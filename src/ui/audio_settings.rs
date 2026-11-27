@@ -3,7 +3,7 @@ use crate::prefs::{self, LANGUAGES, LanguagePrefs, SubtitleMode};
 use crate::settings::{SUBTITLE_COLORS, Settings};
 use crate::ui::settings::nudge;
 use crate::ui::theme::Icon;
-use crate::ui::widgets::{chip, nav_row, row, section, stepper};
+use crate::ui::widgets::{Step, chip, nav_row, row, section, stepper};
 use gpui::{Context, Div, FontWeight, Hsla, div, hsla, prelude::*, px, rgb};
 
 const PREVIEW_H: f32 = 150.;
@@ -118,26 +118,27 @@ impl Plaivo {
         );
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn style_row(
-        &self,
         id: &'static str,
         title: &'static str,
         detail: &'static str,
-        value: String,
-        change: fn(&mut Settings, i8),
+        label: String,
+        value: u32,
+        field: fn(&mut Settings) -> &mut u32,
+        nudged: impl Fn(u32, Step) -> u32 + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let moves = |step| {
-            let mut probe = self.settings.clone();
-            change(&mut probe, step);
-            probe != self.settings
-        };
         row(id, None, title, detail).child(stepper(
             id,
-            value,
-            (moves(-1), moves(1)),
-            cx.listener(move |this, step: &i8, _, cx| {
-                change(&mut this.settings, *step);
+            label,
+            (
+                nudged(value, Step::Down) != value,
+                nudged(value, Step::Up) != value,
+            ),
+            cx.listener(move |this, step: &Step, _, cx| {
+                let f = field(&mut this.settings);
+                *f = nudged(*f, *step);
                 this.save_settings_soon(cx);
                 this.apply_sub_style();
                 cx.notify();
@@ -151,12 +152,17 @@ impl Plaivo {
             prefs::language_name(&s.audio_language),
             prefs::language_name(&s.subtitle_language),
             s.subtitle_mode,
-            s.subtitle_color.clone(),
+            s.subtitle_color.as_str(),
         );
         let off_or = |v: u32, text: String| if v == 0 { "Off".to_owned() } else { text };
         let lift = 100 - s.subtitle_position.min(100);
-        let (size, outline, background) =
-            (s.subtitle_size, s.subtitle_outline, s.subtitle_background);
+        let (size, outline, background, position) = (
+            s.subtitle_size,
+            s.subtitle_outline,
+            s.subtitle_background,
+            s.subtitle_position,
+        );
+        let d = Settings::default();
         let modes = SubtitleMode::ALL.map(|m| {
             chip(("subtitle-mode", m as usize), m.label(), m == mode).on_click(cx.listener(
                 move |this, _, _, cx| {
@@ -169,17 +175,14 @@ impl Plaivo {
             .iter()
             .enumerate()
             .map(|(i, &(hex, name))| {
-                chip(
-                    ("subtitle-color", i),
-                    name,
-                    hex.eq_ignore_ascii_case(&color),
+                chip(("subtitle-color", i), name, hex.eq_ignore_ascii_case(color)).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.settings.subtitle_color = hex.into();
+                        this.save_settings_soon(cx);
+                        this.apply_sub_style();
+                        cx.notify();
+                    }),
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.settings.subtitle_color = hex.into();
-                    this.save_settings_soon(cx);
-                    this.apply_sub_style();
-                    cx.notify();
-                }))
             })
             .collect::<Vec<_>>();
         let languages = section("Languages")
@@ -212,35 +215,41 @@ impl Plaivo {
             );
         let style = section("Subtitle style")
             .child(subtitle_preview(&self.settings))
-            .child(self.style_row(
+            .child(Self::style_row(
                 "subtitle-size",
                 "Size",
                 "Text size",
                 format!("{size}%"),
-                |s, step| s.subtitle_size = nudge(s.subtitle_size, step, 10, 50, 200, 100),
+                size,
+                |s| &mut s.subtitle_size,
+                move |v, step| nudge(v, step, 10, 50, 200, d.subtitle_size),
                 cx,
             ))
             .child(
                 row("subtitle-color", None, "Colour", "Text colour")
                     .child(div().flex().gap(px(6.)).children(colors)),
             )
-            .child(self.style_row(
+            .child(Self::style_row(
                 "subtitle-outline",
                 "Outline",
                 "Black outline around the text",
                 off_or(outline, outline.to_string()),
-                |s, step| s.subtitle_outline = nudge(s.subtitle_outline, step, 1, 0, 6, 3),
+                outline,
+                |s| &mut s.subtitle_outline,
+                move |v, step| nudge(v, step, 1, 0, 6, d.subtitle_outline),
                 cx,
             ))
-            .child(self.style_row(
+            .child(Self::style_row(
                 "subtitle-background",
                 "Background",
                 "Opacity of the box behind the text",
                 off_or(background, format!("{background}%")),
-                |s, step| s.subtitle_background = nudge(s.subtitle_background, step, 25, 0, 100, 0),
+                background,
+                |s| &mut s.subtitle_background,
+                move |v, step| nudge(v, step, 25, 0, 100, d.subtitle_background),
                 cx,
             ))
-            .child(self.style_row(
+            .child(Self::style_row(
                 "subtitle-position",
                 "Position",
                 "Height above the bottom of the video",
@@ -249,9 +258,17 @@ impl Plaivo {
                 } else {
                     format!("{lift}% up")
                 },
-                |s, step| {
-                    s.subtitle_position =
-                        100 - nudge(100 - s.subtitle_position.min(100), step, 5, 0, 50, 0)
+                position,
+                |s| &mut s.subtitle_position,
+                move |v, step| {
+                    100 - nudge(
+                        100 - v.min(100),
+                        step,
+                        5,
+                        0,
+                        50,
+                        100 - d.subtitle_position.min(100),
+                    )
                 },
                 cx,
             ));

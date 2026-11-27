@@ -244,19 +244,23 @@ fn notch_px(delta: &ScrollDelta) -> Option<f32> {
     }
 }
 
-#[cfg(windows)]
 fn notch_sized(lines: f32) -> bool {
+    !cfg!(windows) || lines.abs() >= wheel_lines_per_notch()
+}
+
+#[cfg(windows)]
+pub fn wheel_lines_per_notch() -> f32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         SPI_GETWHEELSCROLLLINES, SystemParametersInfoW,
     };
     let mut per_notch: u32 = 3;
     unsafe { SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, (&raw mut per_notch).cast(), 0) };
-    lines.abs() >= per_notch.max(1) as f32
+    per_notch.max(1) as f32
 }
 
 #[cfg(not(windows))]
-fn notch_sized(_: f32) -> bool {
-    true
+pub fn wheel_lines_per_notch() -> f32 {
+    1.
 }
 
 fn set_y(handle: &ScrollHandle, y: f32) {
@@ -264,9 +268,8 @@ fn set_y(handle: &ScrollHandle, y: f32) {
 }
 
 fn gliding(handle: &ScrollHandle) -> bool {
-    GLIDE.with(|g| {
-        g.borrow()
-            .as_ref()
+    GLIDE.with_borrow(|g| {
+        g.as_ref()
             .is_some_and(|s| s.handle.bounds() == handle.bounds())
     })
 }
@@ -278,31 +281,27 @@ fn start_glide(handle: &ScrollHandle, before: f32, notch: Option<f32>) {
     }
     let delta = notch.unwrap_or(after - before);
     let max = f32::from(handle.max_offset().y);
-    GLIDE.with(|g| {
-        let mut g = g.borrow_mut();
-        match g.as_mut() {
-            Some(s) if s.handle.bounds() == handle.bounds() && s.last == before => {
-                s.to = (s.to + delta).clamp(-max, 0.);
+    GLIDE.with_borrow_mut(|g| match g.as_mut() {
+        Some(s) if s.handle.bounds() == handle.bounds() && s.last == before => {
+            s.to = (s.to + delta).clamp(-max, 0.);
+        }
+        _ => {
+            if let Some(other) = g.take() {
+                set_y(&other.handle, other.to);
             }
-            _ => {
-                if let Some(other) = g.take() {
-                    set_y(&other.handle, other.to);
-                }
-                *g = Some(Glide {
-                    handle: handle.clone(),
-                    to: (before + delta).clamp(-max, 0.),
-                    last: before,
-                    tick: Instant::now(),
-                });
-            }
+            *g = Some(Glide {
+                handle: handle.clone(),
+                to: (before + delta).clamp(-max, 0.),
+                last: before,
+                tick: Instant::now(),
+            });
         }
     });
     set_y(handle, before);
 }
 
 fn step_glide(handle: &ScrollHandle) {
-    GLIDE.with(|g| {
-        let mut g = g.borrow_mut();
+    GLIDE.with_borrow_mut(|g| {
         let Some(s) = g.as_mut().filter(|s| s.handle.bounds() == handle.bounds()) else {
             return;
         };
@@ -363,9 +362,8 @@ pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
                 point(track.left() + px(6.), track.top() + px(offset / ratio)),
                 size(px(SCROLLBAR_W), px(thumb_h)),
             );
-            let dragging = SCROLL_DRAG.with(|d| {
-                d.borrow()
-                    .as_ref()
+            let dragging = SCROLL_DRAG.with_borrow(|d| {
+                d.as_ref()
                     .is_some_and(|s| s.handle.bounds() == handle.bounds())
             });
             window.paint_quad(
@@ -401,32 +399,33 @@ pub fn scrollbar(handle: &ScrollHandle) -> impl IntoElement {
                 } else {
                     ((y - f32::from(track.top()) - thumb_h / 2.) * ratio).clamp(0., max)
                 };
-                down.set_offset(point(px(0.), px(-start_offset)));
-                SCROLL_DRAG.with(|d| {
-                    *d.borrow_mut() = Some(ScrollDrag {
-                        handle: down.clone(),
-                        start_y: y,
-                        start_offset,
-                        ratio,
-                        max,
-                    })
-                });
+                set_y(&down, -start_offset);
+                SCROLL_DRAG.set(Some(ScrollDrag {
+                    handle: down.clone(),
+                    start_y: y,
+                    start_offset,
+                    ratio,
+                    max,
+                }));
                 cx.stop_propagation();
                 window.refresh();
             });
-            window.on_mouse_event(|e: &MouseMoveEvent, _, window, _| {
-                SCROLL_DRAG.with(|d| {
-                    if let Some(s) = d.borrow().as_ref().filter(|_| e.dragging()) {
+            window.on_mouse_event(|e: &MouseMoveEvent, phase, window, _| {
+                if phase != DispatchPhase::Capture {
+                    return;
+                }
+                SCROLL_DRAG.with_borrow(|d| {
+                    if let Some(s) = d.as_ref().filter(|_| e.dragging()) {
                         let next = (s.start_offset
                             + (f32::from(e.position.y) - s.start_y) * s.ratio)
                             .clamp(0., s.max);
-                        s.handle.set_offset(point(px(0.), px(-next)));
+                        set_y(&s.handle, -next);
                         window.refresh();
                     }
                 });
             });
             window.on_mouse_event(|_: &MouseUpEvent, _, window, _| {
-                if SCROLL_DRAG.with(|d| d.borrow_mut().take()).is_some() {
+                if SCROLL_DRAG.take().is_some() {
                     window.refresh();
                 }
             });
@@ -545,18 +544,25 @@ pub fn nav_row(
         .child(icon(Icon::ChevronRight, 22., theme::muted()))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Step {
+    Down,
+    Reset,
+    Up,
+}
+
 pub fn stepper(
     id: &'static str,
     value: impl Into<SharedString>,
     (down, up): (bool, bool),
-    on: impl Fn(&i8, &mut Window, &mut App) + 'static,
+    on: impl Fn(&Step, &mut Window, &mut App) + 'static,
 ) -> Div {
     let on = Rc::new(on);
-    let click = |step: i8| {
+    let click = |step: Step| {
         let on = on.clone();
         move |_: &ClickEvent, window: &mut Window, cx: &mut App| on(&step, window, cx)
     };
-    let button = |n: usize, i: Icon, step: i8, enabled: bool| {
+    let button = |n: usize, i: Icon, step: Step, enabled: bool| {
         let (hover, fg) = if enabled {
             (theme::tint(0.08), theme::text().into())
         } else {
@@ -570,7 +576,7 @@ pub fn stepper(
         .flex()
         .items_center()
         .gap(px(4.))
-        .child(button(0, Icon::Remove, -1, down))
+        .child(button(0, Icon::Remove, Step::Down, down))
         .child(
             div()
                 .id((id, 1usize))
@@ -581,9 +587,9 @@ pub fn stepper(
                 .cursor_pointer()
                 .tooltip(tip("Reset"))
                 .child(value.into())
-                .on_click(click(0)),
+                .on_click(click(Step::Reset)),
         )
-        .child(button(2, Icon::Add, 1, up))
+        .child(button(2, Icon::Add, Step::Up, up))
 }
 
 pub struct Tip(pub SharedString);
@@ -701,8 +707,6 @@ impl Plaivo {
         let check = card.watched && self.settings.watched_indicators;
         let image = self.picture(&card.thumb, if wide { Shape::Wide } else { Shape::Poster });
         let placeholder = card.key.is_empty();
-        let open = card.clone();
-        let (menu_server, menu_key) = (card.server.to_string(), card.key.to_string());
         let art = div()
             .relative()
             .w(px(art_w))
@@ -805,6 +809,8 @@ impl Plaivo {
             .flex()
             .flex_col()
             .when(!placeholder, |d| {
+                let open = card.clone();
+                let (menu_server, menu_key) = (card.server.clone(), card.key.clone());
                 d.cursor_pointer()
                     .hover(|s| s.bg(theme::tint(0.05)))
                     .on_click(cx.listener(move |this, _, _, cx| this.open(&open, cx)))
@@ -813,8 +819,8 @@ impl Plaivo {
                         cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                             cx.stop_propagation();
                             this.open_item_menu(
-                                menu_server.clone(),
-                                menu_key.clone(),
+                                menu_server.to_string(),
+                                menu_key.to_string(),
                                 ev.position,
                                 cx,
                             )

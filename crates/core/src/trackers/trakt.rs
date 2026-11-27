@@ -40,9 +40,31 @@ pub(super) fn refresh_request(client_id: &str, refresh_token: &str) -> Request {
     api(Request::post(format!("{API}/oauth/token"), body), client_id)
 }
 
-pub(super) fn scrobble_request(client_id: &str, token: &str, action: &str, body: Value) -> Request {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Action {
+    Start,
+    Pause,
+    Stop,
+}
+
+impl Action {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Pause => "pause",
+            Self::Stop => "stop",
+        }
+    }
+}
+
+pub(super) fn scrobble_request(
+    client_id: &str,
+    token: &str,
+    action: Action,
+    body: Value,
+) -> Request {
     api(
-        Request::post(format!("{API}/scrobble/{action}"), body),
+        Request::post(format!("{API}/scrobble/{}", action.as_str()), body),
         client_id,
     )
     .bearer(token)
@@ -68,7 +90,9 @@ pub(super) fn scrobble_body(media: &Media, pct: f64) -> Option<Value> {
         return (!ids.is_empty()).then(|| json!({ "movie": { "ids": ids }, "progress": progress }));
     }
     let show = trakt_ids(&media.show_ids);
-    if let (false, Some(season), Some(number)) = (show.is_empty(), media.season, media.episode) {
+    if !show.is_empty()
+        && let (Some(season), Some(number)) = (media.season, media.episode)
+    {
         return Some(
             json!({ "show": { "ids": show }, "episode": { "season": season, "number": number }, "progress": progress }),
         );

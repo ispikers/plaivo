@@ -49,6 +49,7 @@ import kotlinx.coroutines.launch
 import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.LanguagePrefs
 import uniffi.plaivo_ffi.LanguageRule
+import uniffi.plaivo_ffi.MarkerKind
 import uniffi.plaivo_ffi.PlaivoException
 import uniffi.plaivo_ffi.PlayState
 import uniffi.plaivo_ffi.Playback
@@ -473,7 +474,7 @@ class PlayerActivity : ComponentActivity() {
     fun upNextIn(positionMs: Long, durationMs: Long): Double? {
         val p = playback ?: return null
         if (watching() || upNextCancelled || advancing || durationMs <= 0) return null
-        val credits = p.markers.firstOrNull { it.kind == "credits" }?.startMs
+        val credits = p.markers.firstOrNull { it.kind == MarkerKind.CREDITS }?.startMs
         if (positionMs < minOf(credits?.toLong() ?: durationMs, durationMs - UP_NEXT_LEAD_MS)) {
             upNextAnchor = null
             return null
@@ -493,7 +494,7 @@ class PlayerActivity : ComponentActivity() {
         if (i < 0 || i in autoSkipped) return null
         autoSkipped.add(i)
         exo.seekTo(markers[i].endMs.toLong())
-        return markers[i].label.replaceFirst("Skip", "Skipped")
+        return markers[i].skippedLabel
     }
 
     fun autoPending(i: Int, m: SkipMarker) = m.mode == SkipMode.AUTO && i !in autoSkipped && !watching()

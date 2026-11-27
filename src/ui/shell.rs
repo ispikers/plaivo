@@ -1,4 +1,5 @@
 use crate::app::{Choice, Nav, Page, Plaivo, Status};
+use crate::plex::ItemKind;
 use crate::ui::input;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{icon, pill, scroll_handle, scrollbar, shadow};
@@ -16,23 +17,25 @@ pub fn ease_out(t: f32) -> f32 {
     1. - (1. - t).powi(4)
 }
 
+fn elapsed(start: Option<Instant>, dur: Duration) -> f32 {
+    start.map_or(1., |t0| {
+        (t0.elapsed().as_secs_f32() / dur.as_secs_f32()).min(1.)
+    })
+}
+
 pub fn progress(start: Option<Instant>, dur: Duration, window: &mut Window) -> f32 {
-    match start {
-        Some(t0) => {
-            let p = (t0.elapsed().as_secs_f32() / dur.as_secs_f32()).min(1.);
-            if p < 1. {
-                window.request_animation_frame();
-            }
-            p
-        }
-        None => 1.,
+    let p = elapsed(start, dur);
+    if p < 1. {
+        window.request_animation_frame();
     }
+    p
 }
 
 // The page is a cached view, so a miniplayer tick, overlay or toast (drawn here) doesn't rebuild it.
 pub struct Root {
     pub app: Entity<Plaivo>,
-    _tick: Subscription,
+    page_dirty: bool,
+    _subs: [Subscription; 2],
 }
 
 pub struct MiniTick;
@@ -41,8 +44,15 @@ impl EventEmitter<MiniTick> for Plaivo {}
 
 impl Root {
     pub fn new(app: Entity<Plaivo>, cx: &mut Context<Self>) -> Self {
-        let _tick = cx.subscribe(&app, |_, _, _: &MiniTick, cx| cx.notify());
-        Self { app, _tick }
+        let _subs = [
+            cx.subscribe(&app, |_, _, _: &MiniTick, cx| cx.notify()),
+            cx.observe(&app, |this, _, _| this.page_dirty = true),
+        ];
+        Self {
+            app,
+            page_dirty: false,
+            _subs,
+        }
     }
 
     fn on_app<E>(
@@ -66,8 +76,9 @@ impl Root {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let page_dirty = std::mem::take(&mut self.page_dirty);
         let (page, focus, mini, overlays, toast) = self.app.update(cx, |app, cx| {
-            if app.start_frame(window) {
+            if app.start_frame(window, page_dirty) {
                 let id = cx.entity_id();
                 window.on_next_frame(move |_, cx| cx.notify(id));
             }
@@ -95,7 +106,7 @@ impl Render for Root {
             .relative()
             .flex()
             .flex_col()
-            .font_family(".SystemUIFont")
+            .font_family(theme::FONT)
             .text_color(theme::text())
             .text_size(px(14.))
             .track_focus(&focus)
@@ -217,14 +228,27 @@ impl Render for Plaivo {
 
 impl Plaivo {
     // Per-frame setup, run by `Root` even when the page is served from cache; true while an image fades in.
-    fn start_frame(&mut self, window: &Window) -> bool {
+    fn start_frame(&mut self, window: &Window, page_dirty: bool) -> bool {
         theme::apply(self.settings.theme, window.appearance());
         self.scale = window.scale_factor();
         self.viewport_w = (f32::from(window.viewport_size().width) * self.scale) as u32;
-        self.lru.start_frame();
+        // A cached page draws no images, so advancing here would strip the eviction guard from on-screen art.
+        if page_dirty {
+            self.lru.start_frame();
+        }
         self.arrivals
             .retain(|_, t| t.elapsed() < crate::app::IMAGE_FADE);
         self.arrivals.keys().any(|k| self.lru.used_last_frame(k))
+    }
+
+    pub fn sidebar_width(&self) -> f32 {
+        if matches!(self.page, Page::Detail | Page::HubList) {
+            0.
+        } else if self.settings.sidebar_compact {
+            theme::SIDEBAR_COMPACT
+        } else {
+            theme::SIDEBAR
+        }
     }
 
     fn mini_shown(&self) -> bool {
@@ -345,10 +369,9 @@ impl Plaivo {
             Page::AddServer => self.render_add_server(window, cx),
             Page::Downloads => self.render_downloads(window, cx),
             Page::Watch => self.render_watch(window, cx),
-            _ => div().into_any_element(),
+            Page::Splash | Page::Auth | Page::Player => div().into_any_element(),
         };
-        let sidebar = (!matches!(self.page, Page::Detail | Page::HubList))
-            .then(|| self.render_sidebar(window, cx));
+        let sidebar = (self.sidebar_width() > 0.).then(|| self.render_sidebar(window, cx));
         div()
             .size_full()
             .flex()
@@ -356,6 +379,17 @@ impl Plaivo {
             .children(sidebar)
             .child(div().flex_1().min_w_0().h_full().relative().child(page))
             .into_any_element()
+    }
+
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.settings.sidebar_compact.toggle();
+        self.save_settings_soon(cx);
+        let shown = ease_out(elapsed(self.view.sidebar_anim, SIDEBAR_ANIM));
+        let now = Instant::now();
+        // Inverts ease_out so a reversal mid-animation starts from the current width.
+        let start = now.checked_sub(SIDEBAR_ANIM.mul_f32(1. - shown.powf(0.25)));
+        self.view.sidebar_anim = Some(start.unwrap_or(now));
+        cx.notify();
     }
 
     fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -462,7 +496,7 @@ impl Plaivo {
                 libs = libs.child(
                     item(
                         ("lib", n).into(),
-                        if x.kind == "movie" {
+                        if x.kind == ItemKind::Movie {
                             Icon::Movie
                         } else {
                             Icon::Tv
@@ -493,7 +527,6 @@ impl Plaivo {
             .pt(px(16.))
             .child(
                 item("menu".into(), Icon::Menu, "Plaivo".into(), false)
-                    .child(div())
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
             .child(div().h(px(8.)).flex_none())
@@ -620,11 +653,7 @@ impl Plaivo {
     }
 
     fn render_splash(&self) -> AnyElement {
-        let rows = self
-            .splash
-            .as_ref()
-            .map(|s| s.servers.clone())
-            .unwrap_or_default();
+        let rows = self.splash.iter().flat_map(|s| &s.servers);
         div()
             .size_full()
             .flex()
@@ -640,7 +669,8 @@ impl Plaivo {
                     .text_color(theme::muted())
                     .child("Connecting to servers…"),
             )
-            .children(rows.into_iter().map(|(_, name, status)| {
+            .children(rows.map(|(_, name, status)| {
+                let status = *status;
                 let dot = match status {
                     Status::Pending => div().size(px(8.)).rounded_full().bg(theme::muted()),
                     Status::Ok => div()
@@ -680,7 +710,7 @@ impl Plaivo {
                             } else {
                                 theme::text().into()
                             })
-                            .child(name),
+                            .child(name.clone()),
                     )
             }))
             .into_any_element()

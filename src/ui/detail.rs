@@ -1,6 +1,7 @@
 use crate::app::{Card, CastMember, Nav, Plaivo, Shape, ShelfKey};
-use crate::plex::{DISCOVER_ID, RatingSource};
+use crate::plex::{DISCOVER_ID, ItemKind, RatingSource};
 use crate::ui::home::{arrow_y, card_width, content_width};
+use crate::ui::item_menu::action_icon;
 use crate::ui::theme::{self, Icon};
 use crate::ui::widgets::{
     NoContextMenu, chip, icon, overlay_button, pill, progress_bar, round_button, scrollbar,
@@ -10,6 +11,7 @@ use gpui::{
     AnyElement, Context, Div, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent, ObjectFit,
     SharedString, Window, div, img, linear_color_stop, linear_gradient, prelude::*, px, rgb,
 };
+use plaivo_core::menu::{self, Action};
 
 const CAST_W: f32 = 150.;
 const SUMMARY_LINES: usize = 4;
@@ -182,9 +184,9 @@ impl Plaivo {
             d.photo.clone(),
         );
         let it = &d.item;
-        let person = it.kind == "person";
-        let show_link =
-            (it.kind == "episode" && !it.grandparent_rating_key.is_empty()).then(|| {
+        let person = it.kind == ItemKind::Person;
+        let show_link = (it.kind == ItemKind::Episode && !it.grandparent_rating_key.is_empty())
+            .then(|| {
                 Nav::Detail(
                     server.to_string(),
                     it.grandparent_rating_key.clone(),
@@ -192,7 +194,7 @@ impl Plaivo {
                 )
             });
         let local = *server != *DISCOVER_ID;
-        let episode_nav = (local && it.kind == "episode").then(|| {
+        let episode_nav = (local && it.kind == ItemKind::Episode).then(|| {
             let loading = if self.detail_id.0 == *server {
                 &self.detail_id.1
             } else {
@@ -230,17 +232,20 @@ impl Plaivo {
                     }),
                 )
         });
-        let library = local && matches!(it.kind.as_str(), "movie" | "episode" | "show" | "season");
-        let watched = it.watched();
+        let acts = self.menu_actions(&server, it, watchlisted);
+        let watched_act = Some(if it.is_watched() {
+            Action::MarkUnwatched
+        } else {
+            Action::MarkWatched
+        })
+        .filter(|a| acts.contains(a));
+        let watchlist_act = acts
+            .iter()
+            .copied()
+            .find(|a| matches!(a, Action::AddToWatchlist | Action::RemoveFromWatchlist));
+        let can_rate = acts.contains(&Action::Rate);
         let trailer = it.trailer().map(|t| t.rating_key.clone());
-        let user_stars = it
-            .user_rating
-            .map(|r| (r / 2.).round() as u8)
-            .filter(|&s| s > 0);
-        let can_rate = library && self.server(&server).is_some_and(|s| s.can_rate());
-        let can_watchlist = self.account.token.is_some()
-            && it.plex_guid().is_some()
-            && matches!(it.kind.as_str(), "movie" | "show");
+        let user_stars = Some(menu::stars(it)).filter(|&s| s > 0);
         let menu_key = it.rating_key.clone();
         let page_menu = (server.to_string(), it.rating_key.clone());
         let backdrop = self.picture(&art, Shape::Backdrop);
@@ -329,7 +334,7 @@ impl Plaivo {
                     theme::accent(),
                 ))
                 .child(user_stars.map_or("Rate".to_owned(), |s| format!("{s}/5")))
-                .on_click(cx.listener(|this, _, _, cx| this.detail_action_rate(cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.detail_act(Action::Rate, cx)))
         });
         let actions = div()
             .flex()
@@ -374,43 +379,16 @@ impl Plaivo {
                 ))
             })
             .children(download)
-            .when(library, |d| {
-                d.child(
-                    action(
-                        "watched",
-                        if watched { Icon::Remove } else { Icon::Check },
-                        if watched {
-                            "Mark as unwatched"
-                        } else {
-                            "Mark as watched"
-                        },
-                    )
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.detail_action_watched(!watched, cx)),
-                    ),
-                )
-            })
-            .when(can_watchlist, |d| {
-                let on = watchlisted == Some(true);
-                d.child(
-                    action(
-                        "watchlist",
-                        if on {
-                            Icon::Bookmark
-                        } else {
-                            Icon::BookmarkAdd
-                        },
-                        if on {
-                            "Remove from watchlist"
-                        } else {
-                            "Add to watchlist"
-                        },
-                    )
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.detail_action_watchlist(!on, cx)),
-                    ),
-                )
-            })
+            .children(
+                [("watched", watched_act), ("watchlist", watchlist_act)]
+                    .into_iter()
+                    .filter_map(|(id, a)| {
+                        a.map(|a| {
+                            action(id, action_icon(a), a.label())
+                                .on_click(cx.listener(move |this, _, _, cx| this.detail_act(a, cx)))
+                        })
+                    }),
+            )
             .child({
                 let s = server.to_string();
                 action("more", Icon::MoreVert, "More").on_mouse_down(
@@ -430,8 +408,7 @@ impl Plaivo {
                         .child(media_line),
                 )
             });
-        let info_rows = info.clone();
-        let info_panel = (!info.is_empty()).then(|| {
+        let info_panel = (cw >= 1000. && !info.is_empty()).then(|| {
             div()
                 .absolute()
                 .top(px(64.))
@@ -443,7 +420,7 @@ impl Plaivo {
                 .flex()
                 .flex_col()
                 .gap(px(10.))
-                .children(info.into_iter().map(|(k, v)| {
+                .children(info.iter().map(|(k, v)| {
                     div()
                         .flex()
                         .flex_col()
@@ -452,9 +429,14 @@ impl Plaivo {
                                 .text_size(px(12.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme::tint(0.6))
-                                .child(k),
+                                .child(k.clone()),
                         )
-                        .child(div().text_size(px(14.)).line_height(px(19.)).child(v))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .line_height(px(19.))
+                                .child(v.clone()),
+                        )
                 }))
         });
         let hero = div()
@@ -500,7 +482,7 @@ impl Plaivo {
                         linear_color_stop(bg.opacity(0.), 0.55),
                     )),
             )
-            .when(cw >= 1000., |d| d.children(info_panel))
+            .children(info_panel)
             .children(episode_nav)
             .child(
                 div()
@@ -660,32 +642,42 @@ impl Plaivo {
                     .into_any_element()
             })
             .collect();
-        let narrow_info =
-            (cw < 1000. && !info_rows.is_empty()).then(|| {
-                div().pt(px(8.)).flex().flex_wrap().gap(px(32.)).children(
-                    info_rows.into_iter().map(|(k, v)| {
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme::muted())
-                                    .child(k),
-                            )
-                            .child(div().text_size(px(14.)).child(v))
-                    }),
-                )
-            });
+        let narrow_info = (cw < 1000. && !info.is_empty()).then(|| {
+            div()
+                .pt(px(8.))
+                .flex()
+                .flex_wrap()
+                .gap(px(32.))
+                .children(info.into_iter().map(|(k, v)| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme::muted())
+                                .child(k),
+                        )
+                        .child(div().text_size(px(14.)).child(v))
+                }))
+        });
         let mut style = window.text_style();
-        style.font_family = ".SystemUIFont".into();
+        style.font_family = theme::FONT.into();
+        // line_clamp applies per paragraph, so join them to clamp the whole text.
+        let joined: SharedString = summary
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .into();
         let long = window
             .text_system()
             .shape_text(
-                summary.clone(),
+                joined.clone(),
                 px(16.),
-                &[style.to_run(summary.len())],
+                &[style.to_run(joined.len())],
                 Some(px((cw - 48.).min(1100.))),
                 None,
             )
@@ -697,18 +689,7 @@ impl Plaivo {
                     > SUMMARY_LINES
             });
         let expanded = self.summary_expanded;
-        let summary: SharedString = if long && !expanded {
-            // line_clamp applies per paragraph, so join them to clamp the whole text.
-            summary
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .collect::<Vec<_>>()
-                .join(" ")
-                .into()
-        } else {
-            summary
-        };
+        let summary = if long && !expanded { joined } else { summary };
         let body = div()
             .px(px(24.))
             .pb(px(32.))
@@ -856,7 +837,7 @@ impl Plaivo {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let image = self.picture(&e.thumb, Shape::Wide);
-        let (server, key) = (e.server.to_string(), e.key.to_string());
+        let (server, key) = (e.server.clone(), e.key.clone());
         let (menu_server, menu_key) = (server.clone(), key.clone());
         let check = e.watched && self.settings.watched_indicators;
         div()
@@ -867,12 +848,21 @@ impl Plaivo {
             .gap(px(12.))
             .cursor_pointer()
             .hover(|s| s.bg(theme::surface()))
-            .on_click(cx.listener(move |this, _, _, cx| this.play(server.clone(), key.clone(), cx)))
+            .on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.play(server.to_string(), key.to_string(), cx)
+                }),
+            )
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
-                    this.open_item_menu(menu_server.clone(), menu_key.clone(), ev.position, cx)
+                    this.open_item_menu(
+                        menu_server.to_string(),
+                        menu_key.to_string(),
+                        ev.position,
+                        cx,
+                    )
                 }),
             )
             .child(

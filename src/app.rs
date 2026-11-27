@@ -2,7 +2,8 @@ use crate::downloads::{Downloads, Entry, State};
 use crate::images::{self, Lru};
 use crate::player::Player;
 use crate::plex::{
-    self, Client, Ctx, DISCOVER_ID, Item, R, SORTS, Server, Source, initial_sort, sort_items,
+    self, Client, Ctx, DISCOVER_ID, Item, ItemKind, R, SORTS, Server, Sort, Source, WATCHLIST_SORT,
+    initial_sort, sort_items,
 };
 use crate::settings::{BLUR_PARAM, CardPrefs, Settings, ViewMode, library_key};
 use crate::store;
@@ -112,7 +113,7 @@ pub struct Thumb {
 #[derive(Clone, Default, Debug)]
 pub struct Card {
     pub key: SharedString,
-    pub kind: SharedString,
+    pub kind: ItemKind,
     pub title: SharedString,
     pub subtitle: SharedString,
     pub summary: SharedString,
@@ -156,10 +157,10 @@ pub struct Hub {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Listing {
-    Items,
+    Items(Sort),
     Collections,
     Collection,
-    Watchlist,
+    Watchlist { sort: Sort, shows: bool },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -179,7 +180,6 @@ pub const LIB_TABS: [(LibTab, &str); 3] = [
 pub struct LibKey {
     pub server: String,
     pub section: String,
-    pub sort: String,
     pub listing: Listing,
 }
 
@@ -188,7 +188,8 @@ pub struct HubList {
     pub key: String,
     pub title: SharedString,
     pub resume: bool,
-    pub sort: String,
+    pub sort: Option<Sort>,
+    pub sorts: Vec<(Option<Sort>, &'static str)>,
     items: Vec<Item>,
     pub cards: Vec<Card>,
     pub loaded: bool,
@@ -198,7 +199,9 @@ pub struct HubList {
 impl HubList {
     fn rebuild(&mut self, prefs: &CardPrefs) {
         let mut items: Vec<&Item> = self.items.iter().collect();
-        sort_items(&mut items, &self.sort);
+        if let Some(sort) = self.sort {
+            sort_items(&mut items, sort);
+        }
         self.cards = items
             .into_iter()
             .map(|it| Card {
@@ -206,10 +209,6 @@ impl HubList {
                 ..card_for(it, false, &self.server, prefs)
             })
             .collect();
-    }
-
-    pub fn sorts(&self) -> Vec<(&'static str, &'static str)> {
-        plex::hub_sorts(&self.items, &self.key)
     }
 }
 
@@ -262,7 +261,7 @@ pub struct SectionInfo {
     pub server: String,
     pub key: String,
     pub title: SharedString,
-    pub kind: String,
+    pub kind: ItemKind,
 }
 
 #[derive(Default)]
@@ -333,6 +332,7 @@ pub struct Plaivo {
     pin_gen: Arc<AtomicU64>,
     pub splash: Option<Splash>,
     probe: Option<(Vec<Server>, usize, bool)>,
+    probe_gen: u64,
     pub servers_loading: bool,
     pub offline_servers: Vec<(String, String)>,
     pub servers_error: Option<SharedString>,
@@ -434,16 +434,16 @@ fn full_cast(server: &str, it: &Item, show_cast: &[plex::Person]) -> Vec<CastMem
 pub fn card_for(it: &Item, wide: bool, server: &str, prefs: &CardPrefs) -> Card {
     let (title, subtitle) = prefs.text(it);
     let art = prefs.art(it, wide);
-    let blur = prefs.blur(it, art);
+    let blur = prefs.should_blur(it, art);
     Card {
         key: it.rating_key.clone().into(),
-        kind: it.kind.clone().into(),
+        kind: it.kind,
         title: title.into(),
         subtitle: subtitle.into(),
         progress: it.progress(),
-        watched: it.watched(),
-        unwatched: it.unwatched(),
-        parent: if it.kind == "season" {
+        watched: it.is_watched(),
+        unwatched: it.unwatched_count(),
+        parent: if it.kind == ItemKind::Season {
             &it.parent_rating_key
         } else {
             &it.grandparent_rating_key
@@ -498,8 +498,8 @@ fn hub_rows<'a>(
 
 pub fn episode_card(e: &Item, server: &str, prefs: &CardPrefs) -> Card {
     let mut card = card_for(e, true, server, prefs);
-    let hide = prefs.spoiler(e);
-    if e.kind == "episode" {
+    let hide = prefs.is_spoiler(e);
+    if e.kind == ItemKind::Episode {
         card.title = e.episode_title().into();
         card.thumb = thumb(server, &e.thumb).map(|t| Thumb { blur: hide, ..t });
     }
@@ -563,7 +563,7 @@ pub fn poll_until<T>(
 ) -> Option<T> {
     while Instant::now() < deadline {
         std::thread::sleep(every);
-        if attempt.load(Ordering::SeqCst) != current {
+        if attempt.load(Ordering::Relaxed) != current {
             return None;
         }
         if let Some(v) = step() {
@@ -591,7 +591,10 @@ impl Plaivo {
             &search,
             |this: &mut Self, _, ev: &InputEvent, cx| match ev {
                 InputEvent::Changed(q) => this.search_debounced(q.to_string(), cx),
-                InputEvent::Submit(q) => this.search(q.to_string(), cx),
+                InputEvent::Submit(q) => {
+                    this.search_task = None;
+                    this.search(q.to_string(), cx)
+                }
             },
         )
         .detach();
@@ -651,6 +654,7 @@ impl Plaivo {
             pin_gen: Arc::new(AtomicU64::new(0)),
             splash: None,
             probe: None,
+            probe_gen: 0,
             servers_loading: false,
             offline_servers: Vec::new(),
             servers_error: None,
@@ -750,7 +754,12 @@ impl Plaivo {
         .detach();
         cx.observe_window_appearance(window, |_, _, cx| cx.notify())
             .detach();
-        cx.observe_window_activation(window, |this, _, cx| {
+        cx.observe_window_activation(window, |this, window, cx| {
+            // The Space key-up goes to whichever window has focus by then.
+            if !window.is_window_active() && std::mem::take(&mut this.view.space_down) {
+                this.end_boost();
+                cx.notify();
+            }
             // Switching apps brings the cursor back.
             if this.page == Page::Player {
                 this.wake_controls(cx);
@@ -905,7 +914,7 @@ impl Plaivo {
                 }
                 let net = Ctx::new(client, Source::Network);
                 let fresh = job(&net);
-                if !(had_cache && (fresh.is_err() || !net.changed())) {
+                if !(had_cache && (fresh.is_err() || !net.has_changed())) {
                     let _ = tx.unbounded_send(fresh);
                 }
             })
@@ -950,11 +959,18 @@ impl Plaivo {
         self.servers.iter().find(|s| s.id == id).cloned()
     }
 
+    pub fn home_id(&self) -> Option<&str> {
+        let home = self.settings.home_server.as_str();
+        let known = (home == DISCOVER_ID && self.account.token.is_some())
+            || self.servers.iter().any(|s| s.id == home);
+        Some(home)
+            .filter(|id| known && !self.settings.server_hidden(id))
+            .or_else(|| self.active_servers().next().map(|s| s.id.as_str()))
+            .or_else(|| self.servers.first().map(|s| s.id.as_str()))
+    }
+
     pub fn home_server(&self) -> Option<Server> {
-        self.server(&self.settings.home_server)
-            .filter(|s| !self.settings.server_hidden(&s.id))
-            .or_else(|| self.active_servers().next().cloned())
-            .or_else(|| self.servers.first().cloned())
+        self.home_id().and_then(|id| self.server(id))
     }
 
     pub fn active_servers(&self) -> impl Iterator<Item = &Server> {
@@ -1185,7 +1201,7 @@ impl Plaivo {
         if !sp.probes_done {
             return;
         }
-        if self.home_server().is_some_and(|s| plex::is_down(&s.id)) {
+        if self.home_id().is_some_and(plex::is_down) {
             return self.finish_splash(cx);
         }
         if !self.home_ready {
@@ -1240,7 +1256,7 @@ impl Plaivo {
     }
 
     pub fn sign_in(&mut self, cx: &mut Context<Self>) {
-        let gen_ = self.pin_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let gen_ = self.pin_gen.fetch_add(1, Ordering::Relaxed) + 1;
         self.auth_waiting = true;
         self.auth_error = None;
         let c = self.client.clone();
@@ -1248,7 +1264,7 @@ impl Plaivo {
             cx,
             move || c.create_pin(true),
             move |this, r, cx| match r {
-                Ok(pin) if this.pin_gen.load(Ordering::SeqCst) == gen_ => {
+                Ok(pin) if this.pin_gen.load(Ordering::Relaxed) == gen_ => {
                     log::info!(
                         "sign-in: PIN {} created, waiting for browser approval",
                         pin.id
@@ -1277,7 +1293,7 @@ impl Plaivo {
     }
 
     fn sign_in_done(&mut self, gen_: u64, r: R<Option<String>>, cx: &mut Context<Self>) {
-        if self.pin_gen.load(Ordering::SeqCst) != gen_ {
+        if self.pin_gen.load(Ordering::Relaxed) != gen_ {
             return;
         }
         self.auth_waiting = false;
@@ -1295,7 +1311,7 @@ impl Plaivo {
     }
 
     pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
-        self.pin_gen.fetch_add(1, Ordering::SeqCst);
+        self.pin_gen.fetch_add(1, Ordering::Relaxed);
         self.auth_waiting = false;
         if !self.servers.is_empty()
             && let Some(nav) = self.nav.last().cloned()
@@ -1314,6 +1330,8 @@ impl Plaivo {
         self.save_settings_soon(cx);
         self.watch.account_name = None;
         self.probe = None;
+        self.offline_servers.clear();
+        self.servers_error = None;
         self.servers_loading = false;
         self.servers.clear();
         self.sections.clear();
@@ -1375,7 +1393,15 @@ impl Plaivo {
             | Nav::Hub(server, _, _, _)
             | Nav::Detail(server, _, _) => known.contains(server),
             Nav::Watchlist => known.contains(DISCOVER_ID),
-            _ => true,
+            Nav::Home
+            | Nav::Servers
+            | Nav::Search
+            | Nav::Settings(_)
+            | Nav::Licenses(_)
+            | Nav::Logs
+            | Nav::AddServer
+            | Nav::Downloads(_)
+            | Nav::Watch => true,
         });
         self.library_cache.retain(|l| known.contains(&l.key.server));
         if self
@@ -1478,6 +1504,8 @@ impl Plaivo {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+        self.probe_gen += 1;
+        self.probe = None;
         if resources.is_empty() {
             return self.discovery_done(
                 Vec::new(),
@@ -1520,7 +1548,11 @@ impl Plaivo {
         .detach();
         for res in resources {
             let (c, t, started) = (self.client.clone(), token.clone(), token.clone());
-            let (id, name) = (res.client_identifier.clone(), res.name.clone());
+            let (id, name, round) = (
+                res.client_identifier.clone(),
+                res.name.clone(),
+                self.probe_gen,
+            );
             let last = self
                 .account
                 .servers
@@ -1531,7 +1563,7 @@ impl Plaivo {
                 cx,
                 move || c.connect(&res, &t, last.as_deref()),
                 move |this, r, cx| {
-                    if this.account.token.as_ref() != Some(&started) {
+                    if this.account.token.as_ref() != Some(&started) || this.probe_gen != round {
                         return;
                     }
                     match &r {
@@ -1567,7 +1599,7 @@ impl Plaivo {
     }
 
     fn probe_deadline(&mut self, cx: &mut Context<Self>) {
-        let home = self.home_server().map(|s| s.id);
+        let home = self.home_id().map(str::to_owned);
         let Some(sp) = self.splash.as_mut().filter(|sp| !sp.probes_done) else {
             return;
         };
@@ -1685,7 +1717,7 @@ impl Plaivo {
             .iter()
             .filter(|x| x.server == server)
             .map(|x| x.id.as_str());
-        let home = self.home_server().map(|s| s.id);
+        let home = self.home_id().map(str::to_owned);
         if !self.settings.sync_server_hidden(server, libraries) {
             return false;
         }
@@ -1697,20 +1729,20 @@ impl Plaivo {
         if !self.settings.server_hidden(server) {
             self.discover(cx);
         }
-        if self.home_server().map(|s| s.id) != home {
+        if self.home_id() != home.as_deref() {
             self.home_ready = false;
         }
         true
     }
 
     pub fn set_server_hidden(&mut self, id: &str, hidden: bool, cx: &mut Context<Self>) {
-        let home = self.home_server().map(|s| s.id);
+        let home = self.home_id().map(str::to_owned);
         self.settings.set_server_hidden(id, hidden);
         self.save_settings_soon(cx);
         if !hidden {
             self.discover(cx);
         }
-        if self.home_server().map(|s| s.id) != home {
+        if self.home_id() != home.as_deref() {
             self.home_ready = false;
         }
         self.load_home(cx);
@@ -1797,19 +1829,23 @@ impl Plaivo {
             }
             Nav::Watchlist => {
                 self.page = Page::Library;
-                let section = if self.watchlist_shows { "2" } else { "1" };
+                let shows = self.watchlist_shows;
                 let sort = self
                     .library
                     .iter()
                     .chain(&self.library_cache)
-                    .find(|l| l.key.listing == Listing::Watchlist && l.key.section == section)
-                    .map(|l| l.key.sort.clone());
+                    .find_map(|l| match l.key.listing {
+                        Listing::Watchlist { sort, shows: s } if s == shows => Some(sort),
+                        _ => None,
+                    });
                 self.show_library(
                     LibKey {
                         server: DISCOVER_ID.to_owned(),
-                        section: section.to_owned(),
-                        sort: sort.unwrap_or_else(|| "addedAt:desc".to_owned()),
-                        listing: Listing::Watchlist,
+                        section: String::new(),
+                        listing: Listing::Watchlist {
+                            sort: sort.unwrap_or(WATCHLIST_SORT),
+                            shows,
+                        },
                     },
                     SharedString::default(),
                     cx,
@@ -1824,18 +1860,19 @@ impl Plaivo {
                             .library
                             .iter()
                             .chain(&self.library_cache)
-                            .find(|l| {
-                                l.key.listing == Listing::Items
-                                    && l.key.server == server
-                                    && l.key.section == section
-                            })
-                            .map(|l| l.key.sort.clone());
+                            .find_map(|l| match l.key.listing {
+                                Listing::Items(sort)
+                                    if l.key.server == server && l.key.section == section =>
+                                {
+                                    Some(sort)
+                                }
+                                _ => None,
+                            });
                         self.show_library(
                             LibKey {
                                 server,
                                 section,
-                                sort: sort.unwrap_or_else(|| SORTS[0].0.to_owned()),
-                                listing: Listing::Items,
+                                listing: Listing::Items(sort.unwrap_or(SORTS[0])),
                             },
                             SharedString::default(),
                             cx,
@@ -1845,7 +1882,6 @@ impl Plaivo {
                         LibKey {
                             server,
                             section,
-                            sort: String::new(),
                             listing: Listing::Collections,
                         },
                         SharedString::default(),
@@ -1859,7 +1895,6 @@ impl Plaivo {
                     LibKey {
                         server,
                         section: key,
-                        sort: String::new(),
                         listing: Listing::Collection,
                     },
                     title.into(),
@@ -1880,6 +1915,7 @@ impl Plaivo {
                     self.hub_list = Some(HubList {
                         server,
                         sort: initial_sort(&key),
+                        sorts: plex::hub_sorts(&[], &key),
                         key,
                         title: title.into(),
                         resume,
@@ -1927,13 +1963,13 @@ impl Plaivo {
             self.settings.remember_search(&q);
             self.save_settings_soon(cx);
         }
-        let nav = match card.kind.as_ref() {
-            "season" if !card.parent.is_empty() => Nav::Detail(
+        let nav = match card.kind {
+            ItemKind::Season if !card.parent.is_empty() => Nav::Detail(
                 card.server.to_string(),
                 card.parent.to_string(),
                 Some(card.key.to_string()),
             ),
-            "collection" => Nav::Collection(
+            ItemKind::Collection => Nav::Collection(
                 card.server.to_string(),
                 card.key.to_string(),
                 card.title.to_string(),
@@ -2011,9 +2047,9 @@ impl Plaivo {
     }
 
     fn home_order(&self) -> Vec<&str> {
-        let home = self.home_server().map(|s| s.id);
+        let home = self.home_id();
         let mut ids: Vec<&str> = self.active_servers().map(|s| s.id.as_str()).collect();
-        ids.sort_by_key(|id| Some(*id) != home.as_deref());
+        ids.sort_by_key(|id| Some(*id) != home);
         ids
     }
 
@@ -2075,19 +2111,19 @@ impl Plaivo {
             .collect();
         self.hero_index = self.hero_index.min(self.hero.len().saturating_sub(1));
         self.hubs = hub_rows(
-            rows.iter().map(|h| (h.server.as_str(), &h.hub)),
+            rows.iter().map(|(h, _)| (h.server.as_str(), &h.hub)),
             &self.hubs,
             &prefs,
         );
-        for (hub, row) in self.hubs.iter_mut().zip(&rows) {
-            hub.source = row.source.clone().into();
+        for (hub, (_, source)) in self.hubs.iter_mut().zip(&rows) {
+            hub.source = source.to_string().into();
         }
         let mut seen = HashSet::new();
         self.suggestions = rows
             .iter()
-            .flat_map(|h| h.hub.metadata.iter().map(|it| (h.server.as_str(), it)))
+            .flat_map(|(h, _)| h.hub.metadata.iter().map(|it| (h.server.as_str(), it)))
             .filter(|(server, it)| {
-                matches!(it.kind.as_str(), "movie" | "show")
+                matches!(it.kind, ItemKind::Movie | ItemKind::Show)
                     && seen.insert((*server, it.rating_key.as_str()))
             })
             .take(SUGGESTIONS)
@@ -2168,7 +2204,7 @@ impl Plaivo {
             .sections
             .iter()
             .find(|s| s.server == server && s.key == section)
-            .map(|s| s.kind.clone())
+            .map(|s| s.kind)
             .unwrap_or_default();
         let key = (server, section.clone());
         if self.lib_hubs_for != key {
@@ -2178,7 +2214,7 @@ impl Plaivo {
         }
         self.load(
             cx,
-            move |c| srv.section_hubs(c, &section, &kind),
+            move |c| srv.section_hubs(c, &section, kind),
             move |this, r, cx| {
                 if this.lib_hubs_for != key {
                     return;
@@ -2221,6 +2257,7 @@ impl Plaivo {
                 l.loaded = true;
                 match r {
                     Ok(items) => {
+                        l.sorts = plex::hub_sorts(&items, &l.key);
                         l.items = items;
                         l.rebuild(&this.settings.card_prefs());
                     }
@@ -2230,19 +2267,23 @@ impl Plaivo {
         );
     }
 
-    pub fn set_hub_sort(&mut self, sort: &str, cx: &mut Context<Self>) {
+    pub fn set_hub_sort(&mut self, sort: Option<Sort>, cx: &mut Context<Self>) {
         self.sort_open = false;
         if let Some(l) = &mut self.hub_list {
-            l.sort = sort.to_owned();
+            l.sort = sort;
             l.rebuild(&self.settings.card_prefs());
         }
         cx.notify();
     }
 
-    pub fn set_sort(&mut self, sort: &str, cx: &mut Context<Self>) {
+    pub fn set_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
         self.sort_open = false;
         if let Some(mut key) = self.library.as_ref().map(|l| l.key.clone()) {
-            key.sort = sort.to_owned();
+            key.listing = match key.listing {
+                Listing::Items(_) => Listing::Items(sort),
+                Listing::Watchlist { shows, .. } => Listing::Watchlist { sort, shows },
+                other => other,
+            };
             self.show_library(key, SharedString::default(), cx);
         }
     }
@@ -2301,14 +2342,14 @@ impl Plaivo {
         let k = key.clone();
         let summaries = self.settings.view_mode == ViewMode::List;
         let fetch = move |c: &Ctx| match k.listing {
-            Listing::Items => {
-                srv.section_items(c, &k.section, page * PAGE, PAGE, &k.sort, summaries)
+            Listing::Items(sort) => {
+                srv.section_items(c, &k.section, page * PAGE, PAGE, sort, summaries)
             }
             Listing::Collections => srv.collections(c, &k.section, page * PAGE, PAGE),
             Listing::Collection => {
                 srv.collection_items(c, &k.section, page * PAGE, PAGE, summaries)
             }
-            Listing::Watchlist => srv.watchlist(c, &k.section, page * PAGE, PAGE, &k.sort),
+            Listing::Watchlist { sort, shows } => srv.watchlist(c, shows, page * PAGE, PAGE, sort),
         };
         self.load(cx, fetch, move |this, r, cx| {
             let prefs = this.settings.card_prefs();
@@ -2328,17 +2369,9 @@ impl Plaivo {
                     }
                     for (i, it) in items.iter().enumerate() {
                         if let Some(slot) = lib.items.get_mut(page * PAGE + i) {
-                            let meta = [
-                                it.content_rating.clone(),
-                                it.year.map(|y| y.to_string()).unwrap_or_default(),
-                                it.duration.map(plex::fmt_duration).unwrap_or_default(),
-                                it.audience_rating
-                                    .map(|r| format!("★ {r:.1}"))
-                                    .unwrap_or_default(),
-                            ];
                             *slot = Some(Card {
                                 summary: it.summary.clone().into(),
-                                meta: join(&meta).into(),
+                                meta: it.list_meta().into(),
                                 ..card_for(it, false, &key.server, &prefs)
                             });
                         }
@@ -2366,13 +2399,12 @@ impl Plaivo {
     pub fn search(&mut self, q: String, cx: &mut Context<Self>) {
         self.search_gen += 1;
         let gen_ = self.search_gen;
-        let q = q.trim().to_owned();
-        if plaivo_core::search::too_short(&q) {
+        let Some(q) = plaivo_core::search::query(&q).map(str::to_owned) else {
             self.results.clear();
             self.searching = false;
             cx.notify();
             return;
-        }
+        };
         self.searching = true;
         let servers: Vec<Server> = self
             .active_servers()
@@ -2386,33 +2418,28 @@ impl Plaivo {
         Self::bg(
             cx,
             move || {
-                let discover = {
-                    let (c, q) = (c.clone(), q.clone());
-                    std::thread::spawn(move || {
+                let ctx = Ctx::new(c.clone(), Source::Live);
+                let (local, discover) = std::thread::scope(|s| {
+                    let discover = s.spawn(|| {
                         if token.is_empty() {
                             Ok(Vec::new())
                         } else {
                             c.discover_search(&q, &token)
                         }
-                    })
-                };
-                let local: Vec<_> = servers
-                    .into_iter()
-                    .map(|srv| {
-                        let (c, q) = (c.clone(), q.clone());
-                        std::thread::spawn(move || {
-                            (srv.id.clone(), srv.search(&Ctx::new(c, Source::Live), &q))
-                        })
-                    })
-                    .collect();
-                let local: Vec<_> = local.into_iter().filter_map(|h| h.join().ok()).collect();
-                (
-                    q,
-                    local,
-                    discover
-                        .join()
-                        .unwrap_or_else(|_| Err("search thread panicked".into())),
-                )
+                    });
+                    let local: Vec<_> = servers
+                        .iter()
+                        .map(|srv| s.spawn(|| (srv.id.clone(), srv.search(&ctx, &q))))
+                        .collect();
+                    let local: Vec<_> = local.into_iter().filter_map(|h| h.join().ok()).collect();
+                    (
+                        local,
+                        discover
+                            .join()
+                            .unwrap_or_else(|_| Err("search thread panicked".into())),
+                    )
+                });
+                (q, local, discover)
             },
             move |this, (q, local, discover), cx| {
                 if this.search_gen != gen_ {
@@ -2425,7 +2452,7 @@ impl Plaivo {
                         r.map_err(|e| errors.push(e)).ok().map(|hits| (srv, hits))
                     })
                     .collect();
-                let home = this.home_server().map(|h| h.id).unwrap_or_default();
+                let home = this.home_id().unwrap_or_default().to_owned();
                 let prefs = this.settings.card_prefs();
                 this.results =
                     plaivo_core::search::rank(&q, &home, local, discover.unwrap_or_default())
@@ -2461,9 +2488,12 @@ impl Plaivo {
         let Some(srv) = self.server(&server) else {
             return;
         };
-        if self.detail_id != (server.clone(), key.clone()) {
+        if self.detail_id.0 != server || self.detail_id.1 != key {
             if self.sibling_episode(&server, &key)
-                || self.owned_swap.as_ref() == Some(&(server.clone(), key.clone()))
+                || self
+                    .owned_swap
+                    .as_ref()
+                    .is_some_and(|(s, k)| *s == server && *k == key)
             {
                 self.summary_expanded = false;
             } else {
@@ -2481,7 +2511,7 @@ impl Plaivo {
             cx,
             move |c| -> R<(Item, Vec<Item>)> {
                 let mut it = srv.detail(c, &key)?;
-                let seasons = if it.kind == "show" {
+                let seasons = if it.kind == ItemKind::Show {
                     srv.seasons(c, &mut it, discover.as_ref())?
                 } else {
                     Vec::new()
@@ -2507,7 +2537,7 @@ impl Plaivo {
         if self
             .detail
             .as_ref()
-            .is_some_and(|d| d.item.kind != "person")
+            .is_some_and(|d| d.item.kind != ItemKind::Person)
         {
             let (server, key) = self.detail_id.clone();
             self.load_detail(server, key, None, cx);
@@ -2533,7 +2563,7 @@ impl Plaivo {
             return;
         };
         let key = format!("person:{id}");
-        if self.detail_id != (server.clone(), key.clone()) {
+        if self.detail_id.0 != server || self.detail_id.1 != key {
             self.clear_detail();
         }
         self.detail_id = (server.clone(), key);
@@ -2605,7 +2635,7 @@ impl Plaivo {
             info: info_rows,
             related,
             item: Item {
-                kind: "person".into(),
+                kind: ItemKind::Person,
                 ..Default::default()
             },
             ..Default::default()
@@ -2633,21 +2663,23 @@ impl Plaivo {
             .as_ref()
             .filter(|d| d.item.rating_key == it.rating_key)
             .and_then(|d| d.watchlisted);
-        let owned_swap =
-            self.owned_swap.as_ref() == Some(&(server.to_owned(), it.rating_key.clone()));
+        let owned_swap = self
+            .owned_swap
+            .as_ref()
+            .is_some_and(|(s, k)| s == server && *k == it.rating_key);
         let same_show = self.detail.as_ref().is_some_and(|d| {
             owned_swap
                 || *d.server == *server
-                    && d.item.kind == "episode"
-                    && it.kind == "episode"
+                    && d.item.kind == ItemKind::Episode
+                    && it.kind == ItemKind::Episode
                     && d.item.grandparent_rating_key == it.grandparent_rating_key
         });
-        let (episodes, art, logo, show_cast) = match self.detail.as_ref().filter(|_| same_show) {
+        let (episodes, art, logo, show_cast) = match self.detail.as_mut().filter(|_| same_show) {
             Some(d) => (
                 d.episodes.clone(),
-                d.art.clone(),
-                d.logo.clone(),
-                d.show_cast.clone(),
+                d.art.take(),
+                d.logo.take(),
+                std::mem::take(&mut d.show_cast),
             ),
             None => (
                 Rc::default(),
@@ -2696,7 +2728,7 @@ impl Plaivo {
             play_key: summary.play_key.into(),
             progress: summary.progress,
             art,
-            is_show: it.kind == "show",
+            is_show: it.kind == ItemKind::Show,
             item: it.clone(),
         };
         if let Some(prev) = self.detail.as_mut().filter(|_| owned_swap) {
@@ -2711,7 +2743,7 @@ impl Plaivo {
         if fresh {
             self.load_related(server, &it, cx);
         }
-        if it.kind == "show" {
+        if it.kind == ItemKind::Show {
             let pick = plaivo_core::detail::pick_season(&it, &seasons, self.season.as_deref());
             self.season_items = seasons;
             if let Some(k) = pick {
@@ -2772,7 +2804,7 @@ impl Plaivo {
     }
 
     fn live_servers(&self) -> Vec<Server> {
-        let home = self.home_server().map(|h| h.id).unwrap_or_default();
+        let home = self.home_id().unwrap_or_default().to_owned();
         let mut servers: Vec<Server> = self
             .active_servers()
             .filter(|s| !plex::is_down(&s.id))
@@ -2790,7 +2822,10 @@ impl Plaivo {
             move || plaivo_core::watch_together::find_owned(&it, &servers, &client),
             move |this, found, cx| {
                 let Some((server, local)) = found else { return };
-                if this.page != Page::Detail || this.detail_id != (DISCOVER_ID.to_owned(), key) {
+                if this.page != Page::Detail
+                    || this.detail_id.0 != DISCOVER_ID
+                    || this.detail_id.1 != key
+                {
                     return;
                 }
                 this.owned_swap = Some((server.clone(), local.rating_key.clone()));
@@ -2806,7 +2841,7 @@ impl Plaivo {
     fn load_neighbours(&mut self, server: &str, it: &Item, cx: &mut Context<Self>) {
         let Some(srv) = self.server(server).filter(|_| {
             server != DISCOVER_ID
-                && it.kind == "episode"
+                && it.kind == ItemKind::Episode
                 && !it.grandparent_rating_key.is_empty()
                 && !self.sibling_episode(server, &it.rating_key)
         }) else {
@@ -2893,13 +2928,6 @@ impl Plaivo {
                 }
             },
         );
-    }
-
-    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.settings.sidebar_compact.toggle();
-        self.save_settings_soon(cx);
-        self.view.sidebar_anim = Some(Instant::now());
-        cx.notify();
     }
 }
 

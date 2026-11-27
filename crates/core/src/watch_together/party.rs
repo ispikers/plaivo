@@ -35,22 +35,22 @@ pub enum EndReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartyError {
-    pub code: String,
+    pub code: ErrorCode,
     pub message: String,
-    pub re: Option<String>,
+    pub re: Option<MsgType>,
 }
 
 impl PartyError {
-    pub(crate) fn local(code: &str) -> Self {
+    pub(crate) fn local(code: ErrorCode) -> Self {
         Self {
-            code: code.into(),
+            code,
             message: String::new(),
             re: None,
         }
     }
 
     pub fn room_gone(&self) -> bool {
-        self.code == "room_not_found" && self.re.as_deref() == Some("join")
+        self.code == ErrorCode::RoomNotFound && self.re == Some(MsgType::Join)
     }
 }
 
@@ -74,7 +74,6 @@ pub struct PartyState {
     pub offset_ms: i64,
     pub player: PlayerState,
     pub start_pending: bool,
-    pub end_reason: Option<EndReason>,
 }
 
 impl PartyState {
@@ -107,7 +106,7 @@ impl PartyState {
             && self.match_.is_some_and(|m| match m.state {
                 MatchState::Mismatched => true,
                 MatchState::Matched => self.offset_ms != 0,
-                _ => false,
+                MatchState::Searching | MatchState::Unavailable => false,
             })
     }
 }
@@ -124,7 +123,7 @@ pub enum Event {
     Error(PartyError),
     Ended {
         reason: EndReason,
-        error: Option<String>,
+        error: Option<ErrorCode>,
     },
     Failed(PartyError),
 }
@@ -145,7 +144,6 @@ pub enum Request {
 }
 
 struct Link {
-    url: String,
     code: String,
     peer_id: String,
     token: String,
@@ -184,7 +182,7 @@ pub struct Party {
     last_seek_at: Option<i64>,
     lane_until: Option<i64>,
     seek_in_lane: bool,
-    hold: Option<(i64, &'static str)>,
+    hold: Option<(i64, MsgType)>,
     next_step_at: i64,
     step_now: bool,
     play_at: Option<i64>,
@@ -201,7 +199,7 @@ pub struct Party {
 impl Party {
     pub fn new(name: &str, client: &str, seed: u64) -> Result<Self, PartyError> {
         if !valid_text(name, NAME_MAX) || !valid_client(client) {
-            return Err(PartyError::local("invalid_message"));
+            return Err(PartyError::local(ErrorCode::InvalidMessage));
         }
         Ok(Self {
             name: name.into(),
@@ -255,21 +253,27 @@ impl Party {
         &self.tried
     }
 
+    pub fn cancelling(&self) -> bool {
+        self.cancel_by.is_some()
+    }
+
     pub fn next_deadline(&self) -> Option<i64> {
         let reconnecting = self.state.connection == Connection::Reconnecting;
         let window = reconnecting.then_some(self.dropped_at + RESUME_WINDOW_MS);
-        let blocked = [self.hold.map(|(t, _)| t), self.lane_until]
+        let blocked = [self.hold.as_ref().map(|&(t, _)| t), self.lane_until]
             .into_iter()
             .flatten()
             .max();
         let step = (reconnecting && self.bound)
             .then_some(blocked.map_or(self.next_step_at, |t| t.max(self.next_step_at)));
+        let play = self.play_at.filter(|_| reconnecting && self.bound);
         [
             self.answer_by,
             self.attempt_at,
             self.cancel_by,
             window,
             step,
+            play,
         ]
         .into_iter()
         .flatten()
@@ -296,18 +300,18 @@ impl Party {
             self.state.connection,
             Connection::Connecting | Connection::Connected | Connection::Reconnecting
         ) {
-            return Err(PartyError::local("already_in_room"));
+            return Err(PartyError::local(ErrorCode::AlreadyInRoom));
         }
         let request = match request {
             Request::Join { code, create } => Request::Join {
-                code: normalize_code(&code).ok_or_else(|| PartyError::local("invalid_code"))?,
+                code: normalize_code(&code)
+                    .ok_or_else(|| PartyError::local(ErrorCode::InvalidCode))?,
                 create,
             },
             r => r,
         };
         self.reset();
         self.away = false;
-        self.state.end_reason = None;
         self.state.connection = Connection::Connecting;
         self.request = Some(request);
         self.tried.clear();
@@ -353,7 +357,7 @@ impl Party {
 
     pub fn on_connect_failed(&mut self, now: i64) {
         match self.state.connection {
-            Connection::Connecting => self.fail(PartyError::local("unreachable")),
+            Connection::Connecting => self.fail(PartyError::local(ErrorCode::Unreachable)),
             Connection::Reconnecting if self.answer_by.is_some() && !self.open => {
                 self.attempt_failed(now)
             }
@@ -367,13 +371,15 @@ impl Party {
         }
         self.open = false;
         match self.state.connection {
-            Connection::Connecting => self.fail(PartyError::local("unreachable")),
+            Connection::Connecting => self.fail(PartyError::local(ErrorCode::Unreachable)),
             Connection::Connected if code == Some(4000) => self.end(EndReason::Replaced, None),
             Connection::Connected => {
                 self.state.connection = Connection::Reconnecting;
                 self.dropped_at = now;
                 self.attempt = 0;
-                self.old_clock = self.clock.take();
+                if let Some(clock) = self.clock.take().filter(|c| c.best().is_some()) {
+                    self.old_clock = Some(clock);
+                }
                 self.last_status = None;
                 self.schedule_attempt(now);
             }
@@ -397,7 +403,7 @@ impl Party {
             ServerMsg::Malformed(kind) if kind == "joined" => match self.state.connection {
                 Connection::Connecting => {
                     self.send(ClientMsg::Leave);
-                    self.fail(PartyError::local("invalid_message"));
+                    self.fail(PartyError::local(ErrorCode::InvalidMessage));
                 }
                 Connection::Reconnecting => self.attempt_failed(now),
                 _ => {}
@@ -426,7 +432,10 @@ impl Party {
         match parse(text) {
             ServerMsg::Joined(_) => self.send(ClientMsg::Leave),
             ServerMsg::Error(e)
-                if matches!(e.re.as_deref(), Some("create" | "join" | "resume")) => {}
+                if matches!(
+                    e.re,
+                    Some(MsgType::Create | MsgType::Join | MsgType::Resume)
+                ) => {}
             _ => return,
         }
         self.close_cancelled();
@@ -453,7 +462,6 @@ impl Party {
         self.answer_by = None;
         self.request = None;
         self.link = Some(Link {
-            url: self.url.clone().unwrap_or_default(),
             code: j.code,
             peer_id: j.you.peer_id.clone(),
             token: j.you.token,
@@ -466,11 +474,15 @@ impl Party {
         if resumed {
             self.diff_participants(before.as_ref());
         }
-        let queued = (!resumed).then(|| self.pending_media.take()).flatten();
-        if !resumed || self.epoch != Some(epoch) {
+        let queued = self.pending_media.take();
+        let new_epoch = !resumed || self.epoch != Some(epoch);
+        if new_epoch {
             self.start_epoch(j.media);
         }
-        if queued.is_some() {
+        if queued
+            .as_ref()
+            .is_some_and(|(m, _)| !new_epoch || Some(m) != self.state.media.as_ref())
+        {
             self.pending_media = queued;
         }
         self.attempt = 0;
@@ -506,7 +518,7 @@ impl Party {
         };
         if new_epoch && media.is_none() {
             self.send(ClientMsg::Leave);
-            self.end(EndReason::Lost, Some("invalid_message".into()));
+            self.end(EndReason::Lost, Some(ErrorCode::InvalidMessage));
             return;
         }
         self.rev = room.rev;
@@ -529,25 +541,25 @@ impl Party {
     }
 
     fn on_error(&mut self, err: PartyError, now: i64) {
-        let re = err.re.as_deref();
+        let re = err.re.as_ref();
         match self.state.connection {
-            Connection::Connecting if matches!(re, Some("create" | "join")) => {
+            Connection::Connecting if matches!(re, Some(MsgType::Create | MsgType::Join)) => {
                 self.answer_by = None;
                 self.out.push(Output::Refused(err));
             }
-            Connection::Reconnecting if self.open && re == Some("resume") => {
-                if matches!(err.code.as_str(), "resume_failed" | "client_blocked") {
+            Connection::Reconnecting if self.open && re == Some(&MsgType::Resume) => {
+                if matches!(err.code, ErrorCode::ResumeFailed | ErrorCode::ClientBlocked) {
                     self.end(EndReason::Lost, Some(err.code));
                 } else {
                     self.attempt_failed(now);
                 }
             }
             Connection::Connected => {
-                if re == Some("setMedia") {
+                if re == Some(&MsgType::SetMedia) {
                     self.pending_media = None;
                     self.rebind();
                 }
-                if self.hold.is_some_and(|(_, kind)| Some(kind) == re) {
+                if self.hold.as_ref().is_some_and(|(_, kind)| Some(kind) == re) {
                     self.hold = None;
                     self.step_now = true;
                 }
@@ -563,22 +575,23 @@ impl Party {
         }
         match self.state.connection {
             Connection::Connecting if self.answer_by.is_some_and(|t| now >= t) => {
-                return self.fail(PartyError::local("unreachable"));
+                return self.fail(PartyError::local(ErrorCode::Unreachable));
             }
             Connection::Reconnecting => {
                 if now - self.dropped_at >= RESUME_WINDOW_MS {
-                    return self.end(EndReason::Lost, Some("unreachable".into()));
+                    return self.end(EndReason::Lost, Some(ErrorCode::Unreachable));
                 }
                 if self.answer_by.is_some_and(|t| now >= t) {
                     self.attempt_failed(now);
                 }
-                if let Some(link) = &self.link
+                if self.link.is_some()
+                    && let Some(url) = &self.url
                     && !self.open
                     && self.attempt_at.is_some_and(|t| now >= t)
                 {
                     self.attempt_at = None;
                     self.answer_by = Some(now + CONNECT_TIMEOUT_MS);
-                    self.out.push(Output::Connect(link.url.clone()));
+                    self.out.push(Output::Connect(url.clone()));
                 }
             }
             Connection::Connected if now - self.last_recv >= SILENCE_MS => {
@@ -597,7 +610,7 @@ impl Party {
         {
             self.old_clock = None;
         }
-        if self.hold.is_some_and(|(t, _)| now >= t) {
+        if self.hold.as_ref().is_some_and(|&(t, _)| now >= t) {
             self.hold = None;
             self.step_now = true;
         }
@@ -654,7 +667,7 @@ impl Party {
 
     pub fn set_offset(&mut self, offset_ms: i64) -> Result<(), PartyError> {
         if !(-MAX_DURATION_MS..=MAX_DURATION_MS).contains(&offset_ms) {
-            return Err(PartyError::local("invalid_message"));
+            return Err(PartyError::local(ErrorCode::InvalidMessage));
         }
         self.state.offset_ms = offset_ms;
         self.step_now = true;
@@ -676,14 +689,14 @@ impl Party {
             self.command(PlayerCommand::Pause, now);
         }
         self.send(ClientMsg::Pause { position_ms });
-        self.hold = Some((now + HOLD_MS, "pause"));
+        self.hold = Some((now + HOLD_MS, MsgType::Pause));
         Ok(())
     }
 
     pub fn seek(&mut self, position_ms: i64, now: i64) -> Result<(), PartyError> {
         self.controller()?;
         if !(0..=MAX_INT).contains(&position_ms) {
-            return Err(PartyError::local("invalid_message"));
+            return Err(PartyError::local(ErrorCode::InvalidMessage));
         }
         if self.bound {
             self.command(PlayerCommand::Seek(position_ms), now);
@@ -691,20 +704,20 @@ impl Party {
         self.send(ClientMsg::Seek {
             position_ms: (position_ms - self.state.offset_ms).max(0),
         });
-        self.hold = Some((now + HOLD_MS, "seek"));
+        self.hold = Some((now + HOLD_MS, MsgType::Seek));
         Ok(())
     }
 
     pub fn set_rate(&mut self, rate: f64, now: i64) -> Result<(), PartyError> {
         self.controller()?;
         if !(0.5..=2.0).contains(&rate) {
-            return Err(PartyError::local("invalid_message"));
+            return Err(PartyError::local(ErrorCode::InvalidMessage));
         }
         if self.bound && self.feed.is_some_and(|(f, _)| f.can_set_rate) {
             self.command(PlayerCommand::SetRate(follow::round_rate(rate)), now);
         }
         self.send(ClientMsg::Rate { rate });
-        self.hold = Some((now + HOLD_MS, "rate"));
+        self.hold = Some((now + HOLD_MS, MsgType::Rate));
         Ok(())
     }
 
@@ -718,7 +731,7 @@ impl Party {
             self.host()?;
         }
         if media.check(true).is_err() || !(0..=MAX_INT).contains(&position_ms) {
-            return Err(PartyError::local("invalid_message"));
+            return Err(PartyError::local(ErrorCode::InvalidMessage));
         }
         self.own_media = Some(media.clone());
         self.pending_media = Some((media.clone(), position_ms));
@@ -769,9 +782,9 @@ impl Party {
             }
             Connection::Reconnecting => self.end(EndReason::Left, None),
             Connection::Connecting if self.open => {
-                self.keep_for_answer(|p| p.fail(PartyError::local("cancelled")))
+                self.keep_for_answer(|p| p.fail(PartyError::local(ErrorCode::Cancelled)))
             }
-            Connection::Connecting => self.fail(PartyError::local("cancelled")),
+            Connection::Connecting => self.fail(PartyError::local(ErrorCode::Cancelled)),
             _ => {}
         }
     }
@@ -798,22 +811,19 @@ impl Party {
         self.events.push(Event::Failed(err));
     }
 
-    fn end(&mut self, reason: EndReason, error: Option<String>) {
+    fn end(&mut self, reason: EndReason, error: Option<ErrorCode>) {
         self.release();
         self.reset();
         self.own_media = None;
         self.state.connection = Connection::Ended;
-        self.state.end_reason = Some(reason);
         self.events.push(Event::Ended { reason, error });
     }
 
     fn reset(&mut self) {
         self.cancel_by = None;
         self.close_socket();
-        let (connection, end_reason) = (self.state.connection, self.state.end_reason);
         self.state = PartyState {
-            connection,
-            end_reason,
+            connection: self.state.connection,
             ..PartyState::default()
         };
         self.link = None;
@@ -1085,19 +1095,19 @@ impl Party {
         if self.state.connection == Connection::Connected {
             Ok(())
         } else {
-            Err(PartyError::local("not_in_room"))
+            Err(PartyError::local(ErrorCode::NotInRoom))
         }
     }
 
     fn controller(&self) -> Result<(), PartyError> {
         self.member()?;
         if self.state.media.is_none() {
-            return Err(PartyError::local("invalid_message"));
+            return Err(PartyError::local(ErrorCode::InvalidMessage));
         }
         if self.state.can_control() {
             Ok(())
         } else {
-            Err(PartyError::local("forbidden"))
+            Err(PartyError::local(ErrorCode::Forbidden))
         }
     }
 
@@ -1106,7 +1116,7 @@ impl Party {
         if self.state.is_host() {
             Ok(())
         } else {
-            Err(PartyError::local("forbidden"))
+            Err(PartyError::local(ErrorCode::Forbidden))
         }
     }
 
@@ -1125,7 +1135,7 @@ impl Party {
             .and_then(|r| r.participant(peer_id))
         {
             Some(_) => Ok(()),
-            None => Err(PartyError::local("invalid_message")),
+            None => Err(PartyError::local(ErrorCode::InvalidMessage)),
         }
     }
 }
@@ -1195,6 +1205,13 @@ mod tests {
             room["action"] = a;
         }
         room.to_string()
+    }
+
+    fn ended(p: &mut Party) -> Option<EndReason> {
+        p.take_events().into_iter().find_map(|e| match e {
+            Event::Ended { reason, .. } => Some(reason),
+            _ => None,
+        })
     }
 
     fn joined(now: i64, room: Value, media: Value) -> Party {
@@ -1469,7 +1486,7 @@ mod tests {
                 None,
             ),
         );
-        assert_eq!(p.state().end_reason, Some(EndReason::Lost));
+        assert_eq!(ended(&mut p), Some(EndReason::Lost));
     }
 
     #[test]
@@ -1534,13 +1551,48 @@ mod tests {
         p.on_open(URL, now, None);
         assert_eq!(drain(&mut p, now).sent[0]["type"], "resume");
         p.leave();
-        assert_eq!(p.state().end_reason, Some(EndReason::Left));
+        assert_eq!(ended(&mut p), Some(EndReason::Left));
         assert!(!drain(&mut p, now).other.contains(&Output::Close(1000)));
         p.on_text(now, &json!({"type": "joined", "code": "K7MQ2X", "you": {"peerId": "p1", "token": "a".repeat(43)}, "room": snapshot(2, 0, "idle", 0, 0, false), "media": null, "serverTime": 0}).to_string());
         let d = drain(&mut p, now);
         assert_eq!(d.sent, [json!({"type": "leave"})]);
         assert!(d.other.contains(&Output::Close(1000)));
         assert_eq!(p.state().connection, Connection::Ended);
+    }
+
+    #[test]
+    fn media_queued_while_reconnecting_survives_a_resume_into_a_new_epoch() {
+        let token = "a".repeat(43);
+        let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, true), Value::Null);
+        p.set_media(Media::parse(movie()).unwrap(), 0).unwrap();
+        drain(&mut p, 0);
+        p.on_drop(0, None);
+        let dune = json!({"kind": "movie", "title": "Dune", "durationMs": 9_000_000});
+        p.set_media(Media::parse(dune).unwrap(), 0).unwrap();
+        p.on_open(URL, 600, None);
+        drain(&mut p, 600);
+        p.on_text(600, &json!({"type": "joined", "code": "K7MQ2X", "you": {"peerId": "p1", "token": token}, "room": snapshot(2, 1, "waiting", 0, 0, true), "media": movie(), "serverTime": 0}).to_string());
+        let sent = drain(&mut p, 600).sent;
+        assert!(
+            sent.iter()
+                .any(|m| m["type"] == "setMedia" && m["media"]["title"] == "Dune"),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn a_drop_before_the_first_pong_keeps_the_synced_clock() {
+        let token = "a".repeat(43);
+        let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
+        drain(&mut p, 0);
+        assert!(p.relay_now(0).is_some());
+        p.on_drop(0, None);
+        p.on_open(URL, 600, None);
+        p.take_outputs();
+        p.on_text(600, &json!({"type": "joined", "code": "K7MQ2X", "you": {"peerId": "p1", "token": token}, "room": snapshot(2, 0, "idle", 0, 0, false), "media": null, "serverTime": 0}).to_string());
+        assert_eq!(p.state().connection, Connection::Connected);
+        p.on_drop(700, None);
+        assert!(p.relay_now(700).is_some());
     }
 
     #[test]
@@ -1565,7 +1617,7 @@ mod tests {
         let mut p = Party::new("Tester", "Plaivo/0.1.0", 7).unwrap();
         assert_eq!(
             p.set_media(media.clone(), 0).unwrap_err().code,
-            "not_in_room"
+            ErrorCode::NotInRoom
         );
         p.start(Request::Create, 0).unwrap();
         p.set_media(media.clone(), 0).unwrap();
@@ -1586,7 +1638,10 @@ mod tests {
 
         let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
         p.on_drop(0, None);
-        assert_eq!(p.set_media(media, 0).unwrap_err().code, "not_in_room");
+        assert_eq!(
+            p.set_media(media, 0).unwrap_err().code,
+            ErrorCode::NotInRoom
+        );
     }
 
     #[test]
@@ -1599,9 +1654,8 @@ mod tests {
             700,
             r#"{"type":"error","code":"resume_failed","message":"","re":"resume"}"#,
         );
-        assert_eq!(p.state().end_reason, Some(EndReason::Lost));
         assert!(
-            matches!(&p.take_events()[..], [Event::Ended { reason: EndReason::Lost, error: Some(e) }] if e == "resume_failed")
+            matches!(&p.take_events()[..], [Event::Ended { reason: EndReason::Lost, error: Some(e) }] if *e == ErrorCode::ResumeFailed)
         );
 
         let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
@@ -1619,18 +1673,18 @@ mod tests {
         }
         assert_eq!(now, RESUME_WINDOW_MS);
         assert!(
-            matches!(&p.take_events()[..], [Event::Ended { reason: EndReason::Lost, error: Some(e) }] if e == "unreachable")
+            matches!(&p.take_events()[..], [Event::Ended { reason: EndReason::Lost, error: Some(e) }] if *e == ErrorCode::Unreachable)
         );
 
         let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
         p.on_drop(0, Some(4000));
-        assert_eq!(p.state().end_reason, Some(EndReason::Replaced));
+        assert_eq!(ended(&mut p), Some(EndReason::Replaced));
     }
 
     #[test]
     fn commands_check_membership_role_and_media() {
         let mut p = Party::new("Tester", "Plaivo/0.1.0", 1).unwrap();
-        assert_eq!(p.play().unwrap_err().code, "not_in_room");
+        assert_eq!(p.play().unwrap_err().code, ErrorCode::NotInRoom);
         assert_eq!(
             p.start(
                 Request::Join {
@@ -1641,18 +1695,21 @@ mod tests {
             )
             .unwrap_err()
             .code,
-            "invalid_code"
+            ErrorCode::InvalidCode
         );
         assert!(Party::new("Tester", "Plaivo", 1).is_err());
 
         let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
-        assert_eq!(p.play().unwrap_err().code, "invalid_message");
-        assert_eq!(p.kick("p2").unwrap_err().code, "forbidden");
+        assert_eq!(p.play().unwrap_err().code, ErrorCode::InvalidMessage);
+        assert_eq!(p.kick("p2").unwrap_err().code, ErrorCode::Forbidden);
         let mut p = joined(0, snapshot(1, 1, "paused", 0, 0, false), movie());
-        assert_eq!(p.pause(0).unwrap_err().code, "forbidden");
+        assert_eq!(p.pause(0).unwrap_err().code, ErrorCode::Forbidden);
         let mut p = joined(0, snapshot(1, 1, "paused", 0, 0, true), movie());
-        assert_eq!(p.kick("p9").unwrap_err().code, "invalid_message");
-        assert_eq!(p.set_rate(2.5, 0).unwrap_err().code, "invalid_message");
+        assert_eq!(p.kick("p9").unwrap_err().code, ErrorCode::InvalidMessage);
+        assert_eq!(
+            p.set_rate(2.5, 0).unwrap_err().code,
+            ErrorCode::InvalidMessage
+        );
         p.set_offset(1000).unwrap();
         drain(&mut p, 0);
         p.seek(5000, 0).unwrap();
@@ -1662,7 +1719,7 @@ mod tests {
         );
         p.leave();
         assert_eq!(drain(&mut p, 0).sent, [json!({"type": "leave"})]);
-        assert_eq!(p.state().end_reason, Some(EndReason::Left));
+        assert_eq!(ended(&mut p), Some(EndReason::Left));
     }
 
     #[test]
@@ -1675,7 +1732,7 @@ mod tests {
         ] {
             let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
             p.on_text(5, &json!({"type": "closed", "reason": reason}).to_string());
-            assert_eq!(p.state().end_reason, Some(end), "{reason}");
+            assert_eq!(ended(&mut p), Some(end), "{reason}");
         }
     }
 
@@ -1684,7 +1741,7 @@ mod tests {
         let mut p = joined(0, snapshot(1, 0, "idle", 0, 0, false), Value::Null);
         p.on_text(5, r#"{"type":"closed","reason":"kicked"}"#);
         assert_eq!(p.state().connection, Connection::Ended);
-        assert_eq!(p.state().end_reason, Some(EndReason::Kicked));
+        assert_eq!(ended(&mut p), Some(EndReason::Kicked));
         assert!(drain(&mut p, 5).other.contains(&Output::Close(1000)));
     }
 
@@ -1742,7 +1799,9 @@ mod tests {
         drain(&mut p, 100);
         p.leave();
         assert_eq!(p.state().connection, Connection::Idle);
-        assert!(matches!(&p.take_events()[..], [Event::Failed(e)] if e.code == "cancelled"));
+        assert!(
+            matches!(&p.take_events()[..], [Event::Failed(e)] if e.code == ErrorCode::Cancelled)
+        );
         assert!(drain(&mut p, 100).other.is_empty());
         let token = "a".repeat(43);
         p.on_text(200, &json!({"type": "joined", "code": "K7MQ2X", "you": {"peerId": "p1", "token": token}, "room": snapshot(1, 0, "idle", 0, 0, true), "media": null, "serverTime": 0}).to_string());
@@ -1769,7 +1828,9 @@ mod tests {
         p.start(Request::Create, 0).unwrap();
         assert_eq!(p.next_deadline(), Some(CONNECT_TIMEOUT_MS));
         p.tick(CONNECT_TIMEOUT_MS);
-        assert!(matches!(&p.take_events()[..], [Event::Failed(e)] if e.code == "unreachable"));
+        assert!(
+            matches!(&p.take_events()[..], [Event::Failed(e)] if e.code == ErrorCode::Unreachable)
+        );
         assert_eq!(p.next_deadline(), None);
     }
 }

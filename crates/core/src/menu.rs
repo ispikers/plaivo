@@ -1,5 +1,5 @@
 use crate::join;
-use crate::plex::{Item, Media, fmt_bitrate, fmt_resolution};
+use crate::plex::{Item, ItemKind, Media, StreamKind, fmt_bitrate, fmt_resolution};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -45,7 +45,13 @@ impl Action {
             Action::Download => "Added to downloads",
             Action::AddToWatchlist => "Added to watchlist",
             Action::RemoveFromWatchlist => "Removed from watchlist",
-            _ => return None,
+            Action::FromStart
+            | Action::Trailer
+            | Action::Rate
+            | Action::Versions
+            | Action::FileInfo
+            | Action::Details
+            | Action::Season => return None,
         })
     }
 }
@@ -62,11 +68,15 @@ pub struct Context {
 }
 
 pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
-    let library = c.local && matches!(it.kind.as_str(), "movie" | "episode" | "show" | "season");
+    let library = c.local
+        && matches!(
+            it.kind,
+            ItemKind::Movie | ItemKind::Episode | ItemKind::Show | ItemKind::Season
+        );
     let in_progress = c.local
         && it.view_offset.is_some_and(|o| o > 0)
-        && matches!(it.kind.as_str(), "movie" | "episode");
-    let season = c.season && it.kind == "episode" && !it.parent_rating_key.is_empty();
+        && matches!(it.kind, ItemKind::Movie | ItemKind::Episode);
+    let season = c.season && it.kind == ItemKind::Episode && !it.parent_rating_key.is_empty();
     let mut v = Vec::new();
     if in_progress {
         v.push(Action::FromStart);
@@ -76,10 +86,10 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
     }
     if library {
         let started = in_progress || it.viewed_leaf_count.is_some_and(|n| n > 0);
-        if !it.watched() {
+        if !it.is_watched() {
             v.push(Action::MarkWatched);
         }
-        if it.watched() || started {
+        if it.is_watched() || started {
             v.push(Action::MarkUnwatched);
         }
     }
@@ -95,7 +105,10 @@ pub fn actions(it: &Item, c: &Context) -> Vec<Action> {
     if library && c.can_download {
         v.push(Action::Download);
     }
-    if c.signed_in && it.plex_guid().is_some() && matches!(it.kind.as_str(), "movie" | "show") {
+    if c.signed_in
+        && it.plex_guid().is_some()
+        && matches!(it.kind, ItemKind::Movie | ItemKind::Show)
+    {
         v.push(if c.watchlisted == Some(true) {
             Action::RemoveFromWatchlist
         } else {
@@ -129,19 +142,34 @@ pub fn stars(it: &Item) -> u8 {
         .map_or(0, |r| (r / 2.).round().clamp(0., 5.) as u8)
 }
 
-pub fn file_info(it: &Item) -> Vec<(String, String)> {
+pub fn version_title(i: usize) -> String {
+    format!("Version {}", i + 1)
+}
+
+#[derive(Debug, PartialEq)]
+pub struct FileInfoLine {
+    pub label: String,
+    pub value: String,
+    pub header: bool,
+}
+
+pub fn file_info(it: &Item) -> Vec<FileInfoLine> {
     let mut lines = Vec::new();
     for (i, m) in it.media.iter().enumerate() {
         if it.media.len() > 1 {
-            lines.push((format!("Version {}", i + 1), version_label(m)));
+            lines.push(FileInfoLine {
+                label: version_title(i),
+                value: version_label(m),
+                header: true,
+            });
         }
         let part = m.part.first();
-        let streams = |t: u8| {
+        let streams = |t| {
             part.map(|p| {
                 p.stream
                     .iter()
                     .filter(|s| s.stream_type == t)
-                    .map(|s| s.display_title.clone())
+                    .map(|s| s.display_title.as_str())
                     .collect::<Vec<_>>()
                     .join("\n")
             })
@@ -159,14 +187,18 @@ pub fn file_info(it: &Item) -> Vec<(String, String)> {
                 ]),
             ),
             ("Bitrate", m.bitrate.map(fmt_bitrate).unwrap_or_default()),
-            ("Audio", streams(2)),
-            ("Subtitles", streams(3)),
+            ("Audio", streams(StreamKind::Audio)),
+            ("Subtitles", streams(StreamKind::Subtitle)),
         ];
         lines.extend(
             fields
                 .into_iter()
                 .filter(|(_, v)| !v.is_empty())
-                .map(|(k, v)| (k.to_owned(), v)),
+                .map(|(k, v)| FileInfoLine {
+                    label: k.to_owned(),
+                    value: v,
+                    header: false,
+                }),
         );
     }
     lines
@@ -193,7 +225,7 @@ mod tests {
     #[test]
     fn episode_pages_offer_their_season() {
         let ep = Item {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             parent_rating_key: "s1".into(),
             ..Default::default()
         };
@@ -205,7 +237,7 @@ mod tests {
         assert_eq!(actions(&ep, &here).last(), Some(&Action::Season));
         assert!(!actions(&ep, &ctx()).contains(&Action::Season));
         let movie = Item {
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             ..Default::default()
         };
         assert!(!actions(&movie, &here).contains(&Action::Season));
@@ -214,7 +246,7 @@ mod tests {
     #[test]
     fn continue_watching_menus_share_one_order() {
         let next_up = Item {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             parent_rating_key: "s1".into(),
             media: vec![Media::default()],
             ..Default::default()
@@ -252,8 +284,22 @@ mod tests {
             ]
             .concat()
         );
+        let page = Context {
+            details: false,
+            season: true,
+            ..row
+        };
+        assert_eq!(
+            actions(&next_up, &page),
+            [&common[..], &[Action::Season]].concat()
+        );
+        assert!(!actions(&next_up, &ctx()).contains(&Action::ClearProgress));
+    }
+
+    #[test]
+    fn partly_watched_shows_offer_both_marks() {
         let show = |viewed| Item {
-            kind: "show".into(),
+            kind: ItemKind::Show,
             leaf_count: Some(10),
             viewed_leaf_count: Some(viewed),
             ..Default::default()
@@ -270,22 +316,12 @@ mod tests {
             [Action::MarkWatched, Action::MarkUnwatched]
         );
         assert_eq!(marks(&show(10)), [Action::MarkUnwatched]);
-        let page = Context {
-            details: false,
-            season: true,
-            ..row
-        };
-        assert_eq!(
-            actions(&next_up, &page),
-            [&common[..], &[Action::Season]].concat()
-        );
-        assert!(!actions(&next_up, &ctx()).contains(&Action::ClearProgress));
     }
 
     #[test]
     fn library_items_get_the_full_menu() {
         let movie = Item {
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             guid: "plex://movie/5d77".into(),
             view_count: Some(1),
             extras: Some(Extras {
@@ -341,7 +377,7 @@ mod tests {
             part: vec![Part {
                 file: "/m.mkv".into(),
                 stream: vec![Stream {
-                    stream_type: 2,
+                    stream_type: StreamKind::Audio,
                     display_title: "English (AC3 5.1)".into(),
                     ..Default::default()
                 }],
@@ -351,15 +387,26 @@ mod tests {
         };
         let it = Item {
             media: vec![m("1080"), m("4k")],
-            user_rating: Some(7.0),
             ..Default::default()
         };
         let info = file_info(&it);
-        assert_eq!(info[0], ("Version 1".into(), "1080p · MKV".into()));
-        assert!(info.contains(&("Audio".into(), "English (AC3 5.1)".into())));
-        assert_eq!(
-            (stars(&it), version_label(&it.media[1])),
-            (4, "4K · MKV".into())
-        );
+        let line = |label: &str, value: &str, header| FileInfoLine {
+            label: label.into(),
+            value: value.into(),
+            header,
+        };
+        assert_eq!(info[0], line("Version 1", "1080p · MKV", true));
+        assert!(info.contains(&line("Audio", "English (AC3 5.1)", false)));
+        assert_eq!(info.iter().filter(|l| l.header).count(), 2);
+        assert_eq!(version_label(&it.media[1]), "4K · MKV");
+    }
+
+    #[test]
+    fn ten_point_ratings_round_to_five_stars() {
+        let it = Item {
+            user_rating: Some(7.0),
+            ..Default::default()
+        };
+        assert_eq!(stars(&it), 4);
     }
 }

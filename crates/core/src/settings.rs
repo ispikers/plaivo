@@ -1,5 +1,5 @@
 use crate::first;
-use crate::plex::{Hub, Item};
+use crate::plex::{Hub, Item, ItemKind, MarkerKind};
 use crate::prefs::{LanguagePrefs, LanguageRule, SubtitleMode};
 use crate::store;
 use serde::{Deserialize, Serialize};
@@ -296,11 +296,11 @@ pub struct CardPrefs {
 
 impl CardPrefs {
     pub fn wide_hub(&self, h: &Hub) -> bool {
-        h.wide() && (self.poster == EpisodePoster::Thumbnail || h.kind == "clip")
+        h.is_wide() && (self.poster == EpisodePoster::Thumbnail || h.kind == ItemKind::Clip)
     }
 
     pub fn art<'a>(&self, it: &'a Item, wide: bool) -> &'a str {
-        if it.kind == "episode" && !wide && self.poster == EpisodePoster::Season {
+        if it.kind == ItemKind::Episode && !wide && self.poster == EpisodePoster::Season {
             first(&[&it.parent_thumb, &it.grandparent_thumb, &it.thumb])
         } else {
             it.card_art(wide)
@@ -309,19 +309,19 @@ impl CardPrefs {
 
     pub fn text(&self, it: &Item) -> (String, String) {
         let (title, subtitle) = it.card_text();
-        if it.kind == "episode" && !self.numbers {
+        if it.kind == ItemKind::Episode && !self.numbers {
             (title, it.title.clone())
         } else {
             (title, subtitle)
         }
     }
 
-    pub fn spoiler(&self, it: &Item) -> bool {
-        self.spoilers && it.kind == "episode" && !it.watched()
+    pub fn is_spoiler(&self, it: &Item) -> bool {
+        self.spoilers && it.kind == ItemKind::Episode && !it.is_watched()
     }
 
-    pub fn blur(&self, it: &Item, art: &str) -> bool {
-        self.spoiler(it) && !art.is_empty() && art == it.thumb
+    pub fn should_blur(&self, it: &Item, art: &str) -> bool {
+        self.is_spoiler(it) && !art.is_empty() && art == it.thumb
     }
 }
 
@@ -413,20 +413,20 @@ impl Settings {
         self.watch_rooms.retain(|c| c != code);
     }
 
-    pub fn skip_mode(&self, marker: &str) -> SkipMode {
+    fn skip_rule(&self, marker: MarkerKind) -> (SkipMode, i32) {
         match marker {
-            "intro" => self.skip_intro,
-            "credits" => self.skip_credits,
-            _ => SkipMode::Button,
+            MarkerKind::Intro => (self.skip_intro, self.skip_intro_delay),
+            MarkerKind::Credits => (self.skip_credits, self.skip_credits_delay),
+            MarkerKind::Commercial | MarkerKind::Other => (SkipMode::Button, 0),
         }
     }
 
-    pub fn auto_skip_at(&self, marker: &str, start: f64) -> f64 {
-        let delay = match marker {
-            "intro" => self.skip_intro_delay,
-            "credits" => self.skip_credits_delay,
-            _ => 0,
-        };
+    pub fn skip_mode(&self, marker: MarkerKind) -> SkipMode {
+        self.skip_rule(marker).0
+    }
+
+    pub fn auto_skip_at(&self, marker: MarkerKind, start: f64) -> f64 {
+        let delay = self.skip_rule(marker).1;
         (start + delay.clamp(-SKIP_DELAY_MAX, SKIP_DELAY_MAX) as f64).max(0.0)
     }
 
@@ -554,11 +554,10 @@ impl Settings {
 
     pub fn set_server_hidden(&mut self, server: &str, hidden: bool) {
         self.hidden_servers.retain(|k| k != server);
+        self.hidden_libraries
+            .retain(|k| library_server(k) != server);
         if hidden {
             self.hidden_servers.push(server.to_owned());
-        } else {
-            self.hidden_libraries
-                .retain(|k| library_server(k) != server);
         }
     }
 
@@ -631,7 +630,7 @@ mod tests {
     #[test]
     fn card_prefs_shape_episode_cards() {
         let ep = Item {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             title: "Pilot".into(),
             grandparent_title: "Show".into(),
             parent_index: Some(1),
@@ -642,7 +641,7 @@ mod tests {
             ..Default::default()
         };
         let hub = Hub {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             ..Default::default()
         };
         let thumbs = Settings::default().card_prefs();
@@ -660,17 +659,17 @@ mod tests {
         assert!(!season.wide_hub(&hub));
         assert!(!season.wide_hub(&Hub {
             id: "home.continue".into(),
-            kind: "mixed".into(),
+            kind: ItemKind::Mixed,
             ..Default::default()
         }));
         assert_eq!(season.art(&ep, false), "/season");
         assert_eq!(season.text(&ep), ("Show".to_owned(), "Pilot".to_owned()));
-        assert!(season.blur(&ep, "/ep") && !season.blur(&ep, "/season"));
-        assert!(!season.spoiler(&Item {
+        assert!(season.should_blur(&ep, "/ep") && !season.should_blur(&ep, "/season"));
+        assert!(!season.is_spoiler(&Item {
             view_count: Some(1),
             ..ep.clone()
         }));
-        assert!(!thumbs.blur(&ep, "/ep"));
+        assert!(!thumbs.should_blur(&ep, "/ep"));
     }
 
     #[test]
@@ -754,18 +753,18 @@ mod tests {
             skip_credits: SkipMode::Off,
             ..Default::default()
         };
-        assert_eq!(s.skip_mode("intro"), SkipMode::Auto);
-        assert_eq!(s.skip_mode("credits"), SkipMode::Off);
-        assert_eq!(s.skip_mode("commercial"), SkipMode::Button);
+        assert_eq!(s.skip_mode(MarkerKind::Intro), SkipMode::Auto);
+        assert_eq!(s.skip_mode(MarkerKind::Credits), SkipMode::Off);
+        assert_eq!(s.skip_mode(MarkerKind::Commercial), SkipMode::Button);
         let s = Settings {
             skip_intro_delay: -3,
             skip_credits_delay: 99,
             ..s
         };
-        assert_eq!(s.auto_skip_at("intro", 60.0), 57.0);
-        assert_eq!(s.auto_skip_at("intro", 1.0), 0.0);
-        assert_eq!(s.auto_skip_at("credits", 1200.0), 1215.0);
-        assert_eq!(s.auto_skip_at("commercial", 60.0), 60.0);
+        assert_eq!(s.auto_skip_at(MarkerKind::Intro, 60.0), 57.0);
+        assert_eq!(s.auto_skip_at(MarkerKind::Intro, 1.0), 0.0);
+        assert_eq!(s.auto_skip_at(MarkerKind::Credits, 1200.0), 1215.0);
+        assert_eq!(s.auto_skip_at(MarkerKind::Commercial, 60.0), 60.0);
     }
 
     #[test]
@@ -949,6 +948,11 @@ mod tests {
         assert!(s.library_hidden("off/1") && s.library_hidden("off/2"));
         s.set_server_hidden("off", false);
         assert!(!s.server_hidden("off") && !s.library_hidden("off/1") && s.library_hidden("a/1"));
+
+        s.set_library_hidden("part/1", true);
+        s.set_server_hidden("part", true);
+        assert!(!s.sync_server_hidden("part", ["part/1", "part/2"]) && s.server_hidden("part"));
+        assert!(s.library_hidden("part/1") && s.library_hidden("part/2"));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use crate::join;
-use crate::plex::{self, Item};
+use crate::plex::{self, Item, ItemKind};
+
+pub const NOT_IN_LIBRARY: &str = "Not in your library";
 
 pub struct Summary {
     pub play_key: String,
@@ -14,8 +16,8 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
     let media = it.media.first();
     let on_deck = it.on_deck.as_ref().and_then(|d| d.metadata.as_ref());
     let resume = |p: f32| if p > 0. { "Resume" } else { "Play" };
-    let (mut play_key, mut play_label, progress) = match (it.kind.as_str(), on_deck) {
-        ("show", Some(ep)) => (
+    let (mut play_key, mut play_label, progress) = match (it.kind, on_deck) {
+        (ItemKind::Show, Some(ep)) => (
             ep.rating_key.clone(),
             format!(
                 "{} S{}E{}",
@@ -25,7 +27,7 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
             ),
             ep.progress(),
         ),
-        ("show", None) => (it.rating_key.clone(), "Play".into(), 0.),
+        (ItemKind::Show, None) => (it.rating_key.clone(), "Play".into(), 0.),
         _ => (
             it.rating_key.clone(),
             resume(it.progress()).into(),
@@ -33,18 +35,18 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
         ),
     };
     let mut chips = vec![
-        if it.kind == "episode" {
+        if it.kind == ItemKind::Episode {
             it.originally_available_at.clone()
         } else {
             it.year.map(|y| y.to_string()).unwrap_or_default()
         },
         it.content_rating.clone(),
         it.duration
-            .filter(|_| it.kind != "show")
+            .filter(|_| it.kind != ItemKind::Show)
             .map(plex::fmt_duration)
             .unwrap_or_default(),
         it.child_count
-            .filter(|_| it.kind == "show")
+            .filter(|_| it.kind == ItemKind::Show)
             .map(|n| format!("{n} season{}", if n == 1 { "" } else { "s" }))
             .unwrap_or_default(),
         media
@@ -57,7 +59,7 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
         it.audio_label(),
     ];
     if !in_library {
-        chips.insert(0, "Not in your library".into());
+        chips.insert(0, NOT_IN_LIBRARY.into());
         play_key.clear();
         play_label.clear();
     }
@@ -65,7 +67,7 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
     let names = |tags: &[plex::Tag]| {
         tags.iter()
             .take(3)
-            .map(|t| t.tag.clone())
+            .map(|t| t.tag.as_str())
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -89,7 +91,7 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
         ),
         (
             "Released",
-            if it.kind == "episode" {
+            if it.kind == ItemKind::Episode {
                 String::new()
             } else {
                 it.originally_available_at.clone()
@@ -115,7 +117,7 @@ pub fn summary(it: &Item, in_library: bool) -> Summary {
         play_key,
         play_label,
         progress,
-        eyebrow: if it.kind == "episode" {
+        eyebrow: if it.kind == ItemKind::Episode {
             join(&[it.grandparent_title.clone(), it.episode_label()])
         } else {
             String::new()
@@ -197,7 +199,7 @@ mod tests {
     fn season(key: &str, index: i64) -> Item {
         Item {
             rating_key: key.into(),
-            kind: "season".into(),
+            kind: ItemKind::Season,
             index: Some(index),
             ..Default::default()
         }
@@ -216,7 +218,7 @@ mod tests {
         };
         let show = Item {
             rating_key: "show".into(),
-            kind: "show".into(),
+            kind: ItemKind::Show,
             year: Some(2022),
             child_count: Some(1),
             on_deck: Some(Box::new(OnDeck { metadata: Some(ep) })),
@@ -239,7 +241,7 @@ mod tests {
             Some("s2")
         );
         let fresh = Item {
-            kind: "show".into(),
+            kind: ItemKind::Show,
             ..Default::default()
         };
         assert_eq!(pick_season(&fresh, &seasons, None).as_deref(), Some("s1"));
@@ -249,13 +251,13 @@ mod tests {
     fn titles_outside_the_library_cannot_play() {
         let it = Item {
             rating_key: "m".into(),
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             studio: "A24".into(),
             ..Default::default()
         };
         let s = summary(&it, false);
         assert!(s.play_key.is_empty() && s.play_label.is_empty());
-        assert_eq!(s.chips, ["Not in your library"]);
+        assert_eq!(s.chips, [NOT_IN_LIBRARY]);
         assert_eq!(s.info, [("Studio", "A24".to_owned())]);
     }
 
@@ -290,7 +292,7 @@ mod tests {
     fn shows_say_whether_they_are_airing() {
         let status = |continuing, next: &str| {
             let it = Item {
-                kind: "show".into(),
+                kind: ItemKind::Show,
                 is_continuing_series: continuing,
                 next_episode_originally_available_at: next.into(),
                 ..Default::default()

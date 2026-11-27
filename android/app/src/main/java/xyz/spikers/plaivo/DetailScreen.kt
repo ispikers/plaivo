@@ -74,6 +74,7 @@ import uniffi.plaivo_ffi.Card as MediaCard
 import uniffi.plaivo_ffi.CastMember
 import uniffi.plaivo_ffi.Detail
 import uniffi.plaivo_ffi.EpisodeStep
+import uniffi.plaivo_ffi.ItemKind
 import uniffi.plaivo_ffi.RatingSource
 import uniffi.plaivo_ffi.Related
 import uniffi.plaivo_ffi.Row as MediaRow
@@ -154,8 +155,8 @@ fun DetailScreen(
                         cast = owned.cast,
                     )
                 prev != null &&
-                    prev.kind == "episode" &&
-                    next.kind == "episode" &&
+                    prev.kind == ItemKind.EPISODE &&
+                    next.kind == ItemKind.EPISODE &&
                     prev.server == next.server &&
                     prev.showKey == next.showKey -> next.copy(logo = prev.logo, backdrop = prev.backdrop)
                 else -> next
@@ -176,7 +177,7 @@ fun DetailScreen(
     }
     val d = detail
     val chosen = season ?: d?.season
-    LaunchedEffect(d?.server, d?.kind, d?.showKey?.ifEmpty { null } ?: d?.key) {
+    LaunchedEffect(d?.server, d?.kind, d?.showKey ?: d?.key) {
         if (d == null) return@LaunchedEffect
         io { runCatching { core.related(d.server, d.key) } }.onSuccess { related = it }
     }
@@ -192,16 +193,17 @@ fun DetailScreen(
     }
     val touch = LocalTouch.current
     LaunchedEffect(d != null) { if (d != null && !touch) runCatching { focus.requestFocus() } }
-    val stepper = step != null && d?.kind == "episode" && d.showKey.isNotEmpty()
+    val stepper = step != null && d?.kind == ItemKind.EPISODE && d.showKey != null
     var stepMap by remember { mutableStateOf<Map<String, EpisodeStep>>(emptyMap()) }
     var stepped by remember { mutableStateOf<Step?>(null) }
     val previousFocus = remember { FocusRequester() }
     val nextFocus = remember { FocusRequester() }
     LaunchedEffect(stepper, d?.server, d?.showKey) {
-        if (!stepper || d == null) return@LaunchedEffect
+        val show = d?.showKey
+        if (!stepper || show == null) return@LaunchedEffect
         io {
-                runCatching { core.episodeSteps(d.server, d.showKey, true) }
-                    .recoverCatching { core.episodeSteps(d.server, d.showKey, false) }
+                runCatching { core.episodeSteps(d.server, show, true) }
+                    .recoverCatching { core.episodeSteps(d.server, show, false) }
                     .getOrNull()
             }
             ?.let { list -> stepMap = list.associateBy { it.key } }
@@ -223,7 +225,7 @@ fun DetailScreen(
     }
     if (d == null) return Message(error ?: "Loading…")
     val library = d.server != discover
-    val isPerson = d.kind == "person"
+    val isPerson = d.kind == ItemKind.PERSON
     fun setWatched(on: Boolean) =
         scope.launch {
             val result = io {
@@ -260,10 +262,11 @@ fun DetailScreen(
                             Text(d.eyebrow, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Palette.muted)
                         Heading(d)
                         Badges(d)
-                        if (d.playKey.isNotEmpty())
+                        d.playKey?.let { k ->
                             PlayButton(d.playLabel, d.progress, Modifier.padding(top = 6.dp).fillMaxWidth()) {
-                                play(d.card(d.playKey))
+                                play(d.card(k))
                             }
+                        }
                         if (!isPerson)
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -341,15 +344,16 @@ fun DetailScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                if (d.playKey.isNotEmpty())
+                                d.playKey?.let { k ->
                                     PlayButton(d.playLabel, d.progress, Modifier.focusRequester(focus)) {
-                                        play(d.card(d.playKey))
+                                        play(d.card(k))
                                     }
+                                }
                                 RoundActions(
                                     d,
                                     library,
                                     { hint = it },
-                                    if (d.playKey.isEmpty()) Modifier.focusRequester(focus) else Modifier,
+                                    if (d.playKey == null) Modifier.focusRequester(focus) else Modifier,
                                     { setWatched(!d.watched) },
                                 )
                                 Text(hint, fontSize = 13.sp, color = Palette.muted, modifier = Modifier.weight(1f))
@@ -381,7 +385,7 @@ fun DetailScreen(
                     if (long || expanded) TextAction(if (expanded) "Less" else "More") { expanded = !expanded }
                 }
             }
-        if (d.kind == "show" && d.seasons.isNotEmpty()) {
+        if (d.kind == ItemKind.SHOW && d.seasons.isNotEmpty()) {
             item(key = "seasons") {
                 Column(Modifier.padding(horizontal = edge)) {
                     SectionTitle("Episodes")
@@ -425,7 +429,7 @@ fun DetailScreen(
 
 @Composable
 private fun Heading(d: Detail) {
-    if (d.kind != "person") return Title(d)
+    if (d.kind != ItemKind.PERSON) return Title(d)
     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
         Box(
             Modifier.width(120.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(12.dp)).background(Palette.surface),

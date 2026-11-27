@@ -15,17 +15,7 @@ const SWIPE: f32 = 60.;
 const SLIDE_ANIM: Duration = Duration::from_millis(320);
 
 pub fn content_width(this: &Plaivo, window: &Window) -> f32 {
-    let sidebar = if matches!(
-        this.page,
-        crate::app::Page::Detail | crate::app::Page::HubList
-    ) {
-        0.
-    } else if this.settings.sidebar_compact {
-        theme::SIDEBAR_COMPACT
-    } else {
-        theme::SIDEBAR
-    };
-    f32::from(window.viewport_size().width) - sidebar
+    f32::from(window.viewport_size().width) - this.sidebar_width()
 }
 
 const HUB_TITLE: f32 = 34.;
@@ -189,10 +179,12 @@ impl Plaivo {
         let item = self.hero[self.hero_index.min(self.hero.len() - 1)].clone();
         let current = self.image(&item.thumb, Shape::Backdrop);
         let arrived = self.image_alpha();
-        let upcoming = self.hero[(self.hero_index + 1) % self.hero.len()]
-            .thumb
-            .clone();
-        self.prefetch(&upcoming, Shape::Backdrop);
+        if self.hero.len() > 1 {
+            let upcoming = self.hero[(self.hero_index + 1) % self.hero.len()]
+                .thumb
+                .clone();
+            self.prefetch(&upcoming, Shape::Backdrop);
+        }
         let fade = self.view.hero_prev.map(|(i, t0)| {
             (
                 i,
@@ -233,8 +225,7 @@ impl Plaivo {
                         }))
                 }))
         });
-        let play_key = (item.server.to_string(), item.key.to_string());
-        let open = item.clone();
+        let play_key = (item.server.clone(), item.key.clone());
         div()
             .id("hero")
             .relative()
@@ -360,12 +351,16 @@ impl Plaivo {
                                             }),
                                     )
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.play(play_key.0.clone(), play_key.1.clone(), cx)
+                                        this.play(
+                                            play_key.0.to_string(),
+                                            play_key.1.to_string(),
+                                            cx,
+                                        )
                                     })),
                             )
                             .child(
                                 pill("hero-details", "Details", None, false).on_click(
-                                    cx.listener(move |this, _, _, cx| this.open(&open, cx)),
+                                    cx.listener(move |this, _, _, cx| this.open(&item, cx)),
                                 ),
                             ),
                     ),

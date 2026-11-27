@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::settings::{CardPrefs, Settings, library_key};
+use crate::trackers::PlayState;
 use crate::{first, jellyfin, join, store, watch_together};
 
 pub type R<T> = Result<T, String>;
@@ -68,7 +69,7 @@ impl Ctx {
         }
     }
 
-    pub fn changed(&self) -> bool {
+    pub fn has_changed(&self) -> bool {
         self.changed.load(Ordering::Relaxed)
     }
 }
@@ -155,7 +156,7 @@ pub struct Directory {
     pub tag_key: String,
     pub thumb: String,
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: ItemKind,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -202,7 +203,7 @@ pub struct Hub {
     #[serde(rename = "hubIdentifier")]
     pub id: String,
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: ItemKind,
     #[serde(rename = "Metadata")]
     pub metadata: Vec<Item>,
 }
@@ -213,12 +214,14 @@ pub struct Item {
     pub rating_key: String,
     pub guid: String,
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: ItemKind,
     pub title: String,
     pub parent_title: String,
     pub grandparent_title: String,
     pub parent_rating_key: String,
     pub grandparent_rating_key: String,
+    pub parent_guid: String,
+    pub grandparent_guid: String,
     pub parent_index: Option<i64>,
     pub index: Option<i64>,
     pub year: Option<i64>,
@@ -274,24 +277,63 @@ pub struct Item {
     pub marker: Vec<Marker>,
 }
 
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ItemKind {
+    Movie,
+    Show,
+    Season,
+    Episode,
+    Clip,
+    Mixed,
+    Person,
+    Collection,
+    #[default]
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkerKind {
+    Intro,
+    Credits,
+    Commercial,
+    #[default]
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkipLabels {
+    pub skip: &'static str,
+    pub skipping: &'static str,
+    pub skipped: &'static str,
+}
+
+impl MarkerKind {
+    pub fn labels(self) -> Option<SkipLabels> {
+        let (skip, skipping, skipped) = match self {
+            MarkerKind::Intro => ("Skip Intro", "Skipping Intro", "Skipped Intro"),
+            MarkerKind::Credits => ("Skip Credits", "Skipping Credits", "Skipped Credits"),
+            MarkerKind::Commercial => ("Skip Ad", "Skipping Ad", "Skipped Ad"),
+            MarkerKind::Other => return None,
+        };
+        Some(SkipLabels {
+            skip,
+            skipping,
+            skipped,
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Marker {
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: MarkerKind,
     pub start_time_offset: u64,
     pub end_time_offset: u64,
-}
-
-impl Marker {
-    pub fn skip_label(&self) -> Option<&'static str> {
-        match self.kind.as_str() {
-            "intro" => Some("Skip Intro"),
-            "credits" => Some("Skip Credits"),
-            "commercial" => Some("Skip Ad"),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -454,7 +496,7 @@ pub struct Part {
 pub struct Stream {
     #[serde(deserialize_with = "flex_u64")]
     pub id: Option<u64>,
-    pub stream_type: u8,
+    pub stream_type: StreamKind,
     pub index: Option<u32>,
     pub key: String,
     pub codec: String,
@@ -465,9 +507,41 @@ pub struct Stream {
     pub extract_key: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[serde(from = "u8", into = "u8")]
+pub enum StreamKind {
+    #[default]
+    Other,
+    Video,
+    Audio,
+    Subtitle,
+}
+
+impl From<u8> for StreamKind {
+    fn from(n: u8) -> Self {
+        match n {
+            1 => Self::Video,
+            2 => Self::Audio,
+            3 => Self::Subtitle,
+            _ => Self::Other,
+        }
+    }
+}
+
+impl From<StreamKind> for u8 {
+    fn from(k: StreamKind) -> Self {
+        match k {
+            StreamKind::Other => 0,
+            StreamKind::Video => 1,
+            StreamKind::Audio => 2,
+            StreamKind::Subtitle => 3,
+        }
+    }
+}
+
 impl Stream {
     pub fn is_external_subtitle(&self) -> bool {
-        self.stream_type == 3 && !self.key.is_empty()
+        self.stream_type == StreamKind::Subtitle && !self.key.is_empty()
     }
 
     pub fn track_label(&self, position: usize) -> String {
@@ -479,8 +553,8 @@ impl Stream {
 
     pub fn subtitle_file(&self, transcoding: bool) -> Option<(&str, &str)> {
         match self.stream_type {
-            3 if !self.key.is_empty() => Some((&self.key, &self.codec)),
-            3 if transcoding && !self.extract_key.is_empty() => {
+            StreamKind::Subtitle if !self.key.is_empty() => Some((&self.key, &self.codec)),
+            StreamKind::Subtitle if transcoding && !self.extract_key.is_empty() => {
                 let format = self.extract_key.rsplit_once('.').map_or("", |(_, ext)| ext);
                 Some((&self.extract_key, format))
             }
@@ -503,7 +577,7 @@ pub struct Transcode {
 }
 
 impl Media {
-    fn streams_of(&self, stream_type: u8) -> impl Iterator<Item = &Stream> {
+    fn streams_of(&self, stream_type: StreamKind) -> impl Iterator<Item = &Stream> {
         self.part
             .first()
             .into_iter()
@@ -512,11 +586,11 @@ impl Media {
     }
 
     pub fn audio_streams(&self) -> impl Iterator<Item = &Stream> {
-        self.streams_of(2)
+        self.streams_of(StreamKind::Audio)
     }
 
     pub fn subtitle_streams(&self) -> impl Iterator<Item = &Stream> {
-        self.streams_of(3)
+        self.streams_of(StreamKind::Subtitle)
     }
 }
 
@@ -526,22 +600,27 @@ impl Hub {
         id.contains("continue") || id.contains("ondeck") || id.contains("inprogress")
     }
 
-    pub fn wide(&self) -> bool {
-        matches!(self.kind.as_str(), "episode" | "clip" | "mixed") || self.is_continue()
+    pub fn is_wide(&self) -> bool {
+        matches!(
+            self.kind,
+            ItemKind::Episode | ItemKind::Clip | ItemKind::Mixed
+        ) || self.is_continue()
     }
 }
 
 impl Item {
-    pub fn as_show(self) -> Item {
-        let (key, title, thumb, art) = match self.kind.as_str() {
-            "episode" => (
+    pub fn into_show(self) -> Item {
+        let (key, guid, title, thumb, art) = match self.kind {
+            ItemKind::Episode => (
                 self.grandparent_rating_key,
+                self.grandparent_guid,
                 self.grandparent_title,
                 self.grandparent_thumb,
                 self.grandparent_art,
             ),
-            "season" => (
+            ItemKind::Season => (
                 self.parent_rating_key,
+                self.parent_guid,
                 self.parent_title,
                 self.parent_thumb,
                 self.art,
@@ -550,7 +629,8 @@ impl Item {
         };
         Item {
             rating_key: key,
-            kind: "show".into(),
+            guid,
+            kind: ItemKind::Show,
             title,
             thumb,
             art,
@@ -558,7 +638,7 @@ impl Item {
         }
     }
 
-    pub fn watched(&self) -> bool {
+    pub fn is_watched(&self) -> bool {
         match self.leaf_count {
             Some(n) => n > 0 && self.viewed_leaf_count == Some(n),
             None => self.view_count.unwrap_or(0) > 0,
@@ -583,19 +663,19 @@ impl Item {
         (self.progress() > 0. && left >= 60_000).then(|| format!("{} left", fmt_duration(left)))
     }
 
-    pub fn unwatched(&self) -> u64 {
+    pub fn unwatched_count(&self) -> u64 {
         self.leaf_count
             .unwrap_or(0)
             .saturating_sub(self.viewed_leaf_count.unwrap_or(0))
     }
 
     pub fn card_text(&self) -> (String, String) {
-        match self.kind.as_str() {
-            "episode" => (
+        match self.kind {
+            ItemKind::Episode => (
                 self.grandparent_title.clone(),
                 join(&[self.episode_label(), self.title.clone()]),
             ),
-            "season" => (self.title.clone(), self.parent_title.clone()),
+            ItemKind::Season => (self.title.clone(), self.parent_title.clone()),
             _ => (
                 self.title.clone(),
                 self.year.map(|y| y.to_string()).unwrap_or_default(),
@@ -604,10 +684,10 @@ impl Item {
     }
 
     pub fn card_art(&self, wide: bool) -> &str {
-        match (wide, self.kind.as_str()) {
-            (true, "episode") => first(&[&self.thumb, &self.art]),
+        match (wide, self.kind) {
+            (true, ItemKind::Episode) => first(&[&self.thumb, &self.art]),
             (true, _) => first(&[&self.art, &self.grandparent_art, &self.thumb]),
-            (false, "episode") => {
+            (false, ItemKind::Episode) => {
                 first(&[&self.grandparent_thumb, &self.parent_thumb, &self.thumb])
             }
             (false, _) => first(&[&self.thumb, &self.parent_thumb]),
@@ -689,11 +769,8 @@ impl Item {
         let Some(m) = self.media.get(version).or(self.media.first()) else {
             return String::new();
         };
-        let streams = m.part.first().map_or(&[][..], |p| &p.stream);
-        let pick = |t: u8| {
-            streams
-                .iter()
-                .filter(|s| s.stream_type == t)
+        let pick = |t| {
+            m.streams_of(t)
                 .min_by_key(|s| !s.selected)
                 .map(|s| s.display_title.clone())
                 .unwrap_or_default()
@@ -702,8 +779,8 @@ impl Item {
             fmt_resolution(&m.video_resolution),
             m.video_codec.to_ascii_uppercase(),
             m.video_dynamic_range.clone(),
-            pick(2),
-            pick(3),
+            pick(StreamKind::Audio),
+            pick(StreamKind::Subtitle),
         ])
     }
 
@@ -714,19 +791,36 @@ impl Item {
             .filter(|id| !id.is_empty())
     }
 
+    fn rating_label(&self) -> String {
+        self.audience_rating
+            .map(|r| format!("★ {r:.1}"))
+            .unwrap_or_default()
+    }
+
+    fn year_label(&self) -> String {
+        self.year.map(|y| y.to_string()).unwrap_or_default()
+    }
+
     pub fn meta_line(&self) -> String {
-        let kind = match self.kind.as_str() {
-            "movie" => "Movie",
-            "show" => "TV Show",
+        let kind = match self.kind {
+            ItemKind::Movie => "Movie",
+            ItemKind::Show => "TV Show",
             _ => "",
         };
         join(&[
             kind.into(),
-            self.audience_rating
-                .map(|r| format!("★ {r:.1}"))
-                .unwrap_or_default(),
+            self.rating_label(),
             self.content_rating.clone(),
-            self.year.map(|y| y.to_string()).unwrap_or_default(),
+            self.year_label(),
+        ])
+    }
+
+    pub fn list_meta(&self) -> String {
+        join(&[
+            self.content_rating.clone(),
+            self.year_label(),
+            self.duration.map(fmt_duration).unwrap_or_default(),
+            self.rating_label(),
         ])
     }
 
@@ -762,10 +856,10 @@ fn next_child(children: &[Item]) -> Option<&Item> {
     let regular = || {
         children
             .iter()
-            .filter(|i| i.kind != "season" || i.index != Some(0))
+            .filter(|i| i.kind != ItemKind::Season || i.index != Some(0))
     };
     regular()
-        .find(|i| !i.watched())
+        .find(|i| !i.is_watched())
         .or_else(|| regular().next())
         .or(children.first())
 }
@@ -774,8 +868,8 @@ pub fn resolve_playable(srv: &Server, cx: &Ctx, key: &str) -> R<Item> {
     let mut key = key.to_owned();
     for _ in 0..4 {
         let it = srv.metadata(cx, &key)?;
-        match it.kind.as_str() {
-            "show"
+        match it.kind {
+            ItemKind::Show
                 if it
                     .on_deck
                     .as_ref()
@@ -784,8 +878,8 @@ pub fn resolve_playable(srv: &Server, cx: &Ctx, key: &str) -> R<Item> {
             {
                 key = it.on_deck.unwrap().metadata.unwrap().rating_key;
             }
-            "show" | "season" => {
-                let children = if it.kind == "show" {
+            ItemKind::Show | ItemKind::Season => {
+                let children = if it.kind == ItemKind::Show {
                     srv.show_seasons(cx, &key)?
                 } else {
                     srv.episodes(cx, &key)?
@@ -805,18 +899,43 @@ static DOWN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 pub const HUB_MAX: usize = 1000;
 
-pub const SORTS: &[(&str, &str)] = &[
-    ("titleSort", "Title"),
-    ("addedAt:desc", "Recently added"),
-    ("originallyAvailableAt:desc", "Release date"),
-    ("audienceRating:desc", "Rating"),
-];
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Sort {
+    Title,
+    Added,
+    Released,
+    Rating,
+}
 
-fn watchlist_path(kind: &str, sort: &str) -> String {
-    let sort = if sort == "addedAt:desc" {
-        "watchlistedAt:desc"
-    } else {
-        sort
+impl Sort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Title => "Title",
+            Sort::Added => "Recently added",
+            Sort::Released => "Release date",
+            Sort::Rating => "Rating",
+        }
+    }
+
+    fn plex_param(self) -> &'static str {
+        match self {
+            Sort::Title => "titleSort",
+            Sort::Added => "addedAt:desc",
+            Sort::Released => "originallyAvailableAt:desc",
+            Sort::Rating => "audienceRating:desc",
+        }
+    }
+}
+
+pub const SORTS: [Sort; 4] = [Sort::Title, Sort::Added, Sort::Released, Sort::Rating];
+
+pub const WATCHLIST_SORT: Sort = Sort::Added;
+
+fn watchlist_path(shows: bool, sort: Sort) -> String {
+    let kind = if shows { 2 } else { 1 };
+    let sort = match sort {
+        Sort::Added => "watchlistedAt:desc",
+        s => s.plex_param(),
     };
     format!("/library/sections/watchlist/all?type={kind}&sort={sort}&includeGuids=1")
 }
@@ -847,13 +966,13 @@ impl From<User> for PlexUser {
 
 const HERO_MAX: usize = 6;
 
-pub fn pick_hero(hubs: &[LibraryHub]) -> Vec<(&str, &Item)> {
+pub fn pick_hero<'a>(hubs: &[(&'a LibraryHub, &str)]) -> Vec<(&'a str, &'a Item)> {
     let mut seen = HashSet::new();
     hubs.iter()
-        .flat_map(|h| h.hub.metadata.iter().map(|it| (h.server.as_str(), it)))
+        .flat_map(|&(h, _)| h.hub.metadata.iter().map(|it| (h.server.as_str(), it)))
         .filter(|(_, it)| {
             !first(&[&it.art, &it.grandparent_art]).is_empty()
-                && matches!(it.kind.as_str(), "movie" | "show")
+                && matches!(it.kind, ItemKind::Movie | ItemKind::Show)
         })
         .filter(|&(server, it)| seen.insert((server, it.rating_key.as_str())))
         .take(HERO_MAX)
@@ -865,15 +984,17 @@ pub struct LibraryHub {
     pub server: String,
     pub server_name: String,
     pub library: String,
-    pub source: String,
     pub hub: Hub,
 }
 
-pub fn arrange_home(hubs: &[LibraryHub], servers: &[&str], settings: &Settings) -> Vec<LibraryHub> {
-    let mut rows: Vec<LibraryHub> = hubs
+pub fn arrange_home<'a>(
+    hubs: &'a [LibraryHub],
+    servers: &[&str],
+    settings: &Settings,
+) -> Vec<(&'a LibraryHub, &'a str)> {
+    let mut rows: Vec<&LibraryHub> = hubs
         .iter()
         .filter(|h| servers.contains(&h.server.as_str()) && !settings.library_hidden(&h.library))
-        .cloned()
         .collect();
     rows.sort_by_key(|h| {
         (
@@ -881,12 +1002,10 @@ pub fn arrange_home(hubs: &[LibraryHub], servers: &[&str], settings: &Settings) 
             settings.library_rank(&h.library),
         )
     });
-    if rows.iter().any(|h| h.server != rows[0].server) {
-        for h in &mut rows {
-            h.source = h.server_name.clone();
-        }
-    }
-    rows
+    let mixed = rows.iter().any(|h| h.server != rows[0].server);
+    rows.into_iter()
+        .map(|h| (h, if mixed { h.server_name.as_str() } else { "" }))
+        .collect()
 }
 
 struct Resume<'a> {
@@ -901,7 +1020,7 @@ type Rank = (Option<(Option<i64>, Option<i64>)>, bool, Reverse<usize>);
 
 impl<'a> Resume<'a> {
     fn new(at: i64, server: &'a str, it: &'a Item) -> Self {
-        let episode = it.kind == "episode";
+        let episode = it.kind == ItemKind::Episode;
         Resume {
             at,
             server,
@@ -928,7 +1047,7 @@ impl<'a> Resume<'a> {
                 common = true;
             }
         }
-        let fallback = if self.it.kind == "episode" {
+        let fallback = if self.it.kind == ItemKind::Episode {
             self.server != o.server
         } else {
             !common && self.it.year.is_some() && self.it.year == o.it.year
@@ -940,7 +1059,7 @@ impl<'a> Resume<'a> {
     fn rank(&self, pos: usize) -> Rank {
         let it = self.it;
         (
-            (it.kind == "episode").then_some((it.parent_index, it.index)),
+            (it.kind == ItemKind::Episode).then_some((it.parent_index, it.index)),
             it.view_offset.is_some_and(|o| o > 0),
             Reverse(pos),
         )
@@ -1014,49 +1133,46 @@ pub fn direct_image_url(path: &str, w: u32) -> String {
     path.replace("/t/p/original/", &format!("/t/p/w{size}/"))
 }
 
-pub fn initial_sort(key: &str) -> String {
+pub fn initial_sort(key: &str) -> Option<Sort> {
     let param = key.split(['?', '&']).find_map(|p| p.strip_prefix("sort="));
-    if let Some((id, _)) = SORTS.iter().find(|(id, _)| Some(*id) == param) {
-        return (*id).to_owned();
+    if let Some(sort) = SORTS.into_iter().find(|s| Some(s.plex_param()) == param) {
+        return Some(sort);
     }
-    if key.starts_with("latest:") || key.to_ascii_lowercase().contains("recentlyadded") {
-        "addedAt:desc".to_owned()
-    } else {
-        String::new()
-    }
+    (key.starts_with("latest:") || key.to_ascii_lowercase().contains("recentlyadded"))
+        .then_some(Sort::Added)
 }
 
-pub fn sort_items(items: &mut [&Item], sort: &str) {
+pub fn sort_items(items: &mut [&Item], sort: Sort) {
     use std::cmp::Reverse;
     match sort {
-        "titleSort" => {
+        Sort::Title => {
             items.sort_by_cached_key(|it| first(&[&it.grandparent_title, &it.title]).to_lowercase())
         }
-        "addedAt:desc" => items.sort_by_key(|it| Reverse(it.added_at)),
-        "originallyAvailableAt:desc" => items.sort_by_cached_key(|it| {
+        Sort::Added => items.sort_by_key(|it| Reverse(it.added_at)),
+        Sort::Released => items.sort_by_cached_key(|it| {
             Reverse(if it.originally_available_at.is_empty() {
                 it.year.map(|y| y.to_string()).unwrap_or_default()
             } else {
                 it.originally_available_at.clone()
             })
         }),
-        "audienceRating:desc" => items.sort_by(|a, b| {
+        Sort::Rating => items.sort_by(|a, b| {
             b.audience_rating
                 .partial_cmp(&a.audience_rating)
                 .unwrap_or(std::cmp::Ordering::Equal)
         }),
-        _ => {}
     }
 }
 
-pub fn hub_sorts(items: &[Item], key: &str) -> Vec<(&'static str, &'static str)> {
-    let added = items.iter().any(|it| it.added_at.is_some()) || initial_sort(key) == "addedAt:desc";
-    std::iter::once(("", "Default"))
+pub fn hub_sorts(items: &[Item], key: &str) -> Vec<(Option<Sort>, &'static str)> {
+    let added =
+        items.iter().any(|it| it.added_at.is_some()) || initial_sort(key) == Some(Sort::Added);
+    std::iter::once((None, "Default"))
         .chain(
             SORTS
-                .iter()
-                .copied()
-                .filter(|(id, _)| *id != "addedAt:desc" || added),
+                .into_iter()
+                .filter(|&s| s != Sort::Added || added)
+                .map(|s| (Some(s), s.label())),
         )
         .collect()
 }
@@ -1086,7 +1202,7 @@ pub fn person_everywhere(
     found
         .into_iter()
         .flatten()
-        .filter(|(_, it)| seen.insert((it.kind.clone(), it.title.to_lowercase(), it.year)))
+        .filter(|(_, it)| seen.insert((it.kind, it.title.to_lowercase(), it.year)))
         .collect()
 }
 
@@ -1161,28 +1277,27 @@ pub(crate) fn drain(mut r: ureq::http::Response<ureq::Body>) {
     let _ = r.body_mut().read_to_vec();
 }
 
+fn percent_encode(s: &str, keep: impl Fn(u8) -> bool) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if keep(b) {
+            out.push(b as char);
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
 pub(crate) fn encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
-                (b as char).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
+    percent_encode(s, |b| b.is_ascii_alphanumeric() || b"-_.~".contains(&b))
 }
 
 fn escape_uri(path: &str) -> String {
-    path.bytes()
-        .map(|b| {
-            if b.is_ascii_graphic() && !b"<>\"{}|\\^`".contains(&b) {
-                (b as char).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
+    percent_encode(path, |b| {
+        b.is_ascii_graphic() && !b"<>\"{}|\\^`".contains(&b)
+    })
 }
 
 fn watchlisted_in(v: &serde_json::Value) -> bool {
@@ -1440,12 +1555,12 @@ impl Client {
                 Err(RecvTimeoutError::Timeout) => results.iter().position(Option::is_some),
                 Err(RecvTimeoutError::Disconnected) => break,
             };
-            if let Some(best) = best {
+            if let Some(uri) = best.and_then(|i| results[i].take()) {
                 set_down(&res.client_identifier, false);
                 return Ok(Server {
                     name: res.name.clone(),
                     id: res.client_identifier.clone(),
-                    uri: results[best].take().unwrap(),
+                    uri,
                     token,
                     owned: res.owned,
                     ..Default::default()
@@ -1497,7 +1612,7 @@ impl Server {
     }
 
     pub(crate) fn try_fetch_cached(&self, cx: &Ctx, path: &str) -> R<Vec<u8>> {
-        let file = store::cache_path("meta", &format!("{}{path}", self.id));
+        let file = store::cache_path(store::CacheKind::Meta, &format!("{}{path}", self.id));
         if cx.source == Source::Cache {
             if is_down(&self.id) {
                 return Err(format!("{} is offline", self.name));
@@ -1536,8 +1651,10 @@ impl Server {
             );
             if changed {
                 cx.changed.store(true, Ordering::Relaxed);
-                if cx.source == Source::Network {
-                    let _ = store::write_atomic(&file, &fresh);
+                if cx.source == Source::Network
+                    && let Err(e) = store::write_atomic(&file, &fresh)
+                {
+                    log::warn!("{} cache write {path}: {e}", self.name);
                 }
             }
             Ok(fresh)
@@ -1564,7 +1681,7 @@ impl Server {
             return jellyfin::sections(self, c);
         }
         let mut d = self.get::<Container>(c, "/library/sections")?.directory;
-        d.retain(|d| matches!(d.kind.as_str(), "movie" | "show"));
+        d.retain(|d| matches!(d.kind, ItemKind::Movie | ItemKind::Show));
         Ok(d)
     }
 
@@ -1574,7 +1691,7 @@ impl Server {
         key: &str,
         start: usize,
         size: usize,
-        sort: &str,
+        sort: Sort,
         summaries: bool,
     ) -> R<(Vec<Item>, usize)> {
         if self.is_jellyfin() {
@@ -1587,7 +1704,10 @@ impl Server {
         };
         self.paged(
             c,
-            &format!("/library/sections/{key}/all?sort={sort}{exclude}"),
+            &format!(
+                "/library/sections/{key}/all?sort={}{exclude}",
+                sort.plex_param()
+            ),
             start,
             size,
         )
@@ -1597,7 +1717,7 @@ impl Server {
         if self.is_jellyfin() {
             return jellyfin::recently_added(self, c, section);
         }
-        let movies = section.kind == "movie";
+        let movies = section.kind == ItemKind::Movie;
         let key = format!(
             "/hubs/home/recentlyAdded?type={}&sectionID={}",
             if movies { 1 } else { 2 },
@@ -1606,7 +1726,11 @@ impl Server {
         Ok(Hub {
             title: format!("Recently Added in {}", section.title),
             id: format!("recentlyAdded.{}", section.key),
-            kind: if movies { "movie" } else { "mixed" }.into(),
+            kind: if movies {
+                ItemKind::Movie
+            } else {
+                ItemKind::Mixed
+            },
             metadata: self.paged(c, &key, 0, 20)?.0,
             key,
         })
@@ -1631,7 +1755,6 @@ impl Server {
                         server: self.id.clone(),
                         server_name: self.name.clone(),
                         library: library_key(&self.id, &d.key),
-                        source: String::new(),
                         hub,
                     })
                 })
@@ -1641,7 +1764,7 @@ impl Server {
         Ok(hubs)
     }
 
-    pub fn section_hubs(&self, c: &Ctx, key: &str, kind: &str) -> R<Vec<Hub>> {
+    pub fn section_hubs(&self, c: &Ctx, key: &str, kind: ItemKind) -> R<Vec<Hub>> {
         if self.is_jellyfin() {
             return jellyfin::section_hubs(self, c, key, kind);
         }
@@ -1654,8 +1777,13 @@ impl Server {
         hubs.retain(|h| {
             !h.metadata.is_empty()
                 && matches!(
-                    h.kind.as_str(),
-                    "movie" | "show" | "season" | "episode" | "mixed" | "clip"
+                    h.kind,
+                    ItemKind::Movie
+                        | ItemKind::Show
+                        | ItemKind::Season
+                        | ItemKind::Episode
+                        | ItemKind::Mixed
+                        | ItemKind::Clip
                 )
         });
         if let Some(i) = hubs.iter().position(Hub::is_continue) {
@@ -1749,9 +1877,12 @@ impl Server {
             .map(|ct| ct.metadata)
             .unwrap_or_default();
         info.known_for
-            .retain(|it| matches!(it.kind.as_str(), "movie" | "show"));
-        info.born.truncate(10);
-        info.died.truncate(10);
+            .retain(|it| matches!(it.kind, ItemKind::Movie | ItemKind::Show));
+        for date in [&mut info.born, &mut info.died] {
+            if date.is_char_boundary(10) {
+                date.truncate(10);
+            }
+        }
         info
     }
 
@@ -1802,13 +1933,13 @@ impl Server {
     pub fn watchlist(
         &self,
         c: &Ctx,
-        kind: &str,
+        shows: bool,
         start: usize,
         size: usize,
-        sort: &str,
+        sort: Sort,
     ) -> R<(Vec<Item>, usize)> {
         // Discover rejects large container sizes, so page it in small chunks like plezy does.
-        self.paged_all(c, &watchlist_path(kind, sort), start, start + size, 25)
+        self.paged_all(c, &watchlist_path(shows, sort), start, start + size, 25)
     }
 
     fn paged_all(
@@ -1898,9 +2029,9 @@ impl Server {
     }
 
     pub fn detail_rows(&self, c: &Ctx, it: &Item) -> R<(Vec<Hub>, Vec<Person>)> {
-        match it.kind.as_str() {
-            "movie" | "show" => Ok((self.related(c, it)?, Vec::new())),
-            "episode" if !it.grandparent_rating_key.is_empty() => {
+        match it.kind {
+            ItemKind::Movie | ItemKind::Show => Ok((self.related(c, it)?, Vec::new())),
+            ItemKind::Episode if !it.grandparent_rating_key.is_empty() => {
                 let show = self.detail(c, &it.grandparent_rating_key)?;
                 Ok((self.related(c, &show)?, show.cast().to_vec()))
             }
@@ -1974,15 +2105,16 @@ impl Server {
         s: &SubtitleResult,
         language: &str,
     ) -> R<()> {
-        let codec = first(&[&s.codec, "srt"]).to_owned();
-        let language = first(&[&s.language_code, language]).to_owned();
         let params = [
-            ("key", s.key.clone()),
-            ("codec", codec),
-            ("language", language),
-            ("hearingImpaired", u8::from(s.hearing_impaired).to_string()),
-            ("forced", u8::from(s.forced).to_string()),
-            ("providerTitle", s.provider_title.clone()),
+            ("key", s.key.as_str()),
+            ("codec", first(&[&s.codec, "srt"])),
+            ("language", first(&[&s.language_code, language])),
+            (
+                "hearingImpaired",
+                if s.hearing_impaired { "1" } else { "0" },
+            ),
+            ("forced", if s.forced { "1" } else { "0" }),
+            ("providerTitle", &s.provider_title),
         ];
         let query: Vec<String> = params
             .iter()
@@ -2092,7 +2224,12 @@ impl Server {
             .hub;
         let items = hubs
             .into_iter()
-            .filter(|h| matches!(h.kind.as_str(), "movie" | "show" | "season" | "episode"))
+            .filter(|h| {
+                matches!(
+                    h.kind,
+                    ItemKind::Movie | ItemKind::Show | ItemKind::Season | ItemKind::Episode
+                )
+            })
             .flat_map(|h| h.metadata);
         Ok(items
             .enumerate()
@@ -2104,7 +2241,7 @@ impl Server {
         &self,
         c: &Client,
         key: &str,
-        state: &str,
+        state: PlayState,
         time_ms: u64,
         duration_ms: u64,
         transcode_session: Option<&str>,
@@ -2112,6 +2249,7 @@ impl Server {
         if self.is_jellyfin() {
             return jellyfin::timeline(self, c, key, state, time_ms, transcode_session);
         }
+        let state = state.as_str();
         let url = format!(
             "{}/:/timeline?ratingKey={key}&key=%2Flibrary%2Fmetadata%2F{key}&state={state}&time={time_ms}&duration={duration_ms}",
             self.uri
@@ -2164,7 +2302,7 @@ impl Server {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn stream_url(
         &self,
         c: &Client,
@@ -2336,7 +2474,14 @@ impl Server {
         session: &str,
     ) {
         // Plex answers 400 to a new transcode while the old playback is still reported as active
-        self.timeline(c, key, "stopped", time_ms, duration_ms, Some(session));
+        self.timeline(
+            c,
+            key,
+            PlayState::Stopped,
+            time_ms,
+            duration_ms,
+            Some(session),
+        );
         self.stop_transcode(c, session);
     }
 }
@@ -2440,12 +2585,13 @@ mod tests {
     #[test]
     fn card_text_lines_skip_missing_parts() {
         let movie = Item {
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             audience_rating: Some(8.0),
             year: Some(2010),
             ..Default::default()
         };
         assert_eq!(movie.meta_line(), "Movie · ★ 8.0 · 2010");
+        assert_eq!(movie.list_meta(), "2010 · ★ 8.0");
         let ep = Item {
             title: "Pilot".into(),
             index: Some(1),
@@ -2454,6 +2600,7 @@ mod tests {
         };
         assert_eq!(ep.episode_title(), "1. Pilot");
         assert_eq!(ep.episode_meta(), "50m");
+        assert_eq!(fmt_duration(95 * 60_000), "1h 35m");
         let person = PersonInfo {
             born: "1970".into(),
             birthplace: "Oslo".into(),
@@ -2485,7 +2632,7 @@ mod tests {
     fn play_skips_specials_unless_nothing_else_exists() {
         let season = |key: &str, index: i64, watched: bool| Item {
             rating_key: key.into(),
-            kind: "season".into(),
+            kind: ItemKind::Season,
             index: Some(index),
             leaf_count: Some(2),
             viewed_leaf_count: Some(if watched { 2 } else { 0 }),
@@ -2557,18 +2704,18 @@ mod tests {
             initial_sort(
                 "/library/sections/1/all?sort=originallyAvailableAt:desc&originallyAvailableAt>=-1y"
             ),
-            "originallyAvailableAt:desc"
+            Some(Sort::Released)
         );
         assert_eq!(
             initial_sort("/hubs/home/recentlyAdded?type=1&sectionID=1"),
-            "addedAt:desc"
+            Some(Sort::Added)
         );
-        assert_eq!(initial_sort("latest:abc"), "addedAt:desc");
+        assert_eq!(initial_sort("latest:abc"), Some(Sort::Added));
         assert_eq!(
             initial_sort("/library/sections/1/all?sort=lastViewedAt:desc"),
-            ""
+            None
         );
-        assert_eq!(initial_sort("/hubs/continueWatching/items"), "");
+        assert_eq!(initial_sort("/hubs/continueWatching/items"), None);
     }
 
     #[test]
@@ -2579,7 +2726,7 @@ mod tests {
             year: Some(1999),
             ..Item {
                 rating_key: "a".into(),
-                kind: "movie".into(),
+                kind: ItemKind::Movie,
                 title: "beta".into(),
                 ..Default::default()
             }
@@ -2589,7 +2736,7 @@ mod tests {
             originally_available_at: "2005-01-02".into(),
             ..Item {
                 rating_key: "b".into(),
-                kind: "movie".into(),
+                kind: ItemKind::Movie,
                 title: "Alpha".into(),
                 ..Default::default()
             }
@@ -2599,23 +2746,22 @@ mod tests {
             grandparent_title: "Gamma".into(),
             ..Item {
                 rating_key: "c".into(),
-                kind: "episode".into(),
+                kind: ItemKind::Episode,
                 title: "Aardvark".into(),
                 ..Default::default()
             }
         };
-        let keys = |sort: &str| {
+        let keys = |sort: Sort| {
             let mut v = vec![&a, &b, &c];
             sort_items(&mut v, sort);
             v.iter()
                 .map(|it| it.rating_key.as_str())
                 .collect::<String>()
         };
-        assert_eq!(keys(""), "abc");
-        assert_eq!(keys("titleSort"), "bac");
-        assert_eq!(keys("addedAt:desc"), "cab");
-        assert_eq!(keys("originallyAvailableAt:desc"), "bac");
-        assert_eq!(keys("audienceRating:desc"), "bac");
+        assert_eq!(keys(Sort::Title), "bac");
+        assert_eq!(keys(Sort::Added), "cab");
+        assert_eq!(keys(Sort::Released), "bac");
+        assert_eq!(keys(Sort::Rating), "bac");
     }
 
     #[test]
@@ -2681,7 +2827,7 @@ mod tests {
     fn movie(key: &str, title: &str, year: i64, guids: &[&str], at: i64) -> Item {
         Item {
             rating_key: key.into(),
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             title: title.into(),
             year: Some(year),
             guids: guids.iter().map(|g| Guid { id: (*g).into() }).collect(),
@@ -2694,7 +2840,7 @@ mod tests {
     fn episode(key: &str, show: &str, s: i64, e: i64, at: Option<i64>) -> Item {
         Item {
             rating_key: key.into(),
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             grandparent_title: show.into(),
             parent_index: Some(s),
             index: Some(e),
@@ -2770,7 +2916,7 @@ mod tests {
             id: "continueWatching".into(),
             key: "/hubs/continue".into(),
             title: "Keep Watching".into(),
-            kind: "movie".into(),
+            kind: ItemKind::Movie,
             metadata: vec![movie("1", "Arrival", 2016, &[], 100)],
         };
         let remote = [movie("9", "Heat", 1995, &[], 200)];
@@ -2813,14 +2959,29 @@ mod tests {
 
     #[test]
     fn external_subtitles_are_keyed_text_streams() {
-        let s = |stream_type: u8, key: &str| Stream {
+        let s = |stream_type, key: &str| Stream {
             stream_type,
             key: key.into(),
             ..Default::default()
         };
-        assert!(s(3, "/library/streams/1").is_external_subtitle());
-        assert!(!s(3, "").is_external_subtitle());
-        assert!(!s(2, "/library/streams/2").is_external_subtitle());
+        assert!(s(StreamKind::Subtitle, "/library/streams/1").is_external_subtitle());
+        assert!(!s(StreamKind::Subtitle, "").is_external_subtitle());
+        assert!(!s(StreamKind::Audio, "/library/streams/2").is_external_subtitle());
+    }
+
+    #[test]
+    fn stream_kind_round_trips_plex_numbers() {
+        let kinds: Vec<StreamKind> = serde_json::from_str("[1, 2, 3, 4]").unwrap();
+        assert_eq!(
+            kinds,
+            [
+                StreamKind::Video,
+                StreamKind::Audio,
+                StreamKind::Subtitle,
+                StreamKind::Other
+            ]
+        );
+        assert_eq!(serde_json::to_string(&kinds[2]).unwrap(), "3");
     }
 
     #[test]
@@ -2854,21 +3015,21 @@ mod tests {
     #[test]
     fn episodes_collapse_into_their_show() {
         let ep = Item {
-            kind: "episode".into(),
+            kind: ItemKind::Episode,
             rating_key: "9".into(),
             grandparent_rating_key: "1".into(),
             grandparent_title: "Dexter".into(),
             ..Default::default()
         };
-        let show = ep.as_show();
+        let show = ep.into_show();
         assert_eq!(
-            (
-                show.kind.as_str(),
-                show.rating_key.as_str(),
-                show.title.as_str()
-            ),
-            ("show", "1", "Dexter")
+            (show.kind, show.rating_key.as_str(), show.title.as_str()),
+            (ItemKind::Show, "1", "Dexter")
         );
+    }
+
+    #[test]
+    fn encode_escapes_reserved_characters() {
         assert_eq!(encode("a b/c:d"), "a%20b%2Fc%3Ad");
     }
 
@@ -2888,13 +3049,39 @@ mod tests {
     }
 
     #[test]
+    fn kinds_fall_back_to_other_and_round_trip() {
+        let it: Item = serde_json::from_str(
+            r#"{"type":"artist","Marker":[{"type":"recap"},{"type":"commercial"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(it.kind, ItemKind::Other);
+        assert_eq!(
+            it.marker
+                .iter()
+                .map(|m| m.kind.labels().map(|l| l.skipped))
+                .collect::<Vec<_>>(),
+            [None, Some("Skipped Ad")]
+        );
+        let season = Item {
+            kind: ItemKind::Season,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&season).unwrap();
+        assert!(json.contains(r#""type":"season""#));
+        assert_eq!(
+            serde_json::from_str::<Item>(&json).unwrap().kind,
+            ItemKind::Season
+        );
+    }
+
+    #[test]
     fn markers_and_quality() {
         let json = r#"{"MediaContainer":{"Metadata":[{"ratingKey":"7","Marker":[{"type":"intro","startTimeOffset":1000,"endTimeOffset":60000}],"Media":[{"bitrate":3100,"height":1080}]}]}}"#;
         let ct: Envelope<Container> = serde_json::from_str(json).unwrap();
         let it = &ct.media_container.metadata[0];
         assert_eq!(
-            (it.marker[0].kind.as_str(), it.marker[0].end_time_offset),
-            ("intro", 60000)
+            (it.marker[0].kind, it.marker[0].end_time_offset),
+            (MarkerKind::Intro, 60000)
         );
         assert!(Quality::find(4000).unwrap().covers(&Media {
             bitrate: Some(3100),
@@ -2906,6 +3093,10 @@ mod tests {
             (fmt_bitrate(3100), fmt_bitrate(20000), fmt_bitrate(720)),
             ("3.1 Mbps".into(), "20 Mbps".into(), "720 kbps".into())
         );
+    }
+
+    #[test]
+    fn transcode_url_burns_only_embedded_subtitles() {
         let srv = Server {
             name: "s".into(),
             id: "i".into(),
@@ -2923,10 +3114,10 @@ mod tests {
         let media = Media {
             part: vec![Part {
                 stream: vec![
-                    stream(2, 11, ""),
-                    stream(2, 12, ""),
-                    stream(3, 21, "/library/streams/21"),
-                    stream(3, 22, ""),
+                    stream(StreamKind::Audio, 11, ""),
+                    stream(StreamKind::Audio, 12, ""),
+                    stream(StreamKind::Subtitle, 21, "/library/streams/21"),
+                    stream(StreamKind::Subtitle, 22, ""),
                 ],
                 ..Default::default()
             }],
@@ -3068,6 +3259,10 @@ mod tests {
             .plex_guid(),
             None
         );
+    }
+
+    #[test]
+    fn watchlist_state_reads_object_or_array_user_state() {
         let state = |s: &str| watchlisted_in(&serde_json::from_str(s).unwrap());
         assert!(state(
             r#"{"MediaContainer":{"UserState":{"watchlistedAt":{"value":1731000000}}}}"#
@@ -3126,11 +3321,11 @@ mod tests {
     #[test]
     fn watchlist_sorts_recently_added_by_watchlisted_date() {
         assert_eq!(
-            watchlist_path("1", "addedAt:desc"),
+            watchlist_path(false, Sort::Added),
             "/library/sections/watchlist/all?type=1&sort=watchlistedAt:desc&includeGuids=1"
         );
         assert_eq!(
-            watchlist_path("2", "titleSort"),
+            watchlist_path(true, Sort::Title),
             "/library/sections/watchlist/all?type=2&sort=titleSort&includeGuids=1"
         );
     }
@@ -3158,9 +3353,9 @@ mod tests {
 
     #[test]
     fn hero_takes_movies_and_shows_with_art_in_row_order() {
-        let it = |key: &str, kind: &str, art: &str| Item {
+        let it = |key: &str, kind: ItemKind, art: &str| Item {
             rating_key: key.into(),
-            kind: kind.into(),
+            kind,
             art: art.into(),
             ..Default::default()
         };
@@ -3172,21 +3367,24 @@ mod tests {
             },
             ..Default::default()
         };
-        let shows: Vec<Item> = (0..8).map(|i| it(&format!("s{i}"), "show", "/a")).collect();
+        let shows: Vec<Item> = (0..8)
+            .map(|i| it(&format!("s{i}"), ItemKind::Show, "/a"))
+            .collect();
         let hubs = [
             row(
                 "a",
                 vec![
-                    it("ep", "episode", "/a"),
-                    it("m2", "movie", "/a"),
-                    it("bare", "movie", ""),
-                    it("m2", "movie", "/a"),
+                    it("ep", ItemKind::Episode, "/a"),
+                    it("m2", ItemKind::Movie, "/a"),
+                    it("bare", ItemKind::Movie, ""),
+                    it("m2", ItemKind::Movie, "/a"),
                 ],
             ),
-            row("b", vec![it("m2", "movie", "/a")]),
+            row("b", vec![it("m2", ItemKind::Movie, "/a")]),
             row("a", shows),
         ];
-        let picked: Vec<(&str, &str)> = pick_hero(&hubs)
+        let rows: Vec<(&LibraryHub, &str)> = hubs.iter().map(|h| (h, "")).collect();
+        let picked: Vec<(&str, &str)> = pick_hero(&rows)
             .iter()
             .map(|(s, i)| (*s, i.rating_key.as_str()))
             .collect();
@@ -3210,7 +3408,6 @@ mod tests {
             server: server.into(),
             server_name: name.into(),
             library: library_key(server, section),
-            source: String::new(),
             hub: Hub {
                 title: title.into(),
                 ..Default::default()
@@ -3228,23 +3425,22 @@ mod tests {
             hidden_libraries: vec!["a/3".into()],
             ..Default::default()
         };
-        let rows: Vec<(String, String)> = arrange_home(&hubs, &["a", "b"], &settings)
+        let rows: Vec<(&str, &str)> = arrange_home(&hubs, &["a", "b"], &settings)
             .into_iter()
-            .map(|h| (h.hub.title, h.source))
+            .map(|(h, source)| (h.hub.title.as_str(), source))
             .collect();
-        let row = |title: &str, source: &str| (title.to_owned(), source.to_owned());
         assert_eq!(
             rows,
             [
-                row("Recently Added in TV", "Alpha"),
-                row("Recently Added in Movies", "Alpha"),
-                row("Recently Added in Movies", "Beta"),
+                ("Recently Added in TV", "Alpha"),
+                ("Recently Added in Movies", "Alpha"),
+                ("Recently Added in Movies", "Beta"),
             ]
         );
         assert!(
             arrange_home(&hubs, &["a"], &settings)
                 .iter()
-                .all(|h| h.source.is_empty())
+                .all(|(_, source)| source.is_empty())
         );
     }
 
@@ -3330,7 +3526,6 @@ mod tests {
             view_count: Some(1),
             ..Default::default()
         };
-        assert!(show.watched() && movie.watched() && !Item::default().watched());
-        assert_eq!(fmt_duration(95 * 60_000), "1h 35m");
+        assert!(show.is_watched() && movie.is_watched() && !Item::default().is_watched());
     }
 }

@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use crate::first;
 use crate::plex::{
-    Backend, Client, Ctx, Directory, Extras, Guid, Hub, Image, Item, Marker, Media, OnDeck,
-    PRODUCT, Part, Person, PersonInfo, R, Rating, Server, Stream, Tag, Transcode, drain, encode,
-    err,
+    Backend, Client, Ctx, Directory, Extras, Guid, Hub, Image, Item, ItemKind, Marker, MarkerKind,
+    Media, OnDeck, PRODUCT, Part, Person, PersonInfo, R, Rating, Server, Sort, Stream, StreamKind,
+    Tag, Transcode, drain, encode, err,
 };
+use crate::trackers::PlayState;
 
 const TICKS_PER_MS: u64 = 10_000;
 const LIST_FIELDS: &str = "ChildCount,RecursiveItemCount";
@@ -224,9 +225,9 @@ impl Source {
             .iter()
             .filter_map(|s| {
                 let stream_type = match s.kind.as_str() {
-                    "Video" => 1,
-                    "Audio" => 2,
-                    "Subtitle" => 3,
+                    "Video" => StreamKind::Video,
+                    "Audio" => StreamKind::Audio,
+                    "Subtitle" => StreamKind::Subtitle,
                     _ => return None,
                 };
                 let url = |format: &str| {
@@ -235,12 +236,12 @@ impl Source {
                         self.id, s.index
                     )
                 };
-                let key = if stream_type == 3 && s.is_external {
+                let key = if stream_type == StreamKind::Subtitle && s.is_external {
                     url(if s.codec == "subrip" { "srt" } else { &s.codec })
                 } else {
                     String::new()
                 };
-                let extract_key = if stream_type == 3
+                let extract_key = if stream_type == StreamKind::Subtitle
                     && !s.is_external
                     && s.supports_external_stream
                     && s.is_text_subtitle_stream
@@ -278,7 +279,6 @@ impl Source {
             video_dynamic_range: video.map(dynamic_range).unwrap_or_default(),
             audio_codec: audio.map(|a| a.codec.clone()).unwrap_or_default(),
             audio_channels: audio.and_then(|a| a.channels),
-            source_id: self.id.clone(),
             part: vec![Part {
                 id: None,
                 key: format!(
@@ -288,6 +288,7 @@ impl Source {
                 file: self.path,
                 stream,
             }],
+            source_id: self.id,
         }
     }
 }
@@ -295,12 +296,13 @@ impl Source {
 impl Dto {
     fn into_item(self) -> Item {
         let kind = match self.kind.as_str() {
-            "Movie" => "movie".to_owned(),
-            "Series" => "show".to_owned(),
-            "Season" => "season".to_owned(),
-            "Episode" => "episode".to_owned(),
-            "BoxSet" => "collection".to_owned(),
-            k => k.to_ascii_lowercase(),
+            "Movie" => ItemKind::Movie,
+            "Series" => ItemKind::Show,
+            "Season" => ItemKind::Season,
+            "Episode" => ItemKind::Episode,
+            "BoxSet" => ItemKind::Collection,
+            "Person" => ItemKind::Person,
+            _ => ItemKind::Other,
         };
         let backdrop = self
             .backdrop_image_tags
@@ -326,8 +328,8 @@ impl Dto {
             grandparent_rating_key,
             grandparent_thumb,
             grandparent_art,
-        ) = match kind.as_str() {
-            "episode" => (
+        ) = match kind {
+            ItemKind::Episode => (
                 self.season_name,
                 parent_key,
                 image(
@@ -340,7 +342,7 @@ impl Dto {
                 series_thumb,
                 parent_backdrop.clone(),
             ),
-            "season" => (
+            ItemKind::Season => (
                 self.series_name,
                 first(&[
                     &self.series_id,
@@ -356,9 +358,9 @@ impl Dto {
             _ => Default::default(),
         };
         let ud = self.user_data;
-        let leaf_count = match kind.as_str() {
-            "show" => self.recursive_item_count,
-            "season" => self.recursive_item_count.or(self.child_count),
+        let leaf_count = match kind {
+            ItemKind::Show => self.recursive_item_count,
+            ItemKind::Season => self.recursive_item_count.or(self.child_count),
             _ => None,
         };
         let viewed_leaf_count = leaf_count.map(|n| match ud.unplayed_item_count {
@@ -472,12 +474,12 @@ fn markers(s: Segments) -> Vec<Marker> {
         .into_iter()
         .filter_map(|s| {
             let kind = match s.kind.as_str() {
-                "Intro" => "intro",
-                "Outro" => "credits",
+                "Intro" => MarkerKind::Intro,
+                "Outro" => MarkerKind::Credits,
                 _ => return None,
             };
             Some(Marker {
-                kind: kind.into(),
+                kind,
                 start_time_offset: ticks_to_ms(s.start_ticks),
                 end_time_offset: ticks_to_ms(s.end_ticks),
             })
@@ -509,10 +511,10 @@ fn items(srv: &Server, c: &Ctx, path: &str) -> R<Vec<Item>> {
     get::<Page>(srv, c, path).map(into_items)
 }
 
-fn section_kind(collection_type: &str) -> Option<&'static str> {
+fn section_kind(collection_type: &str) -> Option<ItemKind> {
     match collection_type {
-        "movies" => Some("movie"),
-        "tvshows" => Some("show"),
+        "movies" => Some(ItemKind::Movie),
+        "tvshows" => Some(ItemKind::Show),
         _ => None,
     }
 }
@@ -533,7 +535,7 @@ fn continue_hub(resume: Vec<Item>, next_up: Vec<Item>, parent: &str) -> Hub {
         title: "Continue Watching".into(),
         key: format!("continue:{parent}"),
         id: "continueWatching".into(),
-        kind: "mixed".into(),
+        kind: ItemKind::Mixed,
         metadata,
     }
 }
@@ -544,7 +546,7 @@ pub fn sections(srv: &Server, c: &Ctx) -> R<Vec<Directory>> {
         .into_iter()
         .filter_map(|v| {
             Some(Directory {
-                kind: section_kind(&v.collection_type)?.into(),
+                kind: section_kind(&v.collection_type)?,
                 key: v.id,
                 title: v.name,
                 ..Default::default()
@@ -553,62 +555,76 @@ pub fn sections(srv: &Server, c: &Ctx) -> R<Vec<Directory>> {
         .collect())
 }
 
-pub fn continue_watching(srv: &Server, c: &Ctx) -> R<Hub> {
+fn continue_row(srv: &Server, c: &Ctx, parent: &str, limit: usize, fields: &str) -> R<Hub> {
     let u = &srv.user_id;
+    let scope = if parent.is_empty() {
+        String::new()
+    } else {
+        format!("&ParentId={parent}")
+    };
     let (resume, next_up) = std::thread::scope(|s| {
         let next_up = s.spawn(|| {
             items(
                 srv,
                 c,
-                &format!("/Shows/NextUp?UserId={u}&Limit=20&Fields={LIST_FIELDS},ProviderIds"),
+                &format!(
+                    "/Shows/NextUp?UserId={u}{scope}&Limit={limit}&Fields={LIST_FIELDS}{fields}"
+                ),
             )
         });
         let resume = items(
             srv,
             c,
             &format!(
-                "/UserItems/Resume?userId={u}&Limit=20&MediaTypes=Video&Fields={LIST_FIELDS},ProviderIds"
+                "/UserItems/Resume?userId={u}{scope}&Limit={limit}&MediaTypes=Video&Fields={LIST_FIELDS}{fields}"
             ),
         );
         (resume, next_up.join().ok().and_then(Result::ok))
     });
-    Ok(continue_hub(resume?, next_up.unwrap_or_default(), ""))
+    Ok(continue_hub(resume?, next_up.unwrap_or_default(), parent))
+}
+
+pub fn continue_watching(srv: &Server, c: &Ctx) -> R<Hub> {
+    continue_row(srv, c, "", 20, ",ProviderIds")
+}
+
+fn latest_items(srv: &Server, c: &Ctx, parent: &str, limit: usize) -> R<Vec<Item>> {
+    let path = format!(
+        "/Items/Latest?userId={}&ParentId={parent}&Limit={limit}&GroupItems=true&Fields={LIST_FIELDS}",
+        srv.user_id
+    );
+    Ok(get::<Vec<Dto>>(srv, c, &path)?
+        .into_iter()
+        .map(Dto::into_item)
+        .collect())
+}
+
+fn latest_hub(title: String, parent: &str, kind: ItemKind, metadata: Vec<Item>) -> Hub {
+    Hub {
+        title,
+        key: format!("latest:{parent}"),
+        id: format!("latest.{parent}"),
+        kind,
+        metadata,
+    }
 }
 
 pub fn recently_added(srv: &Server, c: &Ctx, view: &Directory) -> R<Hub> {
-    let u = &srv.user_id;
-    let path = format!(
-        "/Items/Latest?userId={u}&ParentId={}&Limit=20&GroupItems=true&Fields={LIST_FIELDS}",
-        view.key
-    );
-    Ok(Hub {
-        title: format!("Recently Added in {}", view.title),
-        key: format!("latest:{}", view.key),
-        id: format!("latest.{}", view.key),
-        kind: view.kind.clone(),
-        metadata: get::<Vec<Dto>>(srv, c, &path)?
-            .into_iter()
-            .map(Dto::into_item)
-            .collect(),
-    })
+    Ok(latest_hub(
+        format!("Recently Added in {}", view.title),
+        &view.key,
+        view.kind,
+        latest_items(srv, c, &view.key, 20)?,
+    ))
 }
 
-fn sort_params(sort: &str) -> (&'static str, &'static str) {
-    let (field, dir) = sort.split_once(':').unwrap_or((sort, "asc"));
-    let by = match field {
-        "addedAt" => "DateCreated",
-        "originallyAvailableAt" => "PremiereDate",
-        "audienceRating" => "CommunityRating",
-        _ => "SortName",
-    };
-    (
-        by,
-        if dir == "desc" {
-            "Descending"
-        } else {
-            "Ascending"
-        },
-    )
+fn sort_params(sort: Sort) -> (&'static str, &'static str) {
+    match sort {
+        Sort::Title => ("SortName", "Ascending"),
+        Sort::Added => ("DateCreated", "Descending"),
+        Sort::Released => ("PremiereDate", "Descending"),
+        Sort::Rating => ("CommunityRating", "Descending"),
+    }
 }
 
 pub fn section_items(
@@ -617,7 +633,7 @@ pub fn section_items(
     key: &str,
     start: usize,
     size: usize,
-    sort: &str,
+    sort: Sort,
     summaries: bool,
 ) -> R<(Vec<Item>, usize)> {
     let (by, order) = sort_params(sort);
@@ -672,7 +688,7 @@ pub fn person(srv: &Server, c: &Ctx, id: &str) -> R<PersonInfo> {
         srv,
         c,
         &format!(
-            "/Users/{}/Items/{id}?Fields=Overview,ProductionLocations",
+            "/Items/{id}?userId={}&Fields=Overview,ProductionLocations",
             srv.user_id
         ),
     )?;
@@ -744,12 +760,12 @@ fn paged(
     Ok((into_items(page), total))
 }
 
-pub fn section_hubs(srv: &Server, c: &Ctx, key: &str, kind: &str) -> R<Vec<Hub>> {
+pub fn section_hubs(srv: &Server, c: &Ctx, key: &str, kind: ItemKind) -> R<Vec<Hub>> {
     let u = &srv.user_id;
     let (resume, next_up, latest) = std::thread::scope(|s| {
         let resume = s.spawn(|| items(srv, c, &format!("/UserItems/Resume?userId={u}&ParentId={key}&Limit=20&MediaTypes=Video&Fields={LIST_FIELDS}")));
         let next_up = s.spawn(|| {
-            if kind == "show" {
+            if kind == ItemKind::Show {
                 items(
                     srv,
                     c,
@@ -761,65 +777,30 @@ pub fn section_hubs(srv: &Server, c: &Ctx, key: &str, kind: &str) -> R<Vec<Hub>>
                 Ok(Vec::new())
             }
         });
-        let latest = get::<Vec<Dto>>(
-            srv,
-            c,
-            &format!(
-                "/Items/Latest?userId={u}&ParentId={key}&Limit=20&GroupItems=true&Fields={LIST_FIELDS}"
-            ),
-        );
+        let latest = latest_items(srv, c, key, 20);
         let ok =
             |r: std::thread::Result<R<Vec<Item>>>| r.ok().and_then(Result::ok).unwrap_or_default();
         (ok(resume.join()), ok(next_up.join()), latest)
     });
-    let latest = Hub {
-        title: "Recently Added".into(),
-        key: format!("latest:{key}"),
-        id: format!("latest.{key}"),
-        kind: kind.into(),
-        metadata: latest?.into_iter().map(Dto::into_item).collect(),
-    };
+    let latest = latest_hub("Recently Added".into(), key, kind, latest?);
     let mut hubs = vec![continue_hub(resume, next_up, key), latest];
     hubs.retain(|h| !h.metadata.is_empty());
     Ok(hubs)
 }
 
 pub fn hub_items(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Item>> {
-    let u = &srv.user_id;
     let max = crate::plex::HUB_MAX;
     if let Some(parent) = key.strip_prefix("continue:") {
-        let scope = if parent.is_empty() {
-            String::new()
-        } else {
-            format!("&ParentId={parent}")
-        };
-        let (resume, next_up) = std::thread::scope(|s| {
-            let next_up = s.spawn(|| {
-                items(
-                    srv,
-                    c,
-                    &format!("/Shows/NextUp?UserId={u}{scope}&Limit={max}&Fields={LIST_FIELDS}"),
-                )
-            });
-            let resume = items(
-                srv,
-                c,
-                &format!(
-                    "/UserItems/Resume?userId={u}{scope}&Limit={max}&MediaTypes=Video&Fields={LIST_FIELDS}"
-                ),
-            );
-            (resume, next_up.join().ok().and_then(Result::ok))
-        });
-        return Ok(continue_hub(resume?, next_up.unwrap_or_default(), parent).metadata);
+        return Ok(continue_row(srv, c, parent, max, "")?.metadata);
     }
     let parent = key.strip_prefix("latest:").ok_or("Unknown list")?;
-    Ok(get::<Vec<Dto>>(srv, c, &format!("/Items/Latest?userId={u}&ParentId={parent}&Limit={max}&GroupItems=true&Fields={LIST_FIELDS}"))?.into_iter().map(Dto::into_item).collect())
+    latest_items(srv, c, parent, max)
 }
 
 pub fn metadata(srv: &Server, c: &Ctx, key: &str) -> R<Item> {
     let u = &srv.user_id;
     let mut it = get::<Dto>(srv, c, &format!("/Items/{key}?userId={u}"))?.into_item();
-    let kind = it.kind.clone();
+    let kind = it.kind;
     let list = |path: &str| {
         get_quiet::<Vec<Dto>>(srv, c, &format!("/Items/{key}/{path}?userId={u}"))
             .unwrap_or_default()
@@ -833,14 +814,14 @@ pub fn metadata(srv: &Server, c: &Ctx, key: &str) -> R<Item> {
                 .map(library_id)
                 .unwrap_or_default()
         });
-        let extras = matches!(kind.as_str(), "movie" | "show").then(|| {
+        let extras = matches!(kind, ItemKind::Movie | ItemKind::Show).then(|| {
             (
                 s.spawn(|| list("LocalTrailers")),
                 s.spawn(|| list("SpecialFeatures")),
             )
         });
-        match kind.as_str() {
-            "show" => {
+        match kind {
+            ItemKind::Show => {
                 let next = items(
                     srv,
                     c,
@@ -852,7 +833,7 @@ pub fn metadata(srv: &Server, c: &Ctx, key: &str) -> R<Item> {
                 .and_then(|v| v.into_iter().next());
                 it.on_deck = next.map(|m| Box::new(OnDeck { metadata: Some(m) }));
             }
-            "movie" | "episode" => {
+            ItemKind::Movie | ItemKind::Episode => {
                 it.marker = get_quiet::<Segments>(srv, c, &format!("/MediaSegments/{key}"))
                     .map(markers)
                     .unwrap_or_default()
@@ -890,7 +871,7 @@ pub fn related(srv: &Server, c: &Ctx, key: &str) -> R<Vec<Hub>> {
             title: "More Like This".into(),
             key: String::new(),
             id: "similar".into(),
-            kind: "mixed".into(),
+            kind: ItemKind::Mixed,
             metadata,
         })
         .into_iter()
@@ -968,41 +949,35 @@ pub fn search(srv: &Server, c: &Ctx, q: &str) -> R<Vec<(Item, f64)>> {
         .collect())
 }
 
-#[derive(Clone, Default, PartialEq)]
-struct Started {
-    key: String,
-    stops: u64,
-}
+static STARTED: Mutex<String> = Mutex::new(String::new());
 
-static STARTED: Mutex<Started> = Mutex::new(Started {
-    key: String::new(),
-    stops: 0,
-});
-
-fn progress_path(started: &Started, key: &str, state: &str) -> &'static str {
+fn progress_path(started: &str, key: &str, state: PlayState) -> &'static str {
     match state {
-        "stopped" => "/Sessions/Playing/Stopped",
-        _ if started.key != key => "/Sessions/Playing",
-        _ => "/Sessions/Playing/Progress",
+        PlayState::Stopped => "/Sessions/Playing/Stopped",
+        PlayState::Playing | PlayState::Paused if started != key => "/Sessions/Playing",
+        PlayState::Playing | PlayState::Paused => "/Sessions/Playing/Progress",
     }
 }
 
-fn record_progress(started: &mut Started, chosen: &Started, key: &str, state: &str, sent: bool) {
-    if state == "stopped" {
-        started.stops += 1;
-        if started.key == key {
-            started.key.clear();
-        }
-    } else if sent && started == chosen {
-        key.clone_into(&mut started.key);
+fn record_progress(started: &mut String, key: &str, state: PlayState, sent: bool) {
+    match state {
+        PlayState::Stopped if started == key => started.clear(),
+        PlayState::Stopped => {}
+        PlayState::Playing | PlayState::Paused if sent => key.clone_into(started),
+        PlayState::Playing | PlayState::Paused => {}
     }
 }
 
-fn progress_body(key: &str, state: &str, time_ms: u64, transcode_session: Option<&str>) -> Value {
+fn progress_body(
+    key: &str,
+    state: PlayState,
+    time_ms: u64,
+    transcode_session: Option<&str>,
+) -> Value {
     json!({
         "ItemId": key,
         "PositionTicks": ms_to_ticks(time_ms),
-        "IsPaused": state == "paused",
+        "IsPaused": state == PlayState::Paused,
         "CanSeek": true,
         "PlayMethod": if transcode_session.is_some() { "Transcode" } else { "DirectPlay" },
         "PlaySessionId": transcode_session,
@@ -1013,13 +988,12 @@ pub fn timeline(
     srv: &Server,
     c: &Client,
     key: &str,
-    state: &str,
+    state: PlayState,
     time_ms: u64,
     transcode_session: Option<&str>,
 ) -> bool {
     let started = || STARTED.lock().unwrap_or_else(|e| e.into_inner());
-    let chosen = started().clone();
-    let path = progress_path(&chosen, key, state);
+    let path = progress_path(&started(), key, state);
     let sent = match authed(
         c.agent.post(format!("{}{path}", srv.uri)),
         c,
@@ -1037,7 +1011,7 @@ pub fn timeline(
             false
         }
     };
-    record_progress(&mut started(), &chosen, key, state, sent);
+    record_progress(&mut started(), key, state, sent);
     sent
 }
 
@@ -1277,10 +1251,15 @@ pub fn quick_connect_ready(c: &Client, info: &ServerInfo, secret: &str) -> R<boo
         None,
     )
     .call();
-    if matches!(r, Err(ureq::Error::StatusCode(404))) {
-        return Err("The Quick Connect code expired".into());
+    match r {
+        Err(ureq::Error::StatusCode(404)) => Err("The Quick Connect code expired".into()),
+        Ok(_) | Err(ureq::Error::StatusCode(_)) => Ok(read_json::<QuickConnect>(
+            r,
+            "Quick Connect is turned off on this server",
+        )?
+        .authenticated),
+        Err(_) => Ok(false),
     }
-    Ok(read_json::<QuickConnect>(r, "Quick Connect is turned off on this server")?.authenticated)
 }
 
 pub fn quick_connect_finish(c: &Client, info: &ServerInfo, secret: &str) -> R<Server> {
@@ -1371,6 +1350,20 @@ mod tests {
     }
 
     #[test]
+    fn quick_connect_keeps_waiting_through_network_errors() {
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let info = ServerInfo {
+            uri: format!("http://{}", dead.local_addr().unwrap()),
+            ..Default::default()
+        };
+        drop(dead);
+        assert_eq!(
+            quick_connect_ready(&Client::new("d".into()), &info, "s"),
+            Ok(false)
+        );
+    }
+
+    #[test]
     fn last_played_date_parses_to_unix_seconds() {
         assert_eq!(unix_secs("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(
@@ -1405,8 +1398,12 @@ mod tests {
     fn maps_movie() {
         let it = fixture::<Dto>("movie").into_item();
         assert_eq!(
-            (it.kind.as_str(), it.rating_key.as_str(), it.title.as_str()),
-            ("movie", "8a1d7b5e3c4f4e0e9d2b6a7c1f0e3d21", "Inception")
+            (it.kind, it.rating_key.as_str(), it.title.as_str()),
+            (
+                ItemKind::Movie,
+                "8a1d7b5e3c4f4e0e9d2b6a7c1f0e3d21",
+                "Inception"
+            )
         );
         assert_eq!(
             (it.year, it.duration, it.view_offset, it.view_count),
@@ -1466,8 +1463,17 @@ mod tests {
             part.file,
             "/media/movies/Inception (2010)/Inception (2010).mkv"
         );
-        let types: Vec<u8> = part.stream.iter().map(|s| s.stream_type).collect();
-        assert_eq!(types, [1, 2, 2, 3, 3]);
+        let types: Vec<StreamKind> = part.stream.iter().map(|s| s.stream_type).collect();
+        assert_eq!(
+            types,
+            [
+                StreamKind::Video,
+                StreamKind::Audio,
+                StreamKind::Audio,
+                StreamKind::Subtitle,
+                StreamKind::Subtitle
+            ]
+        );
         let ext = &part.stream[3];
         assert_eq!(
             (
@@ -1539,16 +1545,11 @@ mod tests {
     fn maps_series_with_watch_counts() {
         let it = fixture::<Dto>("series").into_item();
         assert_eq!(
-            (
-                it.kind.as_str(),
-                it.child_count,
-                it.leaf_count,
-                it.viewed_leaf_count
-            ),
-            ("show", Some(2), Some(20), Some(5))
+            (it.kind, it.child_count, it.leaf_count, it.viewed_leaf_count),
+            (ItemKind::Show, Some(2), Some(20), Some(5))
         );
-        assert_eq!(it.unwatched(), 15);
-        assert!(!it.watched());
+        assert_eq!(it.unwatched_count(), 15);
+        assert!(!it.is_watched());
         assert_eq!(
             it.guids.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(),
             ["imdb://tt0903747", "tmdb://1396", "tvdb://81189"]
@@ -1562,12 +1563,12 @@ mod tests {
         let s1 = &seasons[0];
         assert_eq!(
             (
-                s1.kind.as_str(),
+                s1.kind,
                 s1.title.as_str(),
                 s1.index,
                 s1.parent_title.as_str()
             ),
-            ("season", "Season 1", Some(1), "Breaking Bad")
+            (ItemKind::Season, "Season 1", Some(1), "Breaking Bad")
         );
         assert_eq!(
             (
@@ -1577,7 +1578,7 @@ mod tests {
             ),
             ("3c9e1a7b2d4f4a8e8b6c5d4e3f2a1b0c", Some(7), Some(7))
         );
-        assert!(s1.watched());
+        assert!(s1.is_watched());
         assert_eq!(
             s1.parent_thumb,
             "/Items/3c9e1a7b2d4f4a8e8b6c5d4e3f2a1b0c/Images/Primary?tag=series01"
@@ -1586,12 +1587,12 @@ mod tests {
             s1.art,
             "/Items/3c9e1a7b2d4f4a8e8b6c5d4e3f2a1b0c/Images/Backdrop/0?tag=sbd01"
         );
-        let show = seasons[1].clone().as_show();
+        let show = seasons[1].clone().into_show();
         assert_eq!(
             (show.rating_key.as_str(), show.title.as_str()),
             ("3c9e1a7b2d4f4a8e8b6c5d4e3f2a1b0c", "Breaking Bad")
         );
-        assert!(!seasons[1].watched());
+        assert!(!seasons[1].is_watched());
     }
 
     #[test]
@@ -1600,8 +1601,8 @@ mod tests {
         assert_eq!(eps.len(), 3);
         let e = &eps[1];
         assert_eq!(
-            (e.kind.as_str(), e.episode_label(), e.title.as_str()),
-            ("episode", "S2 · E2".to_owned(), "Grilled")
+            (e.kind, e.episode_label(), e.title.as_str()),
+            (ItemKind::Episode, "S2 · E2".to_owned(), "Grilled")
         );
         assert_eq!(
             (e.grandparent_title.as_str(), e.parent_title.as_str()),
@@ -1630,7 +1631,7 @@ mod tests {
             e.card_text(),
             ("Breaking Bad".to_owned(), "S2 · E2 · Grilled".to_owned())
         );
-        assert!(eps[0].watched() && !eps[1].watched());
+        assert!(eps[0].is_watched() && !eps[1].is_watched());
         assert_eq!(eps[1].view_offset, Some(754_000));
         assert_eq!(
             eps[2].summary,
@@ -1666,15 +1667,18 @@ mod tests {
             .iter()
             .filter_map(|v| Some((v.name.as_str(), section_kind(&v.collection_type)?)))
             .collect();
-        assert_eq!(kinds, [("Movies", "movie"), ("Shows", "show")]);
+        assert_eq!(
+            kinds,
+            [("Movies", ItemKind::Movie), ("Shows", ItemKind::Show)]
+        );
         let resume = page("resume");
         assert_eq!(
-            resume.iter().map(|i| i.kind.as_str()).collect::<Vec<_>>(),
-            ["movie", "episode"]
+            resume.iter().map(|i| i.kind).collect::<Vec<_>>(),
+            [ItemKind::Movie, ItemKind::Episode]
         );
         let next_up = page("episodes");
         let hub = continue_hub(resume, next_up, "");
-        assert!(hub.is_continue() && hub.wide());
+        assert!(hub.is_continue() && hub.is_wide());
         assert_eq!(
             hub.metadata.len(),
             2,
@@ -1686,7 +1690,7 @@ mod tests {
                 .into_iter()
                 .map(|d| d.into_item().kind)
                 .collect::<Vec<_>>(),
-            ["movie", "show"]
+            [ItemKind::Movie, ItemKind::Show]
         );
     }
 
@@ -1696,9 +1700,12 @@ mod tests {
         let m = markers(s);
         assert_eq!(
             m.iter()
-                .map(|m| (m.kind.as_str(), m.start_time_offset, m.end_time_offset))
+                .map(|m| (m.kind, m.start_time_offset, m.end_time_offset))
                 .collect::<Vec<_>>(),
-            [("intro", 0, 90_000), ("credits", 2_500_000, 2_640_000)]
+            [
+                (MarkerKind::Intro, 0, 90_000),
+                (MarkerKind::Credits, 2_500_000, 2_640_000)
+            ]
         );
     }
 
@@ -1707,7 +1714,7 @@ mod tests {
         assert_eq!(ms_to_ticks(1500), 15_000_000);
         assert_eq!(ticks_to_ms(88_800_000_000), 8_880_000);
         assert_eq!(ticks_to_ms(ms_to_ticks(123_456)), 123_456);
-        let body = progress_body("abc", "paused", 61_000, None);
+        let body = progress_body("abc", PlayState::Paused, 61_000, None);
         assert_eq!(
             (
                 body["PositionTicks"].as_u64(),
@@ -1720,7 +1727,7 @@ mod tests {
             (body["PlayMethod"].as_str(), body["PlaySessionId"].is_null()),
             (Some("DirectPlay"), true)
         );
-        let body = progress_body("abc", "playing", 0, Some("plaivo-1f"));
+        let body = progress_body("abc", PlayState::Playing, 0, Some("plaivo-1f"));
         assert_eq!(
             (body["PlayMethod"].as_str(), body["PlaySessionId"].as_str()),
             (Some("Transcode"), Some("plaivo-1f"))
@@ -1729,46 +1736,23 @@ mod tests {
 
     #[test]
     fn progress_starts_once_per_item() {
-        fn report(started: &mut Started, key: &str, state: &str, sent: bool) -> &'static str {
-            let chosen = started.clone();
-            let path = progress_path(&chosen, key, state);
-            record_progress(started, &chosen, key, state, sent);
+        use PlayState::{Paused, Playing, Stopped};
+        fn report(started: &mut String, key: &str, state: PlayState, sent: bool) -> &'static str {
+            let path = progress_path(started, key, state);
+            record_progress(started, key, state, sent);
             path
         }
-        let s = &mut Started::default();
-        assert_eq!(report(s, "x1", "playing", false), "/Sessions/Playing");
-        assert_eq!(report(s, "x1", "playing", true), "/Sessions/Playing");
-        assert_eq!(
-            report(s, "x1", "paused", true),
-            "/Sessions/Playing/Progress"
-        );
-        assert_eq!(
-            report(s, "x0", "stopped", true),
-            "/Sessions/Playing/Stopped"
-        );
-        assert_eq!(
-            report(s, "x1", "playing", true),
-            "/Sessions/Playing/Progress"
-        );
-        assert_eq!(
-            report(s, "x1", "stopped", false),
-            "/Sessions/Playing/Stopped"
-        );
-        assert_eq!(report(s, "x1", "playing", true), "/Sessions/Playing");
-        assert_eq!(report(s, "x2", "playing", true), "/Sessions/Playing");
-        assert_eq!(
-            report(s, "x2", "stopped", true),
-            "/Sessions/Playing/Stopped"
-        );
-
-        let stale = s.clone();
-        assert_eq!(progress_path(&stale, "x1", "playing"), "/Sessions/Playing");
-        assert_eq!(
-            report(s, "x1", "stopped", true),
-            "/Sessions/Playing/Stopped"
-        );
-        record_progress(s, &stale, "x1", "playing", true);
-        assert_eq!(report(s, "x1", "playing", true), "/Sessions/Playing");
+        let s = &mut String::new();
+        assert_eq!(report(s, "x1", Playing, false), "/Sessions/Playing");
+        assert_eq!(report(s, "x1", Playing, true), "/Sessions/Playing");
+        assert_eq!(report(s, "x1", Paused, true), "/Sessions/Playing/Progress");
+        assert_eq!(report(s, "x0", Stopped, true), "/Sessions/Playing/Stopped");
+        assert_eq!(report(s, "x1", Playing, true), "/Sessions/Playing/Progress");
+        assert_eq!(report(s, "x1", Stopped, false), "/Sessions/Playing/Stopped");
+        assert_eq!(report(s, "x1", Playing, true), "/Sessions/Playing");
+        assert_eq!(report(s, "x2", Playing, true), "/Sessions/Playing");
+        assert_eq!(report(s, "x2", Stopped, true), "/Sessions/Playing/Stopped");
+        assert_eq!(report(s, "x1", Playing, true), "/Sessions/Playing");
     }
 
     #[test]
@@ -1811,8 +1795,8 @@ mod tests {
         ] {
             assert!(url.contains(p), "{p} missing from {url}");
         }
-        assert_eq!(sort_params("addedAt:desc"), ("DateCreated", "Descending"));
-        assert_eq!(sort_params("titleSort"), ("SortName", "Ascending"));
+        assert_eq!(sort_params(Sort::Added), ("DateCreated", "Descending"));
+        assert_eq!(sort_params(Sort::Title), ("SortName", "Ascending"));
     }
 
     #[test]

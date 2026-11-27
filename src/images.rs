@@ -69,15 +69,10 @@ fn load(
     let file = if local {
         url.into()
     } else {
-        store::cache_path("img", key)
+        store::cache_path(store::CacheKind::Img, key)
     };
-    let bytes = match std::fs::read(&file) {
-        Ok(b) => {
-            if !local {
-                store::touch(&file);
-            }
-            b
-        }
+    let (bytes, fetched) = match std::fs::read(&file) {
+        Ok(b) => (b, false),
         Err(e) if local => {
             log::warn!("image {key}: {e}");
             return None;
@@ -87,13 +82,26 @@ fn load(
                 .fetch(url)
                 .inspect_err(|e| log::warn!("image {key}: {e}"))
                 .ok()?;
-            let _ = store::write_atomic(&file, &b);
-            b
+            (b, true)
         }
     };
-    let img = image::load_from_memory(&bytes)
-        .inspect_err(|e| log::warn!("image {key}: decode failed: {e}"))
-        .ok()?;
+    let img = match image::load_from_memory(&bytes) {
+        Ok(img) => img,
+        Err(e) => {
+            log::warn!("image {key}: decode failed: {e}");
+            if !local && !fetched {
+                let _ = std::fs::remove_file(&file);
+            }
+            return None;
+        }
+    };
+    if fetched {
+        if let Err(e) = store::write_atomic(&file, &bytes) {
+            log::warn!("image {key}: cache write failed: {e}");
+        }
+    } else if !local {
+        store::touch(&file);
+    }
     let mut rgba = if local { fit(img, *size) } else { img }.into_rgba8();
     for px in rgba.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
@@ -106,10 +114,10 @@ fn load(
 pub fn spawn_workers(
     q: Arc<Queue>,
     c: Client,
-    done: impl Fn(String, Option<Arc<RenderImage>>) + Send + Sync + Clone + 'static,
+    done: impl FnMut(String, Option<Arc<RenderImage>>) + Send + Clone + 'static,
 ) {
     for _ in 0..WORKERS {
-        let (q, c, done) = (q.clone(), c.clone(), done.clone());
+        let (q, c, mut done) = (q.clone(), c.clone(), done.clone());
         std::thread::spawn(move || {
             loop {
                 let job = q.pop();

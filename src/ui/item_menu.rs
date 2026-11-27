@@ -1,5 +1,5 @@
 use crate::app::{Nav, Page, Plaivo};
-use crate::plex::{DISCOVER_ID, Item};
+use crate::plex::{DISCOVER_ID, Item, ItemKind};
 use crate::settings::Theme;
 use crate::ui::theme::{self, DARK, Icon, LIGHT, OLED, Palette};
 use crate::ui::widgets::{
@@ -35,7 +35,7 @@ pub enum Dialog {
     },
     FileInfo {
         title: String,
-        lines: Vec<(String, String)>,
+        lines: Vec<menu::FileInfoLine>,
     },
     Theme,
     Relay,
@@ -204,7 +204,7 @@ fn radio(on: bool) -> Div {
         })
 }
 
-fn action_icon(a: Action) -> Icon {
+pub(crate) fn action_icon(a: Action) -> Icon {
     match a {
         Action::FromStart => Icon::Replay,
         Action::MarkWatched => Icon::Check,
@@ -239,49 +239,50 @@ impl Plaivo {
             .filter(|d| d.server.as_ref() == server && d.item.rating_key == key)
             .map(|d| (d.item.clone(), d.watchlisted));
         let (item, watchlisted) = known.map_or((None, None), |(it, w)| (Some(it), w));
+        let pending = item.is_none();
+        if let Some(it) = item.as_ref().filter(|_| watchlisted.is_none()) {
+            self.fetch_watchlisted(it, cx);
+        }
         self.menu = Some(ItemMenu {
             at,
             server: server.clone(),
             key: key.clone(),
-            item: item.clone(),
+            item,
             watchlisted,
         });
-        match item {
-            Some(it) if watchlisted.is_none() => self.fetch_watchlisted(&it, cx),
-            Some(_) => {}
-            None => {
-                let Some(srv) = self.server(&server) else {
-                    return;
-                };
-                let k = key.clone();
-                self.load(
-                    cx,
-                    move |c| srv.metadata(c, &k),
-                    move |this, r, cx| {
-                        let Some(m) = this
-                            .menu
-                            .as_mut()
-                            .filter(|m| m.key == key && m.server == server)
-                        else {
-                            return;
-                        };
-                        match r {
-                            Ok(it) => {
-                                let first = m.item.is_none();
-                                m.item = Some(it.clone());
-                                if first {
-                                    this.fetch_watchlisted(&it, cx);
-                                }
+        if pending {
+            let Some(srv) = self.server(&server) else {
+                self.menu = None;
+                return;
+            };
+            let k = key.clone();
+            self.load(
+                cx,
+                move |c| srv.metadata(c, &k),
+                move |this, r, cx| {
+                    let Some(m) = this
+                        .menu
+                        .as_mut()
+                        .filter(|m| m.key == key && m.server == server)
+                    else {
+                        return;
+                    };
+                    match r {
+                        Ok(it) => {
+                            let first = m.item.is_none();
+                            m.item = Some(it.clone());
+                            if first {
+                                this.fetch_watchlisted(&it, cx);
                             }
-                            Err(e) if m.item.is_none() => {
-                                this.menu = None;
-                                this.toast(format!("Could not load details: {e}"), cx);
-                            }
-                            Err(_) => {}
                         }
-                    },
-                );
-            }
+                        Err(e) if m.item.is_none() => {
+                            this.menu = None;
+                            this.toast(format!("Could not load details: {e}"), cx);
+                        }
+                        Err(_) => {}
+                    }
+                },
+            );
         }
         cx.notify();
     }
@@ -291,7 +292,7 @@ impl Plaivo {
             self.account.token.clone(),
             it.plex_guid()
                 .map(str::to_owned)
-                .filter(|_| matches!(it.kind.as_str(), "movie" | "show")),
+                .filter(|_| matches!(it.kind, ItemKind::Movie | ItemKind::Show)),
         ) else {
             return;
         };
@@ -348,20 +349,22 @@ impl Plaivo {
             | self.services.cancel()
     }
 
-    fn menu_entries(
+    pub(crate) fn menu_actions(
         &self,
         server: &str,
         it: &Item,
         watchlisted: Option<bool>,
-    ) -> Vec<(Icon, &'static str, Action)> {
+    ) -> Vec<Action> {
         let local = server != DISCOVER_ID;
         let here = self.page == Page::Detail
-            && self.detail_id == (server.to_owned(), it.rating_key.clone());
+            && self.detail_id.0 == server
+            && self.detail_id.1 == it.rating_key;
+        let srv = self.servers.iter().find(|s| s.id == server);
         let ctx = menu::Context {
             local,
             details: !here,
             season: here,
-            can_rate: self.server(server).is_some_and(|s| s.can_rate()),
+            can_rate: srv.is_some_and(|s| s.can_rate()),
             can_download: self.downloads.is_some()
                 && !self.download_entries.iter().any(|e| {
                     e.server == server
@@ -369,7 +372,7 @@ impl Plaivo {
                 }),
             signed_in: self.account.token.is_some(),
             watchlisted,
-            continue_watching: self.server(server).is_some_and(|s| s.can_remove_next_up())
+            continue_watching: srv.is_some_and(|s| s.can_remove_next_up())
                 && self.hubs.iter().any(|h| {
                     h.resume
                         && h.items
@@ -378,48 +381,13 @@ impl Plaivo {
                 }),
         };
         menu::actions(it, &ctx)
-            .into_iter()
-            .map(|a| (action_icon(a), a.label(), a))
-            .collect()
     }
 
-    pub fn detail_action_watched(&mut self, on: bool, cx: &mut Context<Self>) {
+    pub fn detail_act(&mut self, act: Action, cx: &mut Context<Self>) {
         let Some(d) = self.detail.as_ref() else {
             return;
         };
-        self.run_act(
-            d.server.to_string(),
-            d.item.clone(),
-            if on {
-                Action::MarkWatched
-            } else {
-                Action::MarkUnwatched
-            },
-            cx,
-        );
-    }
-
-    pub fn detail_action_watchlist(&mut self, on: bool, cx: &mut Context<Self>) {
-        let Some(d) = self.detail.as_ref() else {
-            return;
-        };
-        self.run_act(
-            d.server.to_string(),
-            d.item.clone(),
-            if on {
-                Action::AddToWatchlist
-            } else {
-                Action::RemoveFromWatchlist
-            },
-            cx,
-        );
-    }
-
-    pub fn detail_action_rate(&mut self, cx: &mut Context<Self>) {
-        let Some(d) = self.detail.as_ref() else {
-            return;
-        };
-        self.run_act(d.server.to_string(), d.item.clone(), Action::Rate, cx);
+        self.run_act(d.server.to_string(), d.item.clone(), act, cx);
     }
 
     fn act(&mut self, act: Action, cx: &mut Context<Self>) {
@@ -454,7 +422,9 @@ impl Plaivo {
                     move |this, r, cx| match r {
                         Ok(()) => {
                             this.toast(act.done().unwrap_or_default(), cx);
-                            this.load_home(cx);
+                            if !matches!(this.nav.last(), Some(Nav::Home)) {
+                                this.load_home(cx);
+                            }
                             this.refresh_page(cx);
                         }
                         Err(e) => this.toast(format!("Could not update: {e}"), cx),
@@ -575,7 +545,17 @@ impl Plaivo {
                 | Nav::Watchlist),
             ) => self.navigate(nav, false, cx),
             Some(Nav::Home) => self.load_home(cx),
-            _ => {}
+            Some(
+                Nav::Servers
+                | Nav::Search
+                | Nav::Settings(_)
+                | Nav::Licenses(_)
+                | Nav::Logs
+                | Nav::AddServer
+                | Nav::Downloads(_)
+                | Nav::Watch,
+            )
+            | None => {}
         }
         if !matches!(self.nav.last(), Some(Nav::Detail(..))) {
             self.reload_detail(cx);
@@ -602,7 +582,7 @@ impl Plaivo {
         let entries = m
             .item
             .as_ref()
-            .map(|it| self.menu_entries(&m.server, it, m.watchlisted));
+            .map(|it| self.menu_actions(&m.server, it, m.watchlisted));
         let rows = entries.as_ref().map_or(1, |e| e.len().max(1));
         let vp = window.viewport_size();
         let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
@@ -634,7 +614,7 @@ impl Plaivo {
             Some(e) => e
                 .into_iter()
                 .enumerate()
-                .map(|(i, (ic, label, act))| {
+                .map(|(i, act)| {
                     div()
                         .id(("menu-item", i))
                         .h(px(MENU_ROW))
@@ -645,8 +625,8 @@ impl Plaivo {
                         .gap(px(14.))
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::tint(0.08)))
-                        .child(icon(ic, 20., theme::muted()))
-                        .child(label)
+                        .child(icon(action_icon(act), 20., theme::muted()))
+                        .child(act.label())
                         .on_click(cx.listener(move |this, _, _, cx| this.act(act, cx)))
                         .into_any_element()
                 })
@@ -724,7 +704,7 @@ impl Plaivo {
                         row(
                             ("version", i),
                             Some(Icon::Layers),
-                            format!("Version {}", i + 1),
+                            menu::version_title(i),
                             label.clone(),
                         )
                         .cursor_pointer()
@@ -741,8 +721,8 @@ impl Plaivo {
             Some(Dialog::FileInfo { title, lines }) => {
                 let rows = lines
                     .iter()
-                    .map(|(k, v)| {
-                        let header = k.starts_with("Version ");
+                    .map(|line| {
+                        let header = line.header;
                         div()
                             .flex()
                             .gap(px(16.))
@@ -758,7 +738,7 @@ impl Plaivo {
                                     } else {
                                         theme::muted()
                                     })
-                                    .child(k.clone()),
+                                    .child(line.label.clone()),
                             )
                             .child(
                                 div()
@@ -767,7 +747,9 @@ impl Plaivo {
                                     .text_size(px(13.))
                                     .flex()
                                     .flex_col()
-                                    .children(v.lines().map(|l| div().child(l.to_owned()))),
+                                    .children(
+                                        line.value.lines().map(|l| div().child(l.to_owned())),
+                                    ),
                             )
                             .into_any_element()
                     })
