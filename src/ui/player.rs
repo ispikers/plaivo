@@ -80,6 +80,24 @@ fn seek_button(id: &'static str, i: Icon, secs: u32, back: bool) -> gpui::Statef
     )
 }
 
+fn hover_bubble(frac: f32, text: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .absolute()
+        .top(px(-30.))
+        .left(gpui::relative(frac))
+        .ml(px(-28.))
+        .w(px(56.))
+        .h(px(24.))
+        .rounded(px(4.))
+        .bg(theme::black(0.7))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(12.))
+        .text_color(theme::white())
+        .child(text.into())
+}
+
 fn fmt_speed(s: f64) -> String {
     if s == 1.0 {
         "Normal".into()
@@ -528,23 +546,7 @@ impl Plaivo {
                         .bg(theme::white()),
                 )
                 .when_some(hover.filter(|_| dur > 0.), |d, h| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .top(px(-30.))
-                            .left(gpui::relative(h))
-                            .ml(px(-28.))
-                            .w(px(56.))
-                            .h(px(24.))
-                            .rounded(px(4.))
-                            .bg(theme::black(0.7))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_size(px(12.))
-                            .text_color(theme::white())
-                            .child(fmt_time(h as f64 * dur)),
-                    )
+                    d.child(hover_bubble(h, fmt_time(h as f64 * dur)))
                 })
         };
         let volume = {
@@ -595,12 +597,23 @@ impl Plaivo {
                         cx.stop_propagation();
                     }),
                 )
-                .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, _| {
+                .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                    let f = this.frac_in(f32::from(ev.position.x), this.view.volume);
+                    this.view.volume_hover = Some(f);
                     if this.view.volume_drag && ev.dragging() {
-                        let f = this.frac_in(f32::from(ev.position.x), this.view.volume);
                         this.set_volume(f as f64 * 100.);
                     }
+                    cx.notify();
                 }))
+                .on_hover(cx.listener(|this, h: &bool, _, cx| {
+                    if !h {
+                        this.view.volume_hover = None;
+                        cx.notify();
+                    }
+                }))
+                .when_some(self.view.volume_hover, |d, h| {
+                    d.child(hover_bubble(h, format!("{}%", (h * 100.).round())))
+                })
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| this.end_volume_drag(cx)),
