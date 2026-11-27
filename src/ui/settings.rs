@@ -851,8 +851,9 @@ impl Plaivo {
         });
         let end_drag =
             |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
-                this.view.density_drag = false;
-                cx.notify();
+                if std::mem::take(&mut this.view.density_drag) {
+                    cx.notify();
+                }
             };
         div()
             .flex()
