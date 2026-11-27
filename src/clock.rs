@@ -32,10 +32,56 @@ pub fn local_time_in(secs: f64) -> String {
 
 #[cfg(target_os = "macos")]
 pub fn local_time_in(secs: f64) -> String {
-    use objc2_foundation::{NSDate, NSDateFormatter, NSDateFormatterStyle};
-    let f = NSDateFormatter::new();
-    f.setDateStyle(NSDateFormatterStyle::NoStyle);
-    f.setTimeStyle(NSDateFormatterStyle::ShortStyle);
-    f.stringFromDate(&NSDate::dateWithTimeIntervalSinceNow(secs.max(0.0)))
-        .to_string()
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSDate, NSDateFormatter, NSDateFormatterStyle, NSString};
+    use std::cell::{Cell, RefCell};
+    use std::sync::Once;
+
+    #[link(name = "Foundation", kind = "framework")]
+    unsafe extern "C" {
+        static NSCurrentLocaleDidChangeNotification: &'static NSString;
+        static NSSystemTimeZoneDidChangeNotification: &'static NSString;
+    }
+
+    thread_local! {
+        static CHANGES: Cell<u64> = const { Cell::new(0) };
+        static FORMATTER: RefCell<Option<(u64, Retained<NSDateFormatter>)>> = const { RefCell::new(None) };
+    }
+    static OBSERVE: Once = Once::new();
+
+    OBSERVE.call_once(|| unsafe {
+        let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
+        let main: *mut AnyObject = msg_send![class!(NSOperationQueue), mainQueue];
+        for name in [
+            NSCurrentLocaleDidChangeNotification,
+            NSSystemTimeZoneDidChangeNotification,
+        ] {
+            let on_change = RcBlock::new(|_: *mut AnyObject| CHANGES.set(CHANGES.get() + 1));
+            let _: *mut AnyObject = msg_send![
+                center,
+                addObserverForName: name,
+                object: std::ptr::null::<AnyObject>(),
+                queue: main,
+                usingBlock: &*on_change
+            ];
+        }
+    });
+
+    let date = NSDate::dateWithTimeIntervalSinceNow(secs.max(0.0));
+    let changes = CHANGES.get();
+    FORMATTER.with_borrow_mut(|cached| {
+        if cached.as_ref().is_some_and(|(c, _)| *c != changes) {
+            *cached = None;
+        }
+        let (_, f) = cached.get_or_insert_with(|| {
+            let f = NSDateFormatter::new();
+            f.setDateStyle(NSDateFormatterStyle::NoStyle);
+            f.setTimeStyle(NSDateFormatterStyle::ShortStyle);
+            (changes, f)
+        });
+        f.stringFromDate(&date).to_string()
+    })
 }
