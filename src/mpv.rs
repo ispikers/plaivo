@@ -116,6 +116,7 @@ pub enum Event {
     Volume(f64),
     Mute(bool),
     Tracks,
+    Info,
     CommandDone(u64),
     Loaded,
     Started,
@@ -138,13 +139,19 @@ const OBSERVED: &[(&str, c_int)] = &[
 const INFO: &[&str] = &[
     "hwdec-current",
     "file-format",
+    "file-size",
     "video-format",
     "video-params/w",
     "video-params/h",
     "video-params/pixelformat",
+    "video-params/hw-pixelformat",
+    "video-params/colormatrix",
+    "current-tracks/video/codec-profile",
     "container-fps",
     "video-bitrate",
     "audio-codec-name",
+    "current-tracks/audio/lang",
+    "current-tracks/audio/codec-profile",
     "audio-params/hr-channels",
     "audio-params/samplerate",
     "audio-bitrate",
@@ -372,12 +379,10 @@ fn event_loop(ctx: Arc<Ctx>, mut on_event: impl FnMut(Event)) {
                         ctx.store("audio-device-list", string());
                         None
                     }
-                    _ => {
-                        if let Some(&key) = INFO.iter().find(|k| k.as_bytes() == name) {
-                            ctx.store(key, string());
-                        }
-                        None
-                    }
+                    _ => INFO.iter().find(|k| k.as_bytes() == name).map(|&key| {
+                        ctx.store(key, string());
+                        Event::Info
+                    }),
                 };
                 if let Some(ev) = ev {
                     on_event(ev);

@@ -610,12 +610,12 @@ class PlayerActivity : ComponentActivity() {
                             f.language
                                 ?.takeIf { it != "und" }
                                 ?.let { java.util.Locale.forLanguageTag(it).displayLanguage }
-                        val label = f.label ?: language ?: "Track ${i + 1}"
+                        val label = language ?: f.label ?: "Track ${i + 1}"
                         val detail =
                             listOfNotNull(
+                                    f.label?.takeIf { language != null && it != language },
                                     codecName(f.sampleMimeType ?: f.codecs),
                                     channelLayout(f.channelCount).takeIf { type == C.TRACK_TYPE_AUDIO },
-                                    language.takeIf { f.label != null },
                                     "Forced".takeIf { f.selectionFlags and C.SELECTION_FLAG_FORCED != 0 },
                                 )
                                 .filter { it.isNotEmpty() }

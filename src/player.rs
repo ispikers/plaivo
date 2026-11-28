@@ -1,4 +1,4 @@
-use crate::app::{Card, Choice, Nav, Page, Plaivo, card_for, join};
+use crate::app::{Card, Choice, Nav, Page, Plaivo, card_for, first, join};
 use crate::downloads::Local;
 use crate::plex::{
     self, Ctx, Item, ItemKind, MarkerKind, Media, Picks, Quality, Server, SkipLabels, Source,
@@ -59,6 +59,29 @@ struct MpvTrack {
     external_filename: Option<String>,
     #[serde(rename = "demux-channel-count")]
     channels: Option<i64>,
+}
+
+fn codec_name(codec: &str) -> String {
+    match codec {
+        "subrip" => "SRT",
+        "ass" => "ASS",
+        "ssa" => "SSA",
+        "webvtt" => "WebVTT",
+        "mov_text" => "TX3G",
+        "hdmv_pgs_subtitle" => "PGS",
+        "hdmv_text_subtitle" => "TextST",
+        "dvd_subtitle" => "VobSub",
+        "dvb_subtitle" => "DVB",
+        "arib_caption" => "ARIB",
+        "truehd" => "TrueHD",
+        "opus" => "Opus",
+        "vorbis" => "Vorbis",
+        "h264" => "H.264",
+        "mpeg2video" => "MPEG-2",
+        c if c.starts_with("pcm_") => "PCM",
+        c => return c.to_uppercase(),
+    }
+    .into()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1428,6 +1451,14 @@ impl Plaivo {
         cx.notify();
     }
 
+    fn refresh_info(&mut self) -> bool {
+        let open = self.player.panel == Some(Panel::Info);
+        if open {
+            self.player.info = self.file_info();
+        }
+        open
+    }
+
     fn file_info(&self) -> Vec<(SharedString, SharedString)> {
         let Some(m) = &self.player.mpv else {
             return Vec::new();
@@ -1462,6 +1493,17 @@ impl Plaivo {
             _ => String::new(),
         };
         let hw = get("hwdec-current");
+        let audio_lang = get("current-tracks/audio/lang");
+        let range = match (
+            get("video-params/colormatrix").as_str(),
+            get("video-params/gamma").as_str(),
+        ) {
+            (_, "") => "",
+            ("dolbyvision", _) => "Dolby Vision",
+            (_, "pq") => "HDR10",
+            (_, "hlg") => "HLG",
+            _ => "SDR",
+        };
         let rate = get("audio-params/samplerate")
             .parse::<f64>()
             .map(|r| format!("{} kHz", r / 1000.0))
@@ -1477,9 +1519,9 @@ impl Plaivo {
             let lang = get("current-tracks/sub/lang");
             let lang = language_label(&lang).map_or(lang, str::to_owned);
             join(&[
-                title.clone(),
-                if lang == title { String::new() } else { lang },
-                get("current-tracks/sub/codec").to_uppercase(),
+                if title == lang { String::new() } else { lang },
+                title,
+                codec_name(&get("current-tracks/sub/codec")),
                 if get("current-tracks/sub/forced") == "yes" {
                     "Forced".into()
                 } else {
@@ -1493,14 +1535,19 @@ impl Plaivo {
             (
                 "Container",
                 join(&[
-                    get("file-format"),
+                    get("file-format").to_uppercase(),
+                    get("file-size")
+                        .parse()
+                        .map(crate::ui::downloads::fmt_size)
+                        .unwrap_or_default(),
                     media.bitrate.map(plex::fmt_bitrate).unwrap_or_default(),
                 ]),
             ),
             (
                 "Video",
                 join(&[
-                    get("video-format").to_uppercase(),
+                    codec_name(&get("video-format")),
+                    get("current-tracks/video/codec-profile"),
                     size,
                     fps,
                     kbps("video-bitrate"),
@@ -1509,9 +1556,13 @@ impl Plaivo {
             (
                 "Color",
                 join(&[
-                    get("video-params/pixelformat"),
+                    range.into(),
                     get("video-params/primaries"),
-                    get("video-params/gamma"),
+                    first(&[
+                        &get("video-params/hw-pixelformat"),
+                        &get("video-params/pixelformat"),
+                    ])
+                    .to_owned(),
                 ]),
             ),
             (
@@ -1525,7 +1576,9 @@ impl Plaivo {
             (
                 "Audio",
                 join(&[
-                    get("audio-codec-name").to_uppercase(),
+                    language_label(&audio_lang).map_or(audio_lang, str::to_owned),
+                    codec_name(&get("audio-codec-name")),
+                    get("current-tracks/audio/codec-profile"),
                     get("audio-params/hr-channels"),
                     rate,
                     kbps("audio-bitrate"),
@@ -1927,7 +1980,9 @@ impl Plaivo {
                 self.refresh_tracks();
                 true
             }
+            mpv::Event::Info => self.refresh_info(),
             mpv::Event::Started => {
+                self.refresh_info();
                 self.player.video_ready = true;
                 self.sync_shader(cx);
                 self.watch_feed(true);
@@ -1976,38 +2031,43 @@ impl Plaivo {
             return;
         }
         let tracks = self.mpv_tracks();
-        let describe = |t: &MpvTrack| Choice {
-            id: t.id.to_string().into(),
-            label: t
-                .title
-                .clone()
-                .or_else(|| t.lang.clone())
-                .unwrap_or_else(|| format!("Track {}", t.id))
+        let describe = |t: &MpvTrack| {
+            let language = t.lang.as_deref().map(|l| language_label(l).unwrap_or(l));
+            Choice {
+                id: t.id.to_string().into(),
+                label: language
+                    .or(t.title.as_deref())
+                    .map_or_else(|| format!("Track {}", t.id), str::to_owned)
+                    .into(),
+                sub: join(&[
+                    t.title
+                        .as_deref()
+                        .filter(|t| language.is_some_and(|l| l != *t))
+                        .unwrap_or_default()
+                        .to_owned(),
+                    codec_name(t.codec.as_deref().unwrap_or_default()),
+                    match t.channels {
+                        Some(1) => "Mono".into(),
+                        Some(2) => "Stereo".into(),
+                        Some(6) => "5.1".into(),
+                        Some(8) => "7.1".into(),
+                        Some(n) => format!("{n}ch"),
+                        None => String::new(),
+                    },
+                    if t.forced {
+                        "Forced".into()
+                    } else {
+                        String::new()
+                    },
+                    if t.external {
+                        "External".into()
+                    } else {
+                        String::new()
+                    },
+                ])
                 .into(),
-            sub: join(&[
-                t.lang.clone().unwrap_or_default().to_uppercase(),
-                t.codec.clone().unwrap_or_default().to_uppercase(),
-                match t.channels {
-                    Some(1) => "Mono".into(),
-                    Some(2) => "Stereo".into(),
-                    Some(6) => "5.1".into(),
-                    Some(8) => "7.1".into(),
-                    Some(n) => format!("{n}ch"),
-                    None => String::new(),
-                },
-                if t.forced {
-                    "Forced".into()
-                } else {
-                    String::new()
-                },
-                if t.external {
-                    "External".into()
-                } else {
-                    String::new()
-                },
-            ])
-            .into(),
-            selected: t.selected,
+                selected: t.selected,
+            }
         };
         self.player.audio_tracks = match self.player.transcode_audio {
             Some(playing) => self
